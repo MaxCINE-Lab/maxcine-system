@@ -1,0 +1,2 @@
+# Copy to .dev.vars for local development. Do not commit the real value.
+SESSION_SECRET=replace-with-a-random-development-secret-at-least-32-characters

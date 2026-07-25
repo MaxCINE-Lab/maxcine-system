@@ -1,0 +1,18 @@
+name = "maxcine-api"
+main = "src/index.ts"
+compatibility_date = "2026-07-26"
+workers_dev = false
+
+[[d1_databases]]
+binding = "DB"
+database_name = "maxcine-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "maxcine-assets"
+
+[vars]
+APP_ORIGIN = "http://localhost:5173"
+EMAIL_PROVIDER = "mock"

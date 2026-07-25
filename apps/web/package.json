@@ -1,0 +1,16 @@
+{
+  "name": "@maxcine/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build --configLoader native",
+    "typecheck": "tsc -b --pretty false"
+  },
+  "dependencies": {
+    "@maxcine/shared": "file:../../packages/shared",
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  }
+}
