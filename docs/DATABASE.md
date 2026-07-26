@@ -6,13 +6,13 @@
 | --- | --- |
 | `users` | 账户、PBKDF2 密码哈希、角色、经销商归属和启用状态 |
 | `dealers` / `stores` | 渠道主体与店铺；店铺必须归属一个经销商 |
-| `products` | SKU、产品资料和订单价格快照来源 |
+| `products` | SKU、产品名称、规格、经销商价格和订单价格快照来源 |
 | `inventory` | 每产品可用库存；初值为零 |
 | `inventory_transactions` | 唯一允许改变库存的业务流水：期初、预留、释放、调整、退货 |
 | `serial_numbers` | 全局唯一 SN、产品、订单明细和 shipment 绑定状态 |
 | `orders` / `order_items` | 订单头、不可变的产品/SKU/单价快照与数量 |
 | `shipments` | 每订单一个 shipment、顺丰运单和发货状态 |
-| `after_sales_cases` | 经销商归属、可选订单关联和工单状态 |
+| `after_sales_cases` | 经销商归属、店铺/订单/产品/SN 关联、问题类型、联系人和工单状态 |
 | `notifications` | 面向用户或经销商的站内事务通知 |
 | `audit_logs` | 操作者、对象、前后状态、请求编号和时间 |
 | `login_attempts` | 基础登录失败限流，不保存原始邮箱/IP |

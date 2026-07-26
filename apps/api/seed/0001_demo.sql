@@ -1,18 +1,71 @@
--- Synthetic local data only. Password for all demo accounts: DemoOnly-ChangeMe-2026
--- This predictable password is strictly for an isolated local D1 database; never apply this seed in a shared environment.
+-- 本文件只用于隔离的本地 D1 数据库。所有名称、SN、联系人和联系方式均为虚构测试数据。
+-- 所有本地演示账户使用同一个公开测试密码：DemoOnly-ChangeMe-2026。请勿用于共享或生产环境。
+
+UPDATE dealers SET code = 'LOCAL-CHANNEL', name = 'MaxCINE 本地测试经销商' WHERE id = '10000000-0000-4000-8000-000000000001';
 INSERT OR IGNORE INTO dealers (id, code, name) VALUES
-  ('10000000-0000-4000-8000-000000000001', 'DEMO-EAST', 'Demo East Dealer');
+  ('10000000-0000-4000-8000-000000000001', 'LOCAL-CHANNEL', 'MaxCINE 本地测试经销商');
 
+UPDATE users SET name = '本地测试管理员' WHERE id = '20000000-0000-4000-8000-000000000001';
+UPDATE users SET name = '本地测试经销商用户' WHERE id = '20000000-0000-4000-8000-000000000002';
+UPDATE users SET name = '本地测试仓库用户' WHERE id = '20000000-0000-4000-8000-000000000003';
 INSERT OR IGNORE INTO users (id, email, password_hash, name, role, dealer_id) VALUES
-  ('20000000-0000-4000-8000-000000000001', 'admin@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', 'Demo Administrator', 'admin', NULL),
-  ('20000000-0000-4000-8000-000000000002', 'dealer@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', 'Demo Dealer', 'dealer', '10000000-0000-4000-8000-000000000001'),
-  ('20000000-0000-4000-8000-000000000003', 'warehouse@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', 'Demo Warehouse', 'warehouse', NULL);
+  ('20000000-0000-4000-8000-000000000001', 'admin@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '本地测试管理员', 'admin', NULL),
+  ('20000000-0000-4000-8000-000000000002', 'dealer@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '本地测试经销商用户', 'dealer', '10000000-0000-4000-8000-000000000001'),
+  ('20000000-0000-4000-8000-000000000003', 'warehouse@example.test', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '本地测试仓库用户', 'warehouse', NULL);
 
+UPDATE stores SET code = 'LOCAL-DIRECT', name = 'MaxCINE 官方自营店（本地测试）' WHERE id = '30000000-0000-4000-8000-000000000001';
 INSERT OR IGNORE INTO stores (id, dealer_id, code, name) VALUES
-  ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'DEMO-SH', 'Demo Shanghai Store');
+  ('30000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'LOCAL-DIRECT', 'MaxCINE 官方自营店（本地测试）'),
+  ('30000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'LOCAL-SELECT', 'MaxCINE 智选授权专营店（本地测试）'),
+  ('30000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'LOCAL-TIANSHU', '天枢科技授权专营店（本地测试）');
 
-INSERT OR IGNORE INTO products (id, sku, name, description, unit_price_cents) VALUES
-  ('40000000-0000-4000-8000-000000000001', 'MC-REFERENCE-01', 'MaxCINE Reference Display', 'Synthetic local development product.', 0);
+UPDATE products SET sku = 'W101', name = 'MaxCINE MAVIC 4 Pro 增广镜标准套装', description = '适用于 MAVIC 4 Pro 的本地测试产品资料。', specification = '标准套装', unit_price_cents = 89900 WHERE id = '40000000-0000-4000-8000-000000000001';
+INSERT OR IGNORE INTO products (id, sku, name, description, specification, unit_price_cents) VALUES
+  ('40000000-0000-4000-8000-000000000001', 'W101', 'MaxCINE MAVIC 4 Pro 增广镜标准套装', '适用于 MAVIC 4 Pro 的本地测试产品资料。', '标准套装', 89900),
+  ('40000000-0000-4000-8000-000000000002', 'W102', 'MaxCINE MAVIC 4 Pro 增广镜增强套装', '适用于 MAVIC 4 Pro 的本地测试产品资料。', '增强套装', 129900),
+  ('40000000-0000-4000-8000-000000000003', 'W103', 'MaxCINE MAVIC 4 Pro 增广镜创作定制套装', '适用于 MAVIC 4 Pro 的本地测试产品资料。', '创作定制套装', 169900),
+  ('40000000-0000-4000-8000-000000000004', 'W124', 'MaxCINE MAVIC 4 Pro 增广镜外置 ND 滤镜套装', '适用于 MAVIC 4 Pro 的本地测试产品资料。', '外置 ND 滤镜套装', 39900);
 
-INSERT OR IGNORE INTO inventory (id, product_id, quantity, reorder_level) VALUES
-  ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 0, 2);
+INSERT OR IGNORE INTO inventory (id, product_id, reorder_level) VALUES
+  ('50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 6),
+  ('50000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', 6),
+  ('50000000-0000-4000-8000-000000000003', '40000000-0000-4000-8000-000000000003', 3),
+  ('50000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000004', 5);
+
+-- 库存仅通过流水变更；固定 ID 使本地重复播种保持幂等。
+INSERT OR IGNORE INTO inventory_transactions (id, inventory_id, product_id, transaction_type, quantity_delta, note, created_by) VALUES
+  ('51000000-0000-4000-8000-000000000001', '50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 'opening_balance', 20, '本地测试期初库存', '20000000-0000-4000-8000-000000000001'),
+  ('51000000-0000-4000-8000-000000000002', '50000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', 'opening_balance', 8, '本地测试期初库存', '20000000-0000-4000-8000-000000000001'),
+  ('51000000-0000-4000-8000-000000000003', '50000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000004', 'opening_balance', 15, '本地测试期初库存', '20000000-0000-4000-8000-000000000001');
+
+INSERT OR IGNORE INTO orders (id, order_no, dealer_id, store_id, status, note, total_cents, submitted_at, reviewed_at, reviewed_by, created_at, updated_at, created_by, updated_by) VALUES
+  ('60000000-0000-4000-8000-000000000001', 'MC-LOCAL-DRAFT-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'draft', '本地测试草稿订单。', 89900, NULL, NULL, NULL, datetime('now', '-3 days'), datetime('now', '-3 days'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002'),
+  ('60000000-0000-4000-8000-000000000002', 'MC-LOCAL-SUBMIT-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000002', 'submitted', '请尽快安排审核。', 129900, datetime('now', '-2 days'), NULL, NULL, datetime('now', '-2 days'), datetime('now', '-2 days'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002'),
+  ('60000000-0000-4000-8000-000000000003', 'MC-LOCAL-REJECT-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000003', 'rejected', '请确认收货门店与采购数量后重新提交。', 39900, datetime('now', '-5 days'), datetime('now', '-4 days'), '20000000-0000-4000-8000-000000000001', datetime('now', '-5 days'), datetime('now', '-4 days'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001'),
+  ('60000000-0000-4000-8000-000000000004', 'MC-LOCAL-SHIP-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', 'shipped', '本地测试已发货订单。', 89900, datetime('now', '-8 days'), datetime('now', '-7 days'), '20000000-0000-4000-8000-000000000001', datetime('now', '-8 days'), datetime('now', '-1 day'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000003'),
+  ('60000000-0000-4000-8000-000000000005', 'MC-LOCAL-APPROVE-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000002', 'approved', '本地测试待配货订单。', 259800, datetime('now', '-1 day'), datetime('now', '-12 hours'), '20000000-0000-4000-8000-000000000001', datetime('now', '-1 day'), datetime('now', '-12 hours'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001');
+
+INSERT OR IGNORE INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by) VALUES
+  ('61000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 'MaxCINE MAVIC 4 Pro 增广镜标准套装', 'W101', 89900, 1, '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002'),
+  ('61000000-0000-4000-8000-000000000002', '60000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', 'MaxCINE MAVIC 4 Pro 增广镜增强套装', 'W102', 129900, 1, '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002'),
+  ('61000000-0000-4000-8000-000000000003', '60000000-0000-4000-8000-000000000003', '40000000-0000-4000-8000-000000000004', 'MaxCINE MAVIC 4 Pro 增广镜外置 ND 滤镜套装', 'W124', 39900, 1, '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000002'),
+  ('61000000-0000-4000-8000-000000000004', '60000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000001', 'MaxCINE MAVIC 4 Pro 增广镜标准套装', 'W101', 89900, 1, '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000003'),
+  ('61000000-0000-4000-8000-000000000005', '60000000-0000-4000-8000-000000000005', '40000000-0000-4000-8000-000000000002', 'MaxCINE MAVIC 4 Pro 增广镜增强套装', 'W102', 129900, 2, '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001');
+
+INSERT OR IGNORE INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, note, created_by) VALUES
+  ('51000000-0000-4000-8000-000000000004', '50000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000004', 'order_reserved', -1, '本地测试历史发货订单', '20000000-0000-4000-8000-000000000001'),
+  ('51000000-0000-4000-8000-000000000005', '50000000-0000-4000-8000-000000000002', '40000000-0000-4000-8000-000000000002', '60000000-0000-4000-8000-000000000005', 'order_reserved', -2, '本地测试待配货订单', '20000000-0000-4000-8000-000000000001');
+
+INSERT OR IGNORE INTO shipments (id, order_id, tracking_number, status, shipped_at, created_at, updated_at, created_by, updated_by) VALUES
+  ('80000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000004', 'SF-LOCAL-202607-001', 'shipped', datetime('now', '-1 day'), datetime('now', '-1 day'), datetime('now', '-1 day'), '20000000-0000-4000-8000-000000000003', '20000000-0000-4000-8000-000000000003');
+
+INSERT OR IGNORE INTO serial_numbers (id, product_id, serial_number, state, order_item_id, shipment_id, bound_at, created_by, updated_by) VALUES
+  ('70000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000001', 'LOCAL-W101-0001', 'shipped', '61000000-0000-4000-8000-000000000004', '80000000-0000-4000-8000-000000000001', datetime('now', '-1 day'), '20000000-0000-4000-8000-000000000003', '20000000-0000-4000-8000-000000000003');
+
+INSERT OR IGNORE INTO notifications (id, dealer_id, type, title, body, link, created_at) VALUES
+  ('90000000-0000-4000-8000-000000000001', '10000000-0000-4000-8000-000000000001', 'order_rejected', '订单审核未通过', 'MC-LOCAL-REJECT-001 未通过审核，请修改后重新提交。', '/system/orders/60000000-0000-4000-8000-000000000003', datetime('now', '-4 days')),
+  ('90000000-0000-4000-8000-000000000002', '10000000-0000-4000-8000-000000000001', 'order_shipped', '订单已发货', 'MC-LOCAL-SHIP-001 已发货，可查看物流信息。', '/system/orders/60000000-0000-4000-8000-000000000004', datetime('now', '-1 day')),
+  ('90000000-0000-4000-8000-000000000003', '10000000-0000-4000-8000-000000000001', 'inventory_alert', '库存提醒', 'W103 暂时缺货，暂不支持下单。', '/system/inventory', datetime('now', '-2 hours'));
+
+INSERT OR IGNORE INTO after_sales_cases (id, case_no, dealer_id, store_id, order_id, product_id, serial_number, case_type, subject, description, contact_name, contact_phone, status, created_at, updated_at, created_by, updated_by) VALUES
+  ('a0000000-0000-4000-8000-000000000001', 'AS-LOCAL-001', '10000000-0000-4000-8000-000000000001', '30000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000004', '40000000-0000-4000-8000-000000000001', 'LOCAL-W101-0001', '产品异常', '本地测试售后申请', '用于演示售后工单列表和详情，不包含真实客户或设备资料。', '本地测试联系人', '00000000000', 'in_progress', datetime('now', '-6 hours'), datetime('now', '-2 hours'), '20000000-0000-4000-8000-000000000002', '20000000-0000-4000-8000-000000000001');

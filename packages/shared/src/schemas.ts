@@ -7,8 +7,11 @@ export const loginSchema = z.object({
 
 export const createOrderSchema = z.object({
   storeId: z.string().uuid(),
-  items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(999) })).min(1).max(100)
+  items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(999) })).min(1).max(100),
+  note: z.string().trim().max(500).default('')
 });
+
+export const updateOrderSchema = createOrderSchema;
 
 export const reviewOrderSchema = z.object({
   approved: z.boolean(),
@@ -25,9 +28,15 @@ export const shipmentSchema = z.object({
 });
 
 export const createAfterSalesSchema = z.object({
-  orderId: z.string().uuid().optional(),
+  storeId: z.string().uuid(),
+  orderId: z.string().uuid().optional().nullable(),
+  productId: z.string().uuid().optional().nullable(),
+  serialNumber: z.string().trim().max(100).optional().nullable(),
+  caseType: z.enum(['产品异常', '安装使用', '物流问题', '配件缺失', '其他问题']),
   subject: z.string().trim().min(3).max(160),
-  description: z.string().trim().min(10).max(5000)
+  description: z.string().trim().min(10).max(5000),
+  contactName: z.string().trim().min(2).max(80),
+  contactPhone: z.string().trim().min(6).max(32)
 });
 
 export const createProductSchema = z.object({

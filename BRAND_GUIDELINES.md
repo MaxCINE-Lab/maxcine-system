@@ -6,7 +6,7 @@
 
 ## Logo
 
-官方源图来自项目提供的黑底白字红色竖线 Logo。原始副本位于 `apps/web/public/assets/maxcine-logo-dark.jpg`；裁切后的横向展示版本为 `maxcine-logo-lockup.jpg`。
+官方源图来自项目提供的黑底白字红色竖线 Logo。JPG 源图位于 `apps/web/public/assets/maxcine-logo-dark.jpg`；裁切后的横向展示版本为 `maxcine-logo-lockup.jpg`。业务系统另外使用用户提供、未修改图形的透明 PNG：`maxcine-logo-on-dark.png`（深色背景）与 `maxcine-logo-on-light.png`（浅色背景）。
 
 - **深色背景：** 可直接使用官方黑底 Logo。
 - **浅色背景：** 使用带黑色底板/容器的官方 Logo，不反相 Logo，以保证红色竖线仍为品牌红。

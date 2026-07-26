@@ -2,6 +2,7 @@ import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
 import type { Role, SessionUser } from '@maxcine/shared';
 import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } from './api';
 import { BrowserBarcodeScanner } from './scanner';
+import { DealerPortal } from './DealerPortal';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -98,17 +99,17 @@ function SystemShell({ user, children, title, subtitle }: { user: SessionUser; c
 }
 
 function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
-  const [email, setEmail] = useState('dealer@example.test');
-  const [password, setPassword] = useState('DemoOnly-ChangeMe-2026');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
   const [message, setMessage] = useState<Toast>(null);
   const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setMessage(null);
     try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = '#/system/dashboard'; }
-    catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录。请检查 API 服务。' }); }
+    catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
-  return <div className="login-page"><a href="#/"><Logo /></a><form className="login-card" onSubmit={submit}><span className="eyebrow">业务系统</span><h1>登录</h1><p>使用受授权的 MaxCINE 账户继续。</p><label>邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在验证…' : '登录'}</Button><small>本地演示账户仅适用于已隔离的开发数据库。</small></form></div>;
+  return <div className="login-page"><a href="#/"><Logo /></a><form className="login-card" onSubmit={submit}><span className="eyebrow">业务系统</span><h1>登录</h1><p>请输入已授权的 MaxCINE 账户信息。</p><label>邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
 }
 
 function Dashboard({ user }: { user: SessionUser }) {
@@ -183,6 +184,7 @@ function AppRouter({ route, user, onLogin }: { route: string; user: SessionUser 
   if (route === '/terms') return <Legal type="terms" />;
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
+  if (user.role === 'dealer' && route.startsWith('/system')) return <DealerPortal user={user} route={route} />;
   if (route === '/system/dashboard') return <Dashboard user={user} />;
   if (route === '/system/inventory') return <Inventory user={user} />;
   if (route === '/system/new-order') return <NewOrder user={user} />;

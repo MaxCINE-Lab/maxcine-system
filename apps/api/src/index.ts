@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, badRequest, can, canReadOrder, canTransitionOrder, conflict, createAfterSalesSchema,
-  createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema,
+  createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateOrderSchema,
   type ApiErrorBody, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { MockEmailAdapter, emailTemplate } from './email';
@@ -11,7 +11,7 @@ import { createSessionToken, hashIdentifier, hashPassword, requireAuth, verifyPa
 import type { Env, Variables } from './types';
 
 type App = { Bindings: Env; Variables: Variables };
-type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; createdAt: string; submittedAt: string | null; reviewedAt: string | null };
+type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
 type OrderItemRow = { id: string; productId: string; name: string; sku: string; quantity: number; unitPriceCents: number };
 type DbUser = SessionUser & { passwordHash: string; isActive: number };
 
@@ -33,6 +33,20 @@ function zodDetails(error: ZodError): Record<string, string[]> {
   }, {});
 }
 
+function pageValue(value: string | undefined, fallback = 1): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 10000) : fallback;
+}
+
+function limitValue(value: string | undefined, fallback = 20): number {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : fallback;
+}
+
+function statusLabel(status: string): string {
+  return ({ draft: '草稿', submitted: '待审核', approved: '审核通过', rejected: '审核未通过', picking: '配货中', packed: '已打包', shipped: '已发货', delivered: '已签收', cancelled: '已取消' } as Record<string, string>)[status] ?? status;
+}
+
 function assertPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, permission)) throw forbidden();
 }
@@ -52,22 +66,22 @@ async function parseBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> 
   try {
     value = await request.json();
   } catch {
-    throw badRequest('Request body must be valid JSON');
+    throw badRequest('提交内容格式有误，请检查后重试');
   }
   const parsed = schema.safeParse(value);
-  if (!parsed.success) throw badRequest('Some fields are invalid', zodDetails(parsed.error));
+  if (!parsed.success) throw badRequest('请检查填写内容', zodDetails(parsed.error));
   return parsed.data;
 }
 
 async function getOrder(db: D1Database, orderId: string): Promise<OrderRow> {
   const order = await one<OrderRow>(db, `SELECT id, order_no AS orderNo, dealer_id AS dealerId, store_id AS storeId, status, total_cents AS totalCents, note,
-    created_at AS createdAt, submitted_at AS submittedAt, reviewed_at AS reviewedAt FROM orders WHERE id = ?`, orderId);
-  if (!order) throw notFound('Order not found');
+    created_at AS createdAt, updated_at AS updatedAt, submitted_at AS submittedAt, reviewed_at AS reviewedAt FROM orders WHERE id = ?`, orderId);
+  if (!order) throw notFound('未找到该订单');
   return order;
 }
 
 function assertOrderAccess(user: SessionUser, order: OrderRow): void {
-  if (!canReadOrder(user, order)) throw forbidden('You cannot access this order');
+  if (!canReadOrder(user, order)) throw forbidden('你无权查看该订单');
 }
 
 app.use('*', async (c, next) => {
@@ -82,16 +96,16 @@ app.use('*', async (c, next) => {
     c.header('Access-Control-Allow-Credentials', 'true');
     c.header('Vary', 'Origin');
   }
-  if (c.req.method === 'OPTIONS') return c.body(null, 204, { 'Access-Control-Allow-Methods': 'GET,POST,PATCH,OPTIONS', 'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Request-ID' });
-  if (unsafeMethods.has(c.req.method) && origin && origin !== c.env.APP_ORIGIN) throw forbidden('Cross-origin write requests are not allowed');
+  if (c.req.method === 'OPTIONS') return c.body(null, 204, { 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Request-ID' });
+  if (unsafeMethods.has(c.req.method) && origin && origin !== c.env.APP_ORIGIN) throw forbidden('当前请求来源无权限提交数据');
   await next();
 });
 
 app.onError((error, c) => {
   if (error instanceof AppError) return errorResponse(c, error);
-  if (error instanceof ZodError) return errorResponse(c, badRequest('Some fields are invalid', zodDetails(error)));
+  if (error instanceof ZodError) return errorResponse(c, badRequest('请检查填写内容', zodDetails(error)));
   console.error(JSON.stringify({ requestId: c.get('requestId'), error: error instanceof Error ? error.message : 'Unknown error' }));
-  return errorResponse(c, new AppError(500, 'INTERNAL_ERROR', 'An unexpected error occurred'));
+  return errorResponse(c, new AppError(500, 'INTERNAL_ERROR', '系统繁忙，请稍后再试'));
 });
 
 app.get('/health', (c) => c.json({ ok: true, service: 'maxcine-api', requestId: c.get('requestId') }));
@@ -101,11 +115,11 @@ app.post('/auth/login', async (c) => {
   const identifierHash = await hashIdentifier(input.email);
   const attempts = await one<{ count: number }>(c.env.DB,
     `SELECT COUNT(*) AS count FROM login_attempts WHERE identifier_hash = ? AND succeeded = 0 AND attempted_at > datetime('now', '-15 minutes')`, identifierHash);
-  if ((attempts?.count ?? 0) >= 8) throw new AppError(429, 'RATE_LIMITED', 'Too many login attempts. Try again in 15 minutes.');
+  if ((attempts?.count ?? 0) >= 8) throw new AppError(429, 'RATE_LIMITED', '尝试次数过多，请 15 分钟后再试');
   const user = await one<DbUser>(c.env.DB, `SELECT id, email, password_hash AS passwordHash, name, role, dealer_id AS dealerId, is_active AS isActive FROM users WHERE email = ?`, input.email);
   const valid = Boolean(user?.isActive && user && await verifyPassword(input.password, user.passwordHash));
   await c.env.DB.prepare('INSERT INTO login_attempts (id, identifier_hash, succeeded) VALUES (?, ?, ?)').bind(id(), identifierHash, valid ? 1 : 0).run();
-  if (!valid || !user) throw new AppError(401, 'INVALID_CREDENTIALS', 'Email or password is incorrect');
+  if (!valid || !user) throw new AppError(401, 'INVALID_CREDENTIALS', '账号或密码不正确');
   const sessionUser: SessionUser = { id: user.id, email: user.email, name: user.name, role: user.role, dealerId: user.dealerId };
   const token = await createSessionToken(sessionUser, c.env.SESSION_SECRET);
   await c.env.DB.batch([
@@ -124,34 +138,81 @@ app.post('/auth/logout', requireAuth, (c) => {
 
 app.get('/me', requireAuth, (c) => c.json({ user: c.get('user') }));
 
+app.get('/stores', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'dealer' || !user.dealerId) throw forbidden('仅经销商账户可以查看授权店铺');
+  const stores = await all<{ id: string; code: string; name: string }>(c.env.DB,
+    `SELECT id, code, name FROM stores WHERE dealer_id = ? AND status = 'active' ORDER BY name`, user.dealerId);
+  return c.json({ stores });
+});
+
 app.get('/inventory', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'inventory:read');
-  const items = await all<{ id: string; sku: string; name: string; quantity: number; reorderLevel: number }>(c.env.DB,
-    `SELECT inventory.id, products.sku, products.name, inventory.quantity, inventory.reorder_level AS reorderLevel
-     FROM inventory JOIN products ON products.id = inventory.product_id WHERE products.is_active = 1 ORDER BY products.sku`);
+  const search = new URL(c.req.url).searchParams.get('search')?.trim() ?? '';
+  const items = await all<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
+    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
+      products.unit_price_cents AS unitPriceCents, inventory.quantity AS availableQuantity, inventory.reorder_level AS reorderLevel,
+      inventory.updated_at AS updatedAt,
+      COALESCE((SELECT SUM(order_items.quantity) FROM order_items JOIN orders ON orders.id = order_items.order_id
+        WHERE order_items.product_id = products.id AND orders.status IN ('approved','picking','packed')), 0) AS reservedQuantity
+     FROM inventory JOIN products ON products.id = inventory.product_id
+     WHERE products.is_active = 1 AND (? = '' OR products.name LIKE '%' || ? || '%' OR products.sku LIKE '%' || ? || '%')
+     ORDER BY products.sku`, search, search, search);
   return c.json({ items });
+});
+
+app.get('/inventory/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'inventory:read');
+  const item = await one<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
+    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
+      products.unit_price_cents AS unitPriceCents, inventory.quantity AS availableQuantity, inventory.reorder_level AS reorderLevel,
+      inventory.updated_at AS updatedAt,
+      COALESCE((SELECT SUM(order_items.quantity) FROM order_items JOIN orders ON orders.id = order_items.order_id
+        WHERE order_items.product_id = products.id AND orders.status IN ('approved','picking','packed')), 0) AS reservedQuantity
+     FROM inventory JOIN products ON products.id = inventory.product_id WHERE inventory.id = ?`, c.req.param('id'));
+  if (!item) throw notFound('未找到该产品库存');
+  return c.json({ item });
+});
+
+app.get('/dealer/dashboard', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (user.role !== 'dealer' || !user.dealerId) throw forbidden('仅经销商账户可以查看此页面');
+  const [draft, submitted, inventoryAlert, notifications] = await Promise.all([
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders WHERE dealer_id = ? AND status = 'draft'`, user.dealerId),
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders WHERE dealer_id = ? AND status = 'submitted'`, user.dealerId),
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM inventory WHERE quantity <= reorder_level`),
+    all<{ id: string; title: string; body: string; type: string; link: string | null; createdAt: string; readAt: string | null }>(c.env.DB,
+      `SELECT id, title, body, type, link, created_at AS createdAt, read_at AS readAt FROM notifications
+       WHERE dealer_id = ? OR user_id = ? ORDER BY created_at DESC LIMIT 6`, user.dealerId, user.id)
+  ]);
+  return c.json({
+    summary: { draftOrders: draft?.count ?? 0, submittedOrders: submitted?.count ?? 0, inventoryAlerts: inventoryAlert?.count ?? 0 },
+    notifications
+  });
 });
 
 app.post('/orders', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'order:create');
   const input = await parseBody(c.req.raw, createOrderSchema);
-  if (user.role !== 'dealer' || !user.dealerId) throw forbidden('Orders must be created from a dealer account');
+  if (user.role !== 'dealer' || !user.dealerId) throw forbidden('仅经销商账户可以创建订单');
   const store = await one<{ id: string }>(c.env.DB, 'SELECT id FROM stores WHERE id = ? AND dealer_id = ? AND status = \'active\'', input.storeId, user.dealerId);
-  if (!store) throw forbidden('This store is not available to your dealer');
-  if (new Set(input.items.map((item) => item.productId)).size !== input.items.length) throw badRequest('Each product can appear only once in an order');
+  if (!store) throw forbidden('该店铺不在你的授权范围内');
+  if (new Set(input.items.map((item) => item.productId)).size !== input.items.length) throw badRequest('同一产品只能添加一次');
   const productIds = input.items.map((item) => item.productId);
   const placeholders = productIds.map(() => '?').join(',');
-  const products = await all<{ id: string; sku: string; name: string; price: number }>(c.env.DB,
-    `SELECT id, sku, name, unit_price_cents AS price FROM products WHERE is_active = 1 AND id IN (${placeholders})`, ...productIds);
-  if (products.length !== input.items.length) throw badRequest('One or more products are unavailable');
+  const products = await all<{ id: string; sku: string; name: string; price: number; availableQuantity: number }>(c.env.DB,
+    `SELECT products.id, products.sku, products.name, products.unit_price_cents AS price, inventory.quantity AS availableQuantity
+     FROM products JOIN inventory ON inventory.product_id = products.id WHERE products.is_active = 1 AND products.id IN (${placeholders})`, ...productIds);
+  if (products.length !== input.items.length) throw badRequest('部分产品暂不可订购');
   const productsById = new Map(products.map((product) => [product.id, product]));
   const orderId = id();
   const lines = input.items.map((item) => ({ ...item, product: productsById.get(item.productId)! }));
+  if (lines.some((line) => line.quantity > line.product.availableQuantity)) throw conflict('订购数量不能超过当前可用库存');
   const total = lines.reduce((sum, line) => sum + line.quantity * line.product.price, 0);
   const statements: D1PreparedStatement[] = [
-    c.env.DB.prepare(`INSERT INTO orders (id, order_no, dealer_id, store_id, total_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .bind(orderId, orderNo(), user.dealerId, input.storeId, total, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO orders (id, order_no, dealer_id, store_id, note, total_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(orderId, orderNo(), user.dealerId, input.storeId, input.note, total, user.id, user.id),
     ...lines.map((line) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), orderId, line.productId, line.product.name, line.product.sku, line.product.price, line.quantity, user.id, user.id)),
     dbAudit(c.env.DB, { actorId: user.id, action: 'order.create', entityType: 'order', entityId: orderId, requestId: c.get('requestId'), after: { status: 'draft' } })
@@ -160,27 +221,120 @@ app.post('/orders', requireAuth, async (c) => {
   return c.json({ id: orderId, status: 'draft' }, 201);
 });
 
+app.put('/orders/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:create');
+  const input = await parseBody(c.req.raw, updateOrderSchema);
+  const order = await getOrder(c.env.DB, c.req.param('id'));
+  assertOrderAccess(user, order);
+  if (user.role !== 'dealer' || !user.dealerId || order.status !== 'draft') throw conflict('只有草稿订单可以编辑');
+  const store = await one<{ id: string }>(c.env.DB, 'SELECT id FROM stores WHERE id = ? AND dealer_id = ? AND status = \'active\'', input.storeId, user.dealerId);
+  if (!store) throw forbidden('该店铺不在你的授权范围内');
+  if (new Set(input.items.map((item) => item.productId)).size !== input.items.length) throw badRequest('同一产品只能添加一次');
+  const productIds = input.items.map((item) => item.productId);
+  const products = await all<{ id: string; sku: string; name: string; price: number; availableQuantity: number }>(c.env.DB,
+    `SELECT products.id, products.sku, products.name, products.unit_price_cents AS price, inventory.quantity AS availableQuantity
+     FROM products JOIN inventory ON inventory.product_id = products.id WHERE products.is_active = 1 AND products.id IN (${productIds.map(() => '?').join(',')})`, ...productIds);
+  if (products.length !== input.items.length) throw badRequest('部分产品暂不可订购');
+  const productsById = new Map(products.map((product) => [product.id, product]));
+  const lines = input.items.map((item) => ({ ...item, product: productsById.get(item.productId)! }));
+  if (lines.some((line) => line.quantity > line.product.availableQuantity)) throw conflict('订购数量不能超过当前可用库存');
+  const total = lines.reduce((sum, line) => sum + line.quantity * line.product.price, 0);
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(order.id),
+    c.env.DB.prepare(`UPDATE orders SET store_id = ?, note = ?, total_cents = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`)
+      .bind(input.storeId, input.note, total, user.id, order.id),
+    ...lines.map((line) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), order.id, line.productId, line.product.name, line.product.sku, line.product.price, line.quantity, user.id, user.id)),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'order.update', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { totalCents: order.totalCents }, after: { totalCents: total, status: 'draft' } })
+  ]);
+  return c.json({ id: order.id, status: 'draft' });
+});
+
+app.delete('/orders/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:create');
+  const order = await getOrder(c.env.DB, c.req.param('id'));
+  assertOrderAccess(user, order);
+  if (user.role !== 'dealer' || order.status !== 'draft') throw conflict('只有草稿订单可以删除');
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM orders WHERE id = ? AND status = \'draft\'').bind(order.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'order.delete_draft', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'draft', orderNo: order.orderNo } })
+  ]);
+  return c.body(null, 204);
+});
+
+app.post('/orders/:id/copy', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:create');
+  const source = await getOrder(c.env.DB, c.req.param('id'));
+  assertOrderAccess(user, source);
+  if (user.role !== 'dealer' || !user.dealerId || source.status !== 'rejected') throw conflict('仅审核未通过的订单可以复制');
+  const items = await all<{ productId: string; quantity: number; sku: string; name: string; price: number; availableQuantity: number }>(c.env.DB,
+    `SELECT order_items.product_id AS productId, order_items.quantity, products.sku, products.name, products.unit_price_cents AS price, inventory.quantity AS availableQuantity
+      FROM order_items JOIN products ON products.id = order_items.product_id JOIN inventory ON inventory.product_id = products.id WHERE order_items.order_id = ? AND products.is_active = 1`, source.id);
+  if (!items.length || items.some((item) => item.quantity > item.availableQuantity)) throw conflict('原订单中有产品暂时无法复制，请重新选择产品');
+  const copiedId = id();
+  const total = items.reduce((sum, item) => sum + item.quantity * item.price, 0);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO orders (id, order_no, dealer_id, store_id, note, total_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(copiedId, orderNo(), user.dealerId, source.storeId, '', total, user.id, user.id),
+    ...items.map((item) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), copiedId, item.productId, item.name, item.sku, item.price, item.quantity, user.id, user.id)),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'order.copy', entityType: 'order', entityId: copiedId, requestId: c.get('requestId'), after: { sourceOrderId: source.id, status: 'draft' } })
+  ]);
+  return c.json({ id: copiedId, status: 'draft' }, 201);
+});
+
 app.get('/orders', requireAuth, async (c) => {
   const user = c.get('user');
-  let sql = `SELECT id, order_no AS orderNo, dealer_id AS dealerId, store_id AS storeId, status, total_cents AS totalCents, note, created_at AS createdAt, submitted_at AS submittedAt, reviewed_at AS reviewedAt FROM orders`;
-  const params: string[] = [];
-  if (user.role === 'dealer') { sql += ' WHERE dealer_id = ?'; params.push(user.dealerId ?? ''); }
-  if (user.role === 'warehouse') sql += ` WHERE status IN ('approved','picking','packed','shipped','delivered')`;
-  sql += ' ORDER BY created_at DESC LIMIT 100';
-  return c.json({ orders: await all<OrderRow>(c.env.DB, sql, ...params) });
+  const url = new URL(c.req.url);
+  const status = url.searchParams.get('status')?.trim();
+  const search = url.searchParams.get('search')?.trim() ?? '';
+  const storeId = url.searchParams.get('storeId')?.trim();
+  const from = url.searchParams.get('from')?.trim();
+  const to = url.searchParams.get('to')?.trim();
+  const page = pageValue(url.searchParams.get('page') ?? undefined);
+  const limit = limitValue(url.searchParams.get('limit') ?? undefined);
+  const where: string[] = [];
+  const params: unknown[] = [];
+  if (user.role === 'dealer') { where.push('orders.dealer_id = ?'); params.push(user.dealerId ?? ''); }
+  if (user.role === 'warehouse') where.push(`orders.status IN ('approved','picking','packed','shipped','delivered')`);
+  if (status && ['draft', 'submitted', 'approved', 'rejected', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'].includes(status)) { where.push('orders.status = ?'); params.push(status); }
+  if (search) { where.push('orders.order_no LIKE ?'); params.push(`%${search}%`); }
+  if (storeId) { where.push('orders.store_id = ?'); params.push(storeId); }
+  if (from) { where.push('orders.created_at >= ?'); params.push(`${from} 00:00:00`); }
+  if (to) { where.push('orders.created_at <= ?'); params.push(`${to} 23:59:59`); }
+  const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
+  const count = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders${clause}`, ...params);
+  const orders = await all<OrderRow & { storeName: string; itemCount: number }>(c.env.DB,
+    `SELECT orders.id, orders.order_no AS orderNo, orders.dealer_id AS dealerId, orders.store_id AS storeId, orders.status, orders.total_cents AS totalCents, orders.note,
+      orders.created_at AS createdAt, orders.updated_at AS updatedAt, orders.submitted_at AS submittedAt, orders.reviewed_at AS reviewedAt, stores.name AS storeName,
+      COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) AS itemCount
+     FROM orders JOIN stores ON stores.id = orders.store_id${clause} ORDER BY orders.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit);
+  return c.json({ orders, pagination: { page, limit, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
 });
 
 app.get('/orders/:id', requireAuth, async (c) => {
   const user = c.get('user');
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  const [items, shipment] = await Promise.all([
+  const [items, shipment, overview] = await Promise.all([
     all<OrderItemRow>(c.env.DB, `SELECT id, product_id AS productId, product_name_snapshot AS name, sku_snapshot AS sku, quantity, unit_price_cents AS unitPriceCents FROM order_items WHERE order_id = ?`, order.id),
-    one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, tracking_number AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id)
+    one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, tracking_number AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id),
+    one<{ storeName: string; createdByName: string; reviewedByName: string | null }>(c.env.DB, `SELECT stores.name AS storeName, creator.name AS createdByName, reviewer.name AS reviewedByName
+      FROM orders JOIN stores ON stores.id = orders.store_id JOIN users AS creator ON creator.id = orders.created_by
+      LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id)
   ]);
   const serials = await all<{ id: string; productId: string; serialNumber: string; state: string; orderItemId: string }>(c.env.DB,
     `SELECT id, product_id AS productId, serial_number AS serialNumber, state, order_item_id AS orderItemId FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`, order.id);
-  return c.json({ order, items, serials, shipment });
+  const timeline = [
+    { label: '创建订单', at: order.createdAt },
+    ...(order.submittedAt ? [{ label: '提交审核', at: order.submittedAt }] : []),
+    ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
+    ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
+  ];
+  return c.json({ order: { ...order, ...overview }, items, serials, shipment, timeline });
 });
 
 app.post('/orders/:id/submit', requireAuth, async (c) => {
@@ -188,7 +342,10 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   assertPermission(user, 'order:submit');
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  if (!canTransitionOrder(user.role, order.status, 'submitted')) throw conflict('This order cannot be submitted in its current state');
+  if (!canTransitionOrder(user.role, order.status, 'submitted')) throw conflict('该订单暂时不能提交审核');
+  const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
+    JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
+  if ((unavailable?.count ?? 0) > 0) throw conflict('订单中有产品库存不足，请修改后再提交');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`).bind(user.id, order.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'order.submit', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'draft' }, after: { status: 'submitted' } })
@@ -311,23 +468,60 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
 
 app.get('/notifications', requireAuth, async (c) => {
   const user = c.get('user');
-  const notifications = user.role === 'dealer' && user.dealerId
-    ? await all(c.env.DB, `SELECT id, type, title, body, link, read_at AS readAt, created_at AS createdAt FROM notifications WHERE dealer_id = ? OR user_id = ? ORDER BY created_at DESC LIMIT 100`, user.dealerId, user.id)
-    : await all(c.env.DB, `SELECT id, type, title, body, link, read_at AS readAt, created_at AS createdAt FROM notifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 100`, user.id);
-  return c.json({ notifications });
+  const url = new URL(c.req.url);
+  const page = pageValue(url.searchParams.get('page') ?? undefined);
+  const limit = limitValue(url.searchParams.get('limit') ?? undefined);
+  const scopeSql = user.role === 'dealer' && user.dealerId ? '(dealer_id = ? OR user_id = ?)' : 'user_id = ?';
+  const scopeParams: string[] = user.role === 'dealer' && user.dealerId ? [user.dealerId, user.id] : [user.id];
+  const [notifications, unread] = await Promise.all([
+    all(c.env.DB, `SELECT id, type, title, body, link, read_at AS readAt, created_at AS createdAt FROM notifications WHERE ${scopeSql} ORDER BY created_at DESC LIMIT ? OFFSET ?`, ...scopeParams, limit, (page - 1) * limit),
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM notifications WHERE ${scopeSql} AND read_at IS NULL`, ...scopeParams)
+  ]);
+  return c.json({ notifications, unreadCount: unread?.count ?? 0 });
+});
+
+app.patch('/notifications/:id/read', requireAuth, async (c) => {
+  const user = c.get('user');
+  const notification = await one<{ id: string }>(c.env.DB,
+    user.role === 'dealer' && user.dealerId
+      ? 'SELECT id FROM notifications WHERE id = ? AND (dealer_id = ? OR user_id = ?)' : 'SELECT id FROM notifications WHERE id = ? AND user_id = ?',
+    ...(user.role === 'dealer' && user.dealerId ? [c.req.param('id'), user.dealerId, user.id] : [c.req.param('id'), user.id]));
+  if (!notification) throw notFound('未找到该通知');
+  await c.env.DB.prepare('UPDATE notifications SET read_at = COALESCE(read_at, CURRENT_TIMESTAMP) WHERE id = ?').bind(notification.id).run();
+  return c.json({ id: notification.id, read: true });
+});
+
+app.post('/notifications/read-all', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (user.role === 'dealer' && user.dealerId) {
+    await c.env.DB.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL AND (dealer_id = ? OR user_id = ?)').bind(user.dealerId, user.id).run();
+  } else {
+    await c.env.DB.prepare('UPDATE notifications SET read_at = CURRENT_TIMESTAMP WHERE read_at IS NULL AND user_id = ?').bind(user.id).run();
+  }
+  return c.json({ read: true });
 });
 
 app.post('/after-sales', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:create');
   const input = await parseBody(c.req.raw, createAfterSalesSchema);
-  if (!user.dealerId) throw forbidden('A dealer relationship is required to create an after-sales case');
-  if (input.orderId) assertOrderAccess(user, await getOrder(c.env.DB, input.orderId));
+  if (user.role !== 'dealer' || !user.dealerId) throw forbidden('仅经销商账户可以提交售后申请');
+  const store = await one<{ id: string }>(c.env.DB, 'SELECT id FROM stores WHERE id = ? AND dealer_id = ? AND status = \'active\'', input.storeId, user.dealerId);
+  if (!store) throw forbidden('该店铺不在你的授权范围内');
+  if (input.orderId) {
+    const order = await getOrder(c.env.DB, input.orderId);
+    assertOrderAccess(user, order);
+    if (input.productId) {
+      const item = await one<{ id: string }>(c.env.DB, 'SELECT id FROM order_items WHERE order_id = ? AND product_id = ?', order.id, input.productId);
+      if (!item) throw badRequest('所选产品不在关联订单中');
+    }
+  }
   const caseId = id();
   const reference = caseNo();
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO after_sales_cases (id, case_no, dealer_id, order_id, subject, description, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(caseId, reference, user.dealerId, input.orderId ?? null, input.subject, input.description, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_cases (id, case_no, dealer_id, store_id, order_id, product_id, serial_number, case_type, subject, description, contact_name, contact_phone, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(caseId, reference, user.dealerId, input.storeId, input.orderId ?? null, input.productId ?? null, input.serialNumber ?? null, input.caseType, input.subject, input.description, input.contactName, input.contactPhone, user.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.create', entityType: 'after_sales_case', entityId: caseId, requestId: c.get('requestId') })
   ]);
   const email = emailTemplate('after_sales_created', { reference, logoUrl: `${c.env.APP_ORIGIN}/assets/maxcine-logo-dark.jpg` });
@@ -338,19 +532,22 @@ app.post('/after-sales', requireAuth, async (c) => {
 app.get('/after-sales', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
+  const page = pageValue(new URL(c.req.url).searchParams.get('page') ?? undefined);
+  const limit = limitValue(new URL(c.req.url).searchParams.get('limit') ?? undefined);
   const cases = user.role === 'admin'
-    ? await all(c.env.DB, `SELECT id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, subject, status, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases ORDER BY created_at DESC LIMIT 100`)
-    : await all(c.env.DB, `SELECT id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, subject, status, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases WHERE dealer_id = ? ORDER BY created_at DESC LIMIT 100`, user.dealerId ?? '');
+    ? await all(c.env.DB, `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, status, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt FROM after_sales_cases LEFT JOIN products ON products.id = after_sales_cases.product_id ORDER BY after_sales_cases.created_at DESC LIMIT ? OFFSET ?`, limit, (page - 1) * limit)
+    : await all(c.env.DB, `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, status, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt FROM after_sales_cases LEFT JOIN products ON products.id = after_sales_cases.product_id WHERE dealer_id = ? ORDER BY after_sales_cases.created_at DESC LIMIT ? OFFSET ?`, user.dealerId ?? '', limit, (page - 1) * limit);
   return c.json({ cases });
 });
 
 app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
-  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; orderId: string | null; subject: string; description: string; status: string; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, subject, description, status, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases WHERE id = ?`, c.req.param('id'));
-  if (!serviceCase) throw notFound('After-sales case not found');
-  if (user.role === 'dealer' && user.dealerId !== serviceCase.dealerId) throw forbidden('You cannot access this after-sales case');
+  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; storeId: string | null; storeName: string | null; orderId: string | null; productId: string | null; productName: string | null; serialNumber: string | null; caseType: string; subject: string; description: string; contactName: string | null; contactPhone: string | null; status: string; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, store_id AS storeId, stores.name AS storeName, order_id AS orderId, product_id AS productId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, description, contact_name AS contactName, contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
+     FROM after_sales_cases LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id WHERE after_sales_cases.id = ?`, c.req.param('id'));
+  if (!serviceCase) throw notFound('未找到该售后工单');
+  if (user.role === 'dealer' && user.dealerId !== serviceCase.dealerId) throw forbidden('你无权查看该售后工单');
   return c.json({ case: serviceCase });
 });
 
