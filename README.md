@@ -35,6 +35,8 @@ npm run dev
 
 Web 默认位于 `http://localhost:5173`，Worker 本地端口由 Wrangler 输出。Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库：`admin@example.test`、`dealer@example.test` 或 `warehouse@example.test`，密码均为 `DemoOnly-ChangeMe-2026`。绝不可在共享环境或生产环境应用该种子数据。
 
+本地浏览器始终访问 `http://localhost:5173`，不要直接在页面中使用 Worker 的 `8787` 端口；开发代理会去除 `/api` 前缀并转发请求。登录密码最少 8 位；真实账户与密码不得加入本地种子数据。
+
 ## 环境变量
 
 仅将本地值写入 `apps/api/.dev.vars`，不要提交该文件。
