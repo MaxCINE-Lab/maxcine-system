@@ -6,7 +6,7 @@
 Browser → Cloudflare Pages (apps/web) → /api → Cloudflare Worker (apps/api)
                                                   ├─ D1: transactional business data
                                                   ├─ R2: approved public/download assets
-                                                  └─ EmailAdapter: mock now; Resend/SES later
+                                                  └─ Email delivery: disabled for this local-only release
 ```
 
 前端只负责呈现和体验；所有业务权限在 Worker 中再次验证。共享的类型、Zod 输入校验和权限策略位于 `packages/shared`，避免前后端的角色、状态枚举漂移。
@@ -37,4 +37,4 @@ draft / approved → cancelled (admin flow only)
 
 ## 邮件设计
 
-`EmailAdapter` 是唯一邮件出口。当前 `MockEmailAdapter` 显式 no-op，不会发送真实邮件。HTML 模板提供订单提交、审核通过/拒绝、已发货、售后创建/更新六种事务消息，使用清晰标题、参考编号和移动端单栏布局。未来 Resend/SES 适配必须增加 provider 密钥、退信处理、发送审计和人工上线批准。
+邮件投递在本轮完全禁用，API 不会实例化或调用邮件适配器，也不连接真实 provider。功能邮箱作为小写的本地配置数据保存：`support@maxcine.cn` 用于客户支持与人工回复，`notifications@maxcine.cn` 用于业务状态通知，`noreply@maxcine.cn` 用于验证码和密码重置且不接受回复。未来若要启用投递，必须另行完成 provider 密钥、退信处理、发送审计、环境隔离和人工上线批准。

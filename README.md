@@ -33,19 +33,19 @@ npm run db:seed:local
 npm run dev
 ```
 
-Web 默认位于 `http://localhost:5173`，Worker 本地端口由 Wrangler 输出。Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库：`admin@example.test`、`dealer@example.test` 或 `warehouse@example.test`，密码均为 `DemoOnly-ChangeMe-2026`。绝不可在共享环境或生产环境应用该种子数据。
+Web 默认位于 `http://localhost:5173`，Worker 本地端口由 Wrangler 输出。Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库；本地开发账户的初始化说明仅保留在受控开发流程中，绝不可在共享环境、预发布环境或生产环境应用该种子数据。
 
 本地浏览器始终访问 `http://localhost:5173`，不要直接在页面中使用 Worker 的 `8787` 端口；开发代理会去除 `/api` 前缀并转发请求。登录密码最少 8 位；真实账户与密码不得加入本地种子数据。
 
 ## 环境变量
 
-仅将本地值写入 `apps/api/.dev.vars`，不要提交该文件。
+仅将本地值写入 `apps/api/.dev.vars`，不要提交该文件。本轮邮件投递被禁用：不得配置真实邮件 provider、不得发送邮件。
 
 | 变量 | 用途 | 必需 |
 | --- | --- | --- |
 | `SESSION_SECRET` | 会话 HMAC 密钥；使用长度至少 32 的随机值 | 是 |
 | `APP_ORIGIN` | 允许的前端来源，开发时为 `http://localhost:5173` | 是 |
-| `EMAIL_PROVIDER` | 当前仅支持 `mock`；Resend/SES 适配必须另行审批 | 是 |
+| `EMAIL_PROVIDER` | 保留的兼容变量；本地构建不连接 provider，也不发送邮件 | 否 |
 | `VITE_API_BASE_URL` | 可选 API 基础地址；同源路由时留空 | 否 |
 
 Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret put` 为**测试环境**配置；不得写入仓库。
@@ -58,9 +58,9 @@ Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret p
 
 ## 经销商业务系统（本地第一版）
 
-已接入本地 D1 的经销商页面包括：仪表盘、共享库存、库存详情、授权店铺、新建订单、草稿编辑、订单筛选/分页/详情、站内通知及已读状态、售后工单列表/详情/新建申请。业务 API 会根据登录账户的经销商归属限制店铺、订单、通知和售后数据范围。
+已接入本地 D1 的经销商页面包括：仪表盘、共享库存、库存详情、授权店铺、新建订单、草稿编辑、订单筛选/分页/详情、站内通知及已读状态、售后工单列表/详情/新建申请。后端根据用户 ID 的角色、权限、店铺授权及服务中心授权强制数据隔离；不以姓名或邮箱判断权限。
 
-本地种子数据使用带“本地测试”标识的虚构经销商、店铺、产品、SN 和联系人信息；不包含真实客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
+本地种子数据包括 3 个功能邮箱（`support@maxcine.cn`、`notifications@maxcine.cn`、`noreply@maxcine.cn`）、六个指定演示账户、经销商、授权服务中心和店铺归属。所有邮箱均以小写保存和显示；种子不含真实密码、手机号、身份证号、地址或客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
 
 ## Cloudflare 测试环境部署
 

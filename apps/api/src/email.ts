@@ -1,7 +1,15 @@
-export type EmailKind = 'order_submitted' | 'order_approved' | 'order_rejected' | 'order_shipped' | 'after_sales_created' | 'after_sales_updated';
+// Email is intentionally disabled for this local-only release. These addresses
+// are identity/configuration data, not active provider accounts.
+export const FUNCTIONAL_EMAILS = {
+  support: 'support@maxcine.cn',
+  notifications: 'notifications@maxcine.cn',
+  noreply: 'noreply@maxcine.cn'
+} as const;
+
+export type EmailKind = 'order_submitted' | 'order_approved' | 'order_rejected' | 'order_shipped' | 'after_sales_created' | 'after_sales_updated' | 'verification' | 'password_reset';
 
 export type MailMessage = {
-  from: 'orders@maxcine.cn' | 'support@maxcine.cn';
+  from: (typeof FUNCTIONAL_EMAILS)[keyof typeof FUNCTIONAL_EMAILS];
   to: string;
   subject: string;
   html: string;
@@ -11,9 +19,9 @@ export interface EmailAdapter {
   send(message: MailMessage): Promise<void>;
 }
 
-export class MockEmailAdapter implements EmailAdapter {
+export class DisabledEmailAdapter implements EmailAdapter {
   async send(_message: MailMessage): Promise<void> {
-    // Deliberately no-op. Production providers must be separately configured and approved.
+    throw new Error('Email delivery is disabled in this local-only build');
   }
 }
 
@@ -23,12 +31,14 @@ function escapeHtml(value: string): string {
 
 export function emailTemplate(kind: EmailKind, data: { reference: string; status?: string; trackingNumber?: string; note?: string; logoUrl: string }): Pick<MailMessage, 'from' | 'subject' | 'html'> {
   const content: Record<EmailKind, { from: MailMessage['from']; subject: string; heading: string; detail: string }> = {
-    order_submitted: { from: 'orders@maxcine.cn', subject: `订单已提交 · ${data.reference}`, heading: '订单已提交', detail: '您的订单已进入审核队列。' },
-    order_approved: { from: 'orders@maxcine.cn', subject: `订单审核通过 · ${data.reference}`, heading: '订单审核通过', detail: '订单已转入仓库处理流程。' },
-    order_rejected: { from: 'orders@maxcine.cn', subject: `订单审核结果 · ${data.reference}`, heading: '订单未获批准', detail: data.note || '请联系管理员了解详情。' },
-    order_shipped: { from: 'orders@maxcine.cn', subject: `订单已发货 · ${data.reference}`, heading: '订单已发货', detail: `顺丰运单号：${data.trackingNumber ?? '待补充'}` },
-    after_sales_created: { from: 'support@maxcine.cn', subject: `售后工单已创建 · ${data.reference}`, heading: '售后工单已创建', detail: '我们已收到您的请求。' },
-    after_sales_updated: { from: 'support@maxcine.cn', subject: `售后工单状态更新 · ${data.reference}`, heading: '售后工单状态更新', detail: data.status ? `当前状态：${data.status}` : '工单已有更新。' }
+    order_submitted: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单已提交 · ${data.reference}`, heading: '订单已提交', detail: '您的订单已进入审核队列。' },
+    order_approved: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单审核通过 · ${data.reference}`, heading: '订单审核通过', detail: '订单已转入仓库处理流程。' },
+    order_rejected: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单审核结果 · ${data.reference}`, heading: '订单未获批准', detail: data.note || '请联系管理员了解详情。' },
+    order_shipped: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单已发货 · ${data.reference}`, heading: '订单已发货', detail: `顺丰运单号：${data.trackingNumber ?? '待补充'}` },
+    after_sales_created: { from: FUNCTIONAL_EMAILS.support, subject: `售后工单已创建 · ${data.reference}`, heading: '售后工单已创建', detail: '我们已收到您的请求。' },
+    after_sales_updated: { from: FUNCTIONAL_EMAILS.notifications, subject: `售后工单状态更新 · ${data.reference}`, heading: '售后工单状态更新', detail: data.status ? `当前状态：${data.status}` : '工单已有更新。' },
+    verification: { from: FUNCTIONAL_EMAILS.noreply, subject: `验证码 · ${data.reference}`, heading: '验证码', detail: '此系统邮件不接受回复。' },
+    password_reset: { from: FUNCTIONAL_EMAILS.noreply, subject: `密码重置 · ${data.reference}`, heading: '密码重置', detail: '此系统邮件不接受回复。' }
   };
   const copy = content[kind];
   return {

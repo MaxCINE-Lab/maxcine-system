@@ -3,6 +3,7 @@ import type { Role, SessionUser } from '@maxcine/shared';
 import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
+import { OperationsPortal } from './OperationsPortal';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -11,7 +12,7 @@ const nav = [
   ['产品', '#/products'], ['下载', '#/downloads'], ['服务', '#/service'], ['联系', '#/contact']
 ] as const;
 
-const roleLabels: Record<Role, string> = { admin: '管理员', dealer: '经销商', warehouse: '仓库' };
+const roleLabels: Record<Role, string> = { super_admin: '超级管理员', warehouse_manager: '仓库管理员', dealer: '经销商', authorized_service_center: '授权服务中心', online_product_consultant: '线上产品顾问' };
 
 function useRoute(): Route {
   const [route, setRoute] = useState(() => location.hash.slice(1) || '/');
@@ -78,23 +79,23 @@ function Legal({ type }: { type: 'privacy' | 'terms' }) {
 function PageHero({ eyebrow, title, text }: { eyebrow: string; title: string; text: string }) { return <section className="page-hero"><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{text}</p></section>; }
 
 const mainMenu: Array<{ label: string; route: string; roles: Role[] }> = [
-  { label: '仪表盘', route: '/system/dashboard', roles: ['dealer', 'admin', 'warehouse'] },
-  { label: '共享库存', route: '/system/inventory', roles: ['dealer', 'admin', 'warehouse'] },
+  { label: '仪表盘', route: '/system/dashboard', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
+  { label: '共享库存', route: '/system/inventory', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
   { label: '新建订单', route: '/system/new-order', roles: ['dealer'] },
-  { label: '订单', route: '/system/orders', roles: ['dealer', 'admin'] },
-  { label: '仓库待处理', route: '/system/warehouse', roles: ['warehouse', 'admin'] },
-  { label: '站内通知', route: '/system/notifications', roles: ['dealer', 'admin', 'warehouse'] },
-  { label: '售后工单', route: '/system/after-sales', roles: ['dealer', 'admin'] },
-  { label: '用户与角色', route: '/system/admin/users', roles: ['admin'] },
-  { label: '经销商与店铺', route: '/system/admin/dealers', roles: ['admin'] },
-  { label: '产品与库存', route: '/system/admin/products', roles: ['admin'] },
-  { label: '订单审核', route: '/system/admin/reviews', roles: ['admin'] },
-  { label: '审计记录', route: '/system/admin/audit', roles: ['admin'] }
+  { label: '订单', route: '/system/orders', roles: ['dealer', 'super_admin'] },
+  { label: '仓库待处理', route: '/system/warehouse', roles: ['warehouse_manager', 'super_admin'] },
+  { label: '站内通知', route: '/system/notifications', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
+  { label: '售后工单', route: '/system/after-sales', roles: ['dealer', 'super_admin', 'authorized_service_center'] },
+  { label: '用户与角色', route: '/system/admin/users', roles: ['super_admin'] },
+  { label: '经销商与店铺', route: '/system/admin/dealers', roles: ['super_admin'] },
+  { label: '产品与库存', route: '/system/admin/products', roles: ['super_admin'] },
+  { label: '订单审核', route: '/system/admin/reviews', roles: ['super_admin'] },
+  { label: '审计记录', route: '/system/admin/audit', roles: ['super_admin'] }
 ];
 
 function SystemShell({ user, children, title, subtitle }: { user: SessionUser; children: ReactNode; title: string; subtitle?: string }) {
   const [open, setOpen] = useState(false);
-  const items = mainMenu.filter((item) => item.roles.includes(user.role));
+  const items = mainMenu.filter((item) => item.roles.some((role) => user.roles.includes(role)));
   return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><div className="user-chip"><span>{user.name}</span><small>{roleLabels[user.role]}</small></div></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><p className="nav-label">业务系统</p>{items.map((item) => <a href={`#${item.route}`} key={item.route} onClick={() => setOpen(false)}>{item.label}</a>)}<a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {roleLabels[user.role]}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
 }
 
@@ -105,7 +106,7 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
   const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setMessage(null);
-    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = '#/system/dashboard'; }
+    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = result.user.roles.includes('super_admin') ? '#/system/admin' : result.user.roles.includes('warehouse_manager') ? '#/system/warehouse?status=approved' : '#/system/dashboard'; }
     catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
@@ -113,8 +114,8 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
 }
 
 function Dashboard({ user }: { user: SessionUser }) {
-  const cards = user.role === 'dealer' ? [['待提交订单', '02'], ['待审核订单', '01'], ['库存提醒', '03']] : user.role === 'warehouse' ? [['待拣货', '08'], ['待扫码', '03'], ['今日发货', '12']] : [['待审核订单', '06'], ['库存提醒', '03'], ['售后待处理', '04']];
-  return <SystemShell user={user} title="工作概览" subtitle="重要状态一目了然。"><div className="stats">{cards.map(([label, value]) => <Stat key={label} label={label} value={value} />)}</div><section className="dashboard-grid"><Panel title="需要关注"><Timeline rows={user.role === 'warehouse' ? ['MC-20260726-8F2A · 等待拣货', 'MC-20260726-2C91 · 等待扫描 SN', 'MC-20260725-4D20 · 等待发货确认'] : ['订单与库存数据会在 API 接入后显示', '系统会为关键状态生成站内通知', '所有重要操作可由管理员审计']} /></Panel><Panel title="快速操作"><div className="action-list">{user.role === 'dealer' && <Button href="#/system/new-order">新建订单</Button>}{user.role === 'warehouse' && <Button href="#/system/warehouse">处理待发货订单</Button>}{user.role === 'admin' && <Button href="#/system/admin/reviews">审核订单</Button>}<Button secondary href="#/system/notifications">查看通知</Button></div></Panel></section></SystemShell>;
+  const cards = user.roles.includes('dealer') ? [['待提交订单', '02'], ['待审核订单', '01'], ['库存提醒', '03']] : user.roles.includes('warehouse_manager') ? [['待拣货', '08'], ['待扫码', '03'], ['今日发货', '12']] : [['待审核订单', '06'], ['库存提醒', '03'], ['售后待处理', '04']];
+  return <SystemShell user={user} title="工作概览" subtitle="重要状态一目了然。"><div className="stats">{cards.map(([label, value]) => <Stat key={label} label={label} value={value} />)}</div><section className="dashboard-grid"><Panel title="需要关注"><Timeline rows={user.roles.includes('warehouse_manager') ? ['订单等待拣货', '订单等待扫描 SN', '订单等待发货确认'] : ['请及时处理订单、库存和售后事项。']} /></Panel><Panel title="快速操作"><div className="action-list">{user.roles.includes('dealer') && <Button href="#/system/new-order">新建订单</Button>}{user.roles.includes('warehouse_manager') && <Button href="#/system/warehouse">处理待发货订单</Button>}{user.roles.includes('super_admin') && <Button href="#/system/admin/reviews">审核订单</Button>}<Button secondary href="#/system/notifications">查看通知</Button></div></Panel></section></SystemShell>;
 }
 
 function Stat({ label, value }: { label: string; value: string }) { return <article className="stat"><p>{label}</p><strong>{value}</strong><span>当前状态</span></article>; }
@@ -174,7 +175,7 @@ function AfterSales({ user }: { user: SessionUser }) { return <SystemShell user=
 function DataTable({ headings, rows }: { headings: string[]; rows: ReactNode[][] }) { return <div className="table-wrap"><table><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((value, index) => <td key={index}>{value}</td>)}</tr>)}</tbody></table></div>; }
 function Status({ value }: { value: string }) { return <span className="status">{value}</span>; }
 
-function AppRouter({ route, user, onLogin }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void }) {
+function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void; onLogout: () => void }) {
   if (route === '/') return <Home />;
   if (route === '/products') return <Products />;
   if (route === '/downloads') return <Downloads />;
@@ -184,7 +185,8 @@ function AppRouter({ route, user, onLogin }: { route: string; user: SessionUser 
   if (route === '/terms') return <Legal type="terms" />;
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
-  if (user.role === 'dealer' && route.startsWith('/system')) return <DealerPortal user={user} route={route} />;
+  if (user.roles.includes('dealer') && !user.roles.includes('super_admin') && !user.roles.includes('warehouse_manager') && route.startsWith('/system')) return <DealerPortal user={user} route={route} />;
+  if ((user.roles.includes('super_admin') || user.roles.includes('warehouse_manager')) && route.startsWith('/system')) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (route === '/system/dashboard') return <Dashboard user={user} />;
   if (route === '/system/inventory') return <Inventory user={user} />;
   if (route === '/system/new-order') return <NewOrder user={user} />;
@@ -208,5 +210,6 @@ export function App() {
   const route = useRoute();
   const [user, setUser] = useState<SessionUser | null>(null);
   useEffect(() => { api<CurrentUserResponse>('/me').then((result) => setUser(result.user)).catch(() => undefined); }, []);
-  return <AppRouter route={route} user={user} onLogin={setUser} />;
+  const logout = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); location.hash = '#/login'; } };
+  return <AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />;
 }

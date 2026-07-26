@@ -1,9 +1,9 @@
-import { AppError, type Role, type SessionUser } from '@maxcine/shared';
+import { AppError, PERMISSIONS, ROLES, type Permission, type Role, type SessionUser } from '@maxcine/shared';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { Env, Variables } from './types';
-import { one } from './db';
+import { all, one } from './db';
 
-type TokenPayload = SessionUser & { exp: number };
+type TokenPayload = { id: string; email: string; name: string; sessionVersion: number; exp: number };
 
 const encoder = new TextEncoder();
 
@@ -32,18 +32,20 @@ function constantTimeEqual(first: string, second: string): boolean {
 }
 
 export async function createSessionToken(user: SessionUser, secret: string): Promise<string> {
-  const payload: TokenPayload = { ...user, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8 };
+  // Authorization is deliberately not embedded in the token. Each protected
+  // request reloads role, permission and scope relationships from D1.
+  const payload: TokenPayload = { id: user.id, email: user.email, name: user.name, sessionVersion: user.sessionVersion, exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8 };
   const encoded = toBase64Url(encoder.encode(JSON.stringify(payload)));
   return `${encoded}.${await hmac(encoded, secret)}`;
 }
 
-export async function verifySessionToken(token: string, secret: string): Promise<SessionUser | null> {
+export async function verifySessionToken(token: string, secret: string): Promise<Omit<TokenPayload, 'exp'> | null> {
   const [encoded, signature] = token.split('.');
   if (!encoded || !signature || !constantTimeEqual(await hmac(encoded, secret), signature)) return null;
   try {
     const payload = JSON.parse(new TextDecoder().decode(fromBase64Url(encoded))) as TokenPayload;
-    if (payload.exp < Math.floor(Date.now() / 1000) || !['admin', 'dealer', 'warehouse'].includes(payload.role)) return null;
-    return { id: payload.id, email: payload.email, role: payload.role, dealerId: payload.dealerId, name: payload.name };
+    if (payload.exp < Math.floor(Date.now() / 1000) || !payload.id || !payload.email || !payload.name || !Number.isInteger(payload.sessionVersion)) return null;
+    return { id: payload.id, email: payload.email, name: payload.name, sessionVersion: payload.sessionVersion };
   } catch {
     return null;
   }
@@ -72,6 +74,42 @@ export async function hashIdentifier(value: string): Promise<string> {
   return toBase64Url(new Uint8Array(digest));
 }
 
+export async function loadSessionUser(db: D1Database, userId: string): Promise<SessionUser | null> {
+  const account = await one<{ id: string; email: string; name: string; isActive: number; sessionVersion: number }>(db,
+    'SELECT id, email, name, is_active AS isActive, session_version AS sessionVersion FROM users WHERE id = ?', userId);
+  if (!account?.isActive) return null;
+  const [roleRows, permissionRows, dealerRows, serviceCenterRows, storeRows] = await Promise.all([
+    all<{ code: string }>(db, `SELECT roles.code FROM user_roles JOIN roles ON roles.id = user_roles.role_id
+      WHERE user_roles.user_id = ? AND roles.is_active = 1 ORDER BY roles.code`, userId),
+    all<{ code: string }>(db, `SELECT DISTINCT permissions.code FROM user_roles
+      JOIN roles ON roles.id = user_roles.role_id AND roles.is_active = 1
+      JOIN role_permissions ON role_permissions.role_id = roles.id
+      JOIN permissions ON permissions.code = role_permissions.permission_code
+      WHERE user_roles.user_id = ? ORDER BY permissions.code`, userId),
+    all<{ dealerId: string }>(db, `SELECT dealer_id AS dealerId FROM dealer_user_assignments
+      WHERE user_id = ? AND status = 'active' ORDER BY dealer_id`, userId),
+    all<{ serviceCenterId: string }>(db, `SELECT service_center_id AS serviceCenterId FROM service_center_user_assignments
+      WHERE user_id = ? AND status = 'active' ORDER BY service_center_id`, userId),
+    all<{ storeId: string }>(db, `SELECT store_id AS storeId FROM store_user_assignments
+      WHERE user_id = ? AND status = 'active' ORDER BY store_id`, userId)
+  ]);
+  const roles = roleRows.map((row) => row.code).filter((code): code is Role => (ROLES as readonly string[]).includes(code));
+  const dealerIds = dealerRows.map((row) => row.dealerId);
+  return {
+    id: account.id,
+    email: account.email,
+    name: account.name,
+    role: roles[0] ?? 'dealer',
+    dealerId: dealerIds[0] ?? null,
+    roles,
+    permissions: permissionRows.map((row) => row.code).filter((code): code is Permission => (PERMISSIONS as readonly string[]).includes(code)),
+    dealerIds,
+    serviceCenterIds: serviceCenterRows.map((row) => row.serviceCenterId),
+    storeIds: storeRows.map((row) => row.storeId),
+    sessionVersion: account.sessionVersion
+  };
+}
+
 function tokenFromRequest(c: Context<{ Bindings: Env; Variables: Variables }>): string | null {
   const authorization = c.req.header('Authorization');
   if (authorization?.startsWith('Bearer ')) return authorization.slice(7);
@@ -80,14 +118,14 @@ function tokenFromRequest(c: Context<{ Bindings: Env; Variables: Variables }>): 
 
 export const requireAuth: MiddlewareHandler<{ Bindings: Env; Variables: Variables }> = async (c, next) => {
   const token = tokenFromRequest(c);
-  const user = token ? await verifySessionToken(token, c.env.SESSION_SECRET) : null;
-  if (!user) throw new AppError(401, 'UNAUTHENTICATED', 'Please sign in to continue');
-  const active = await one<{ is_active: number }>(c.env.DB, 'SELECT is_active FROM users WHERE id = ?', user.id);
-  if (!active?.is_active) throw new AppError(401, 'UNAUTHENTICATED', 'Your session is no longer active');
+  const identity = token ? await verifySessionToken(token, c.env.SESSION_SECRET) : null;
+  if (!identity) throw new AppError(401, 'UNAUTHENTICATED', '请先登录后再继续');
+  const user = await loadSessionUser(c.env.DB, identity.id);
+  if (!user || user.sessionVersion !== identity.sessionVersion) throw new AppError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录');
   c.set('user', user);
   await next();
 };
 
 export function hasRole(user: SessionUser, ...roles: Role[]): boolean {
-  return roles.includes(user.role);
+  return roles.some((role) => user.roles.includes(role));
 }

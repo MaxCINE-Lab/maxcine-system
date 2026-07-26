@@ -1,46 +1,54 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { can, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema } from '../packages/shared/dist/index.js';
+import { can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema } from '../packages/shared/dist/index.js';
 
-const dealerA = { id: 'dealer-a', email: 'a@example.test', name: 'Dealer A', role: 'dealer', dealerId: 'dealer-a-id' };
-const dealerB = { id: 'dealer-b', email: 'b@example.test', name: 'Dealer B', role: 'dealer', dealerId: 'dealer-b-id' };
-const warehouse = { id: 'warehouse', email: 'warehouse@example.test', name: 'Warehouse', role: 'warehouse', dealerId: null };
-const admin = { id: 'admin', email: 'admin@example.test', name: 'Admin', role: 'admin', dealerId: null };
+function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
+  return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
+}
 
-test('dealer cannot read another dealer’s order', () => {
-  const otherDealerOrder = { dealerId: dealerB.dealerId, status: 'submitted' };
-  assert.equal(canReadOrder(dealerA, otherDealerOrder), false);
-  assert.equal(canReadOrder(dealerB, otherDealerOrder), true);
+const dealerA = user({ id: 'dealer-a', roles: ['dealer'], storeIds: ['store-a'], permissions: ['order:read', 'order:create', 'order:submit', 'after-sales:create', 'after-sales:read', 'notifications:read'] });
+const dealerB = user({ id: 'dealer-b', roles: ['dealer'], storeIds: ['store-b'], permissions: ['order:read', 'order:create', 'order:submit', 'after-sales:create', 'after-sales:read', 'notifications:read'] });
+const warehouse = user({ id: 'warehouse', roles: ['warehouse_manager'], permissions: ['order:warehouse-read', 'order:fulfill', 'inventory:read', 'inventory:warehouse-manage', 'notifications:read'] });
+const superAdmin = user({ id: 'super-admin', roles: ['super_admin'], permissions: ['data:read:all', 'user:manage', 'audit:read', 'after-sales:approve'] });
+const serviceCenter = user({ id: 'service-center', roles: ['authorized_service_center'], serviceCenterIds: ['center-a'], permissions: ['after-sales:read', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend'] });
+
+test('dealer data isolation is based on store assignment rather than email or name', () => {
+  assert.equal(canReadOrder(dealerA, { storeId: 'store-b', status: 'submitted' }), false);
+  assert.equal(canReadOrder(dealerB, { storeId: 'store-b', status: 'submitted' }), true);
+  assert.equal(canReadOrder(superAdmin, { storeId: 'store-b', status: 'submitted' }), true);
+  assert.equal(canAccessStore(dealerA, 'store-a'), true);
+  assert.equal(canAccessStore(dealerA, 'store-b'), false);
 });
 
-test('warehouse cannot read drafts or unapproved orders', () => {
-  assert.equal(canReadOrder(warehouse, { dealerId: dealerA.dealerId, status: 'draft' }), false);
-  assert.equal(canReadOrder(warehouse, { dealerId: dealerA.dealerId, status: 'submitted' }), false);
-  assert.equal(canReadOrder(warehouse, { dealerId: dealerA.dealerId, status: 'approved' }), true);
+test('warehouse can only read orders after they enter the warehouse flow', () => {
+  assert.equal(canReadOrder(warehouse, { storeId: 'store-a', status: 'draft' }), false);
+  assert.equal(canReadOrder(warehouse, { storeId: 'store-a', status: 'submitted' }), false);
+  assert.equal(canReadOrder(warehouse, { storeId: 'store-a', status: 'approved' }), true);
 });
 
-test('role escalation is blocked for administrator-only operations', () => {
+test('privileged operations require an effective permission relation', () => {
   assert.equal(can(dealerA, 'user:manage'), false);
   assert.equal(can(warehouse, 'inventory:manage'), false);
-  assert.equal(can(admin, 'audit:read'), true);
+  assert.equal(can(warehouse, 'after-sales:read'), false);
+  assert.equal(can(serviceCenter, 'after-sales:approve'), false);
+  assert.equal(can(superAdmin, 'audit:read'), true);
 });
 
-test('order state transitions are controlled by role', () => {
-  assert.equal(canTransitionOrder('dealer', 'draft', 'submitted'), true);
-  assert.equal(canTransitionOrder('dealer', 'submitted', 'approved'), false);
-  assert.equal(canTransitionOrder('warehouse', 'approved', 'picking'), true);
-  assert.equal(canTransitionOrder('warehouse', 'packed', 'shipped'), true);
-  assert.equal(canTransitionOrder('warehouse', 'draft', 'picking'), false);
+test('order transitions are enforced by permissions, not a single role field', () => {
+  assert.equal(canTransitionOrder(dealerA, 'draft', 'submitted'), true);
+  assert.equal(canTransitionOrder(dealerA, 'submitted', 'approved'), false);
+  assert.equal(canTransitionOrder(warehouse, 'approved', 'picking'), true);
+  assert.equal(canTransitionOrder(warehouse, 'packed', 'shipped'), true);
+  assert.equal(canTransitionOrder(warehouse, 'draft', 'picking'), false);
 });
 
-test('order validation rejects zero quantity and normalizes an omitted note', () => {
+test('input normalizes account emails to lowercase', () => {
+  assert.equal(loginSchema.parse({ email: 'YUKYINCHEW@MAXCINE.CN', password: 'DemoOnly-ChangeMe-2026' }).email, 'yukyinchew@maxcine.cn');
+});
+
+test('order and after-sales schemas allow local demo data without contact details', () => {
   const valid = createOrderSchema.parse({ storeId: '30000000-0000-4000-8000-000000000001', items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }] });
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
-});
-
-test('after-sales validation requires the dealer-facing contact and case fields', () => {
-  const valid = createAfterSalesSchema.safeParse({ storeId: '30000000-0000-4000-8000-000000000001', caseType: '产品异常', subject: '本地测试问题', description: '这是满足最短长度的本地测试问题描述。', contactName: '本地测试联系人', contactPhone: '00000000000' });
-  assert.equal(valid.success, true);
-  assert.equal(createAfterSalesSchema.safeParse({ storeId: '30000000-0000-4000-8000-000000000001', caseType: '产品异常', subject: '问题', description: '描述过短', contactName: '', contactPhone: '' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, true);
 });

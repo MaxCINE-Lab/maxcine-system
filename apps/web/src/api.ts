@@ -21,4 +21,4 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export type CurrentUserResponse = { user: SessionUser };
-export type LoginResponse = { user: SessionUser; token: string };
+export type LoginResponse = { user: SessionUser };

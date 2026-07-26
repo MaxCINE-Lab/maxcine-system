@@ -15,16 +15,19 @@ export const updateOrderSchema = createOrderSchema;
 
 export const reviewOrderSchema = z.object({
   approved: z.boolean(),
-  note: z.string().max(1000).optional()
+  note: z.string().trim().max(1000).default('')
+}).superRefine((value, ctx) => {
+  if (!value.approved && !value.note) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['note'], message: '审核不通过时必须填写原因' });
 });
 
 export const scanSerialSchema = z.object({
   productId: z.string().uuid(),
-  serialNumber: z.string().trim().min(3).max(100).regex(/^[A-Za-z0-9._\-/]+$/, 'SN contains unsupported characters')
+  serialNumber: z.string().trim().min(3).max(100).regex(/^[A-Za-z0-9._\-/]+$/, 'SN 只能包含字母、数字和常用连接符')
 });
 
 export const shipmentSchema = z.object({
-  trackingNumber: z.string().trim().min(6).max(80).regex(/^[A-Za-z0-9._\-/]+$/, 'Tracking number contains unsupported characters')
+  carrier: z.enum(['顺丰速运']).default('顺丰速运'),
+  trackingNumber: z.string().trim().min(6).max(80).regex(/^[A-Za-z0-9._\-/]+$/, '运单号只能包含字母、数字和常用连接符')
 });
 
 export const createAfterSalesSchema = z.object({
@@ -35,45 +38,84 @@ export const createAfterSalesSchema = z.object({
   caseType: z.enum(['产品异常', '安装使用', '物流问题', '配件缺失', '其他问题']),
   subject: z.string().trim().min(3).max(160),
   description: z.string().trim().min(10).max(5000),
-  contactName: z.string().trim().min(2).max(80),
-  contactPhone: z.string().trim().min(6).max(32)
+  // Contact fields are optional so local demo flows never require personal data.
+  contactName: z.string().trim().min(2).max(80).optional().nullable(),
+  contactPhone: z.string().trim().min(6).max(32).optional().nullable()
 });
 
 export const createProductSchema = z.object({
-  sku: z.string().trim().min(2).max(64).regex(/^[A-Z0-9._-]+$/, 'SKU must use uppercase letters, numbers, dot, underscore or hyphen'),
+  sku: z.string().trim().min(2).max(64).regex(/^[A-Z0-9._-]+$/, 'SKU 只能使用大写字母、数字和常用连接符'),
   name: z.string().trim().min(2).max(160),
   description: z.string().trim().max(2000).default(''),
   unitPriceCents: z.number().int().min(0).max(999999999)
 });
 
+export const updateProductSchema = createProductSchema.extend({
+  specification: z.string().trim().max(160).default(''),
+  reorderLevel: z.number().int().min(0).max(999999).default(0),
+  isActive: z.boolean().default(true)
+});
+
 export const adjustInventorySchema = z.object({
-  quantityDelta: z.number().int().min(-999999).max(999999).refine((value) => value !== 0, 'Adjustment cannot be zero'),
+  quantityDelta: z.number().int().min(-999999).max(999999).refine((value) => value !== 0, '调整数量不能为零'),
   note: z.string().trim().min(3).max(500)
 });
 
 export const createDealerSchema = z.object({
-  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, 'Dealer code must use uppercase letters, numbers or hyphens'),
-  name: z.string().trim().min(2).max(160)
+  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '经销商编码只能使用大写字母、数字和连字符'),
+  name: z.string().trim().min(2).max(160),
+  province: z.string().trim().max(64).default('')
 });
 
 export const createStoreSchema = z.object({
   dealerId: z.string().uuid(),
-  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, 'Store code must use uppercase letters, numbers or hyphens'),
-  name: z.string().trim().min(2).max(160)
+  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '店铺编码只能使用大写字母、数字和连字符'),
+  name: z.string().trim().min(2).max(160),
+  platform: z.string().trim().min(2).max(64),
+  ownerUserId: z.string().uuid()
 });
 
 export const createUserSchema = z.object({
   email: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
   name: z.string().trim().min(2).max(120),
   password: z.string().min(12).max(128),
-  role: z.enum(['admin', 'dealer', 'warehouse']),
-  dealerId: z.string().uuid().nullable().optional()
-}).superRefine((value, ctx) => {
-  if (value.role === 'dealer' && !value.dealerId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dealerId'], message: 'Dealer users require a dealer relationship' });
-  if (value.role !== 'dealer' && value.dealerId) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['dealerId'], message: 'Only dealer users may be assigned to a dealer' });
+  roleIds: z.array(z.string().uuid()).min(1).max(10),
+  dealerIds: z.array(z.string().uuid()).max(20).default([]),
+  serviceCenterIds: z.array(z.string().uuid()).max(20).default([]),
+  storeIds: z.array(z.string().uuid()).max(100).default([])
 });
 
+export const updateUserSchema = z.object({
+  name: z.string().trim().min(2).max(120),
+  roleIds: z.array(z.string().uuid()).min(1).max(10),
+  dealerIds: z.array(z.string().uuid()).max(20).default([]),
+  serviceCenterIds: z.array(z.string().uuid()).max(20).default([]),
+  storeIds: z.array(z.string().uuid()).max(100).default([]),
+  isActive: z.boolean()
+});
+
+export const passwordChangeSchema = z.object({
+  currentPassword: z.string().min(8).max(128),
+  nextPassword: z.string().min(12).max(128)
+});
+
+export const passwordResetSchema = z.object({ nextPassword: z.string().min(12).max(128) });
+
 export const updateAfterSalesSchema = z.object({
-  status: z.enum(['open', 'in_progress', 'resolved', 'closed']),
+  outcome: z.enum(['approved', 'rejected']),
   note: z.string().trim().max(1000).optional()
+});
+
+export const assignAfterSalesSchema = z.object({
+  serviceCenterId: z.string().uuid()
+});
+
+export const afterSalesAssessmentSchema = z.object({
+  result: z.string().trim().min(2).max(160),
+  details: z.string().trim().min(10).max(5000)
+});
+
+export const afterSalesRecommendationSchema = z.object({
+  recommendation: z.string().trim().min(2).max(160),
+  details: z.string().trim().min(10).max(5000)
 });
