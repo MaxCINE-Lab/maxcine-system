@@ -1,7 +1,6 @@
 import { type FormEvent, type ReactNode, useEffect, useMemo, useState } from 'react';
 import type { OrderStatus, SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
-import './dealer.css';
 
 type NoticeState = { tone: 'success' | 'error'; text: string } | null;
 type Store = { id: string; code: string; name: string };
@@ -39,12 +38,14 @@ function Crumbs({ items }: { items: Array<{ label: string; href?: string }> }) {
 
 function DealerShell({ user, route, children, title, subtitle }: { user: SessionUser; route: string; children: ReactNode; title: string; subtitle: string }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   useEffect(() => { api<{ unreadCount: number }>('/notifications?limit=1').then((data) => setUnread(data.unreadCount)).catch(() => undefined); }, [route]);
   const menu = [
     ['仪表盘', '/system/dashboard'], ['共享库存', '/system/inventory'], ['新建订单', '/system/new-order'], ['订单', '/system/orders'], ['站内通知', '/system/notifications'], ['售后工单', '/system/after-sales'], ...(user.roles.includes('authorized_service_center') ? [['服务中心工作台', '/system/service-center']] : [])
   ];
-  return <div className="system dealer-system"><header className="system-top"><img className="system-light-logo" src="/assets/maxcine-logo-on-light.png" alt="MaxCINE" /><button className="menu-toggle" onClick={() => setMenuOpen(!menuOpen)}>菜单</button><div className="user-chip"><span>{user.name}</span><small>经销商</small></div></header><aside className={`system-nav ${menuOpen ? 'is-open' : ''}`}><img className="system-dark-logo" src="/assets/maxcine-logo-on-dark.png" alt="MaxCINE" /><p className="nav-label">经销商业务系统</p>{menu.map(([label, href]) => <a className={route.split('?')[0] === href ? 'is-active' : ''} href={`#${href}`} key={href} onClick={() => setMenuOpen(false)}>{label}{href === '/system/notifications' && unread > 0 && <em className="nav-badge">{unread > 99 ? '99+' : unread}</em>}</a>)}<a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / 经销商</span><h1>{title}</h1><p>{subtitle}</p></div></header>{children}</main></div>;
+  const signOut = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { location.hash = '#/login'; } };
+  return <div className="system dealer-system"><header className="system-top"><img className="system-light-logo" src="/assets/maxcine-logo-on-light.png" alt="MaxCINE" /><button className="menu-toggle" onClick={() => setMenuOpen(!menuOpen)} aria-expanded={menuOpen}>菜单</button><a className="global-search" href="#/system/orders" aria-label="打开订单查询">搜索订单或产品</a><a className="top-notifications" href="#/system/notifications" aria-label="查看站内通知">通知{unread > 0 && <em>{unread > 99 ? '99+' : unread}</em>}</a><div className="account-menu"><button className="user-chip" onClick={() => setAccountOpen(!accountOpen)} aria-expanded={accountOpen}><span>{user.name}</span><small>经销商</small></button>{accountOpen && <div className="account-popover"><strong>{user.name}</strong><span>经销商账户</span><button className="account-logout" onClick={() => void signOut()}>退出登录</button></div>}</div></header><aside className={`system-nav ${menuOpen ? 'is-open' : ''}`}><img className="system-dark-logo" src="/assets/maxcine-logo-on-dark.png" alt="MaxCINE" /><section className="nav-group"><p className="nav-label">经销商业务</p>{menu.map(([label, href]) => <a className={route.split('?')[0] === href ? 'is-active' : ''} href={`#${href}`} key={href} onClick={() => setMenuOpen(false)}>{label}{href === '/system/notifications' && unread > 0 && <em className="nav-badge">{unread > 99 ? '99+' : unread}</em>}</a>)}</section><a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / 经销商</span><h1>{title}</h1><p>{subtitle}</p></div></header>{children}</main></div>;
 }
 
 function Dashboard({ user, route }: { user: SessionUser; route: string }) {
