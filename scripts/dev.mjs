@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 
 const root = resolve(import.meta.dirname, '..');
 const stateFile = resolve(root, '.maxcine-dev.json');
+const d1Persistence = resolve(root, 'work/gsx-d1');
 const ports = [5173, 8787];
 
 function state() { return existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : null; }
@@ -19,9 +20,9 @@ async function start() {
   const unavailable = []; for (const port of ports) if (!await canBind(port)) unavailable.push(port);
   if (unavailable.length) { console.error(`端口 ${unavailable.join('、')} 已被占用。请确认现有 MaxCINE 服务后运行 npm run dev:stop；脚本不会终止未由它启动的进程。`); process.exitCode = 1; return; }
   const web = spawn('npm', ['run', 'dev', '-w', '@maxcine/web'], { cwd: root, stdio: 'inherit' });
-  const api = spawn('npm', ['run', 'dev', '-w', '@maxcine/api'], { cwd: root, stdio: 'inherit' });
+  const api = spawn('npm', ['run', 'dev', '-w', '@maxcine/api', '--', '--persist-to', d1Persistence], { cwd: root, stdio: 'inherit' });
   writeFileSync(stateFile, JSON.stringify({ pids: [web.pid, api.pid], startedAt: new Date().toISOString() }));
-  console.log('MaxCINE 本地开发服务已启动：Web http://localhost:5173；API http://localhost:8787；D1 apps/api/.wrangler/state/v3/d1。');
+  console.log(`MaxCINE 本地开发服务已启动：Web http://localhost:5173；API http://localhost:8787；D1 ${d1Persistence}。`);
   const stop = () => { for (const pid of [web.pid, api.pid]) { try { process.kill(pid, 'SIGTERM'); } catch { /* child already exited */ } } clearState(); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }
