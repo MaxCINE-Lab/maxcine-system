@@ -28,4 +28,8 @@ const stopOne = async (child) => {
   if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM');
 };
 const stop = async () => { await Promise.all([stopOne(api), stopOne(web)]); };
-try { await waitFor('http://127.0.0.1:8791/health'); await waitFor('http://127.0.0.1:5175'); run('npx', ['playwright', 'test', '--config=e2e/playwright.config.mjs']); } finally { await stop(); }
+try {
+  await waitFor('http://127.0.0.1:8791/health');
+  await waitFor('http://127.0.0.1:5175');
+  run('npx', ['playwright', 'test', '--config=e2e/playwright.config.mjs'], root, { ...process.env, E2E_D1_PERSISTENCE: persistence });
+} finally { await stop(); }

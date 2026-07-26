@@ -48,6 +48,17 @@ function assertPermission(user: SessionUser, permission: Parameters<typeof can>[
   if (!can(user, permission)) throw forbidden();
 }
 
+// Global GSX access is a permission relationship, never an email, display name,
+// legacy users.role value, or assignment scope. It also keeps historical imports
+// with no dealer/store relation readable by the super-administrator role.
+function hasGlobalAssetAccess(user: SessionUser): boolean {
+  return can(user, 'data:read:all');
+}
+
+function assertAssetReadAccess(user: SessionUser): void {
+  if (!hasGlobalAssetAccess(user) && !can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+}
+
 // Creates the matching D1 statement while keeping audit inserts in the same D1 batch as business writes.
 function dbAudit(db: D1Database, input: { actorId: string; action: string; entityType: string; entityId: string; requestId: string; before?: unknown; after?: unknown }): D1PreparedStatement {
   return db.prepare(`INSERT INTO audit_logs (id, actor_id, action, entity_type, entity_id, before_json, after_json, request_id)
@@ -117,7 +128,7 @@ function canOperateAssignedCase(user: SessionUser, serviceCenterId: string | nul
 }
 
 function assetScope(user: SessionUser, alias = 'assets'): { sql: string; params: string[] } {
-  if (can(user, 'data:read:all')) return { sql: '1 = 1', params: [] };
+  if (hasGlobalAssetAccess(user)) return { sql: '1 = 1', params: [] };
   const clauses: string[] = [];
   const params: string[] = [];
   if (can(user, 'asset:read') && user.storeIds.length) {
@@ -140,7 +151,7 @@ function assetScope(user: SessionUser, alias = 'assets'): { sql: string; params:
 }
 
 function eventVisibilityScope(user: SessionUser): { sql: string; params: string[] } {
-  if (can(user, 'data:read:all')) return { sql: '1 = 1', params: [] };
+  if (hasGlobalAssetAccess(user)) return { sql: '1 = 1', params: [] };
   if (user.serviceCenterIds.length) return { sql: "visibility IN ('service_center','customer_safe')", params: [] };
   if (user.storeIds.length || user.dealerIds.length) return { sql: "visibility IN ('dealer','customer_safe')", params: [] };
   return { sql: "visibility = 'customer_safe'", params: [] };
@@ -886,7 +897,7 @@ app.post('/admin/gsx/imports/:id/confirm', requireAuth, async (c) => {
 
 app.get('/gsx/search', requireAuth, async (c) => {
   const user = c.get('user');
-  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  assertAssetReadAccess(user);
   const query = (c.req.query('q') ?? '').trim();
   if (query.length < 2) throw badRequest('请输入至少两个字符进行查询');
   const scope = assetScope(user);
@@ -903,7 +914,7 @@ app.get('/gsx/search', requireAuth, async (c) => {
 
 app.get('/assets', requireAuth, async (c) => {
   const user = c.get('user');
-  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  assertAssetReadAccess(user);
   const scope = assetScope(user);
   const filters: string[] = [scope.sql];
   const params: unknown[] = [...scope.params];
@@ -946,7 +957,7 @@ app.get('/assets', requireAuth, async (c) => {
 
 app.get('/assets/:id', requireAuth, async (c) => {
   const user = c.get('user');
-  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  assertAssetReadAccess(user);
   const scope = assetScope(user);
   const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerName: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; dataQualityStatus: string; createdAt: string; updatedAt: string }>(c.env.DB,
     `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
@@ -954,17 +965,20 @@ app.get('/assets/:id', requireAuth, async (c) => {
       assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, dealers.name AS dealerName, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo,
       assets.data_quality_status AS dataQualityStatus, assets.created_at AS createdAt, assets.updated_at AS updatedAt
       FROM assets LEFT JOIN dealers ON dealers.id = assets.dealer_id LEFT JOIN stores ON stores.id = assets.store_id LEFT JOIN orders ON orders.id = assets.latest_order_id WHERE assets.id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
-  if (!asset) throw forbidden('未找到该资产或你无权查看');
+  if (!asset) {
+    if (hasGlobalAssetAccess(user)) throw notFound('未找到该资产');
+    throw forbidden('未找到该资产或你无权查看');
+  }
   const visibility = eventVisibilityScope(user);
   const [identifiers, events, serviceCases, notes, sales, audit] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
     all(c.env.DB, `SELECT id, case_no AS caseNo, status, workflow_stage AS workflowStage, subject, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases WHERE asset_id = ? ORDER BY updated_at DESC`, asset.id),
-    can(user, 'data:read:all') ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt FROM asset_notes WHERE asset_id = ? AND visibility = 'admin_private' ORDER BY created_at DESC`, asset.id) : Promise.resolve([]),
-    can(user, 'data:read:all') ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
-    can(user, 'data:read:all') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
+    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt FROM asset_notes WHERE asset_id = ? AND visibility = 'admin_private' ORDER BY created_at DESC`, asset.id) : Promise.resolve([]),
+    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
+    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
   ]);
-  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), ...(can(user, 'data:read:all') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
+  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), ...(hasGlobalAssetAccess(user) ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
 });
 
 app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {

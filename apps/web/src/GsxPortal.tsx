@@ -14,7 +14,14 @@ type AssetDetail = { asset: { id: string; currentSn: string | null; originalSn: 
 type Store = { id: string; name: string };
 
 const inputText = (value: unknown) => value === null || value === undefined ? '' : String(value).trim();
-const errorText = (error: unknown) => error instanceof ApiClientError ? error.message : '操作未完成，请稍后重试。';
+const errorText = (error: unknown) => {
+  if (!(error instanceof ApiClientError)) return '系统繁忙，请稍后再试。';
+  if (error.code === 'UNAUTHENTICATED') return '登录状态已失效，请重新登录。';
+  if (error.code === 'FORBIDDEN') return '你没有权限查看该资产。';
+  if (error.code === 'NOT_FOUND') return '未找到相关资产。';
+  if (error.code === 'INTERNAL_ERROR') return '系统繁忙，请稍后再试。';
+  return error.message || '操作未完成，请稍后重试。';
+};
 const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${value.replace(' ', 'T')}Z`)) : '—';
 const statusTone = (value: string) => value === '在保' || value === 'active' ? 'good' : ['异常', '拒保', '注销', '报废', 'duplicate_identifier', 'invalid_identifier', 'missing_identifier'].includes(value) ? 'risk' : 'neutral';
 
