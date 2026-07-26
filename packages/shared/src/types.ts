@@ -6,7 +6,8 @@ export const PERMISSIONS = [
   'catalog:read', 'knowledge:read', 'consultation:reply', 'order:read', 'order:create', 'order:submit',
   'order:review', 'order:warehouse-read', 'order:fulfill', 'inventory:read', 'inventory:manage',
   'inventory:warehouse-manage', 'audit:read', 'notifications:read', 'after-sales:create', 'after-sales:read',
-  'after-sales:assign', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend', 'after-sales:approve'
+  'after-sales:assign', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend', 'after-sales:approve',
+  'asset:read', 'asset:manage', 'asset:import', 'asset:warehouse-read'
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

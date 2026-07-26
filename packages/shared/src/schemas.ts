@@ -138,3 +138,35 @@ export const afterSalesRecommendationSchema = z.object({
   recommendation: z.string().trim().min(2).max(160),
   details: z.string().trim().min(10).max(5000)
 });
+
+const historicalValueSchema = z.union([z.string().max(10000), z.number(), z.boolean(), z.null()]);
+export const historicalWarrantyRecordSchema = z.object({
+  rowNumber: z.number().int().min(1).max(100000),
+  values: z.record(z.string().min(1).max(40), historicalValueSchema)
+});
+
+export const historicalWarrantyPrecheckSchema = z.object({
+  sourceFilename: z.string().trim().min(1).max(255).refine((value) => value.toLowerCase().endsWith('.xlsx'), '仅支持 .xlsx 文件'),
+  sourceSheet: z.string().trim().min(1).max(120),
+  sourceFileFingerprint: z.string().trim().regex(/^[a-f0-9]{16,128}$/i, '文件标识格式不正确'),
+  headers: z.array(z.string().trim().min(1).max(40)).min(1).max(64),
+  records: z.array(historicalWarrantyRecordSchema).min(1).max(10000)
+});
+
+export const confirmHistoricalWarrantyImportSchema = z.object({
+  skipRowNumbers: z.array(z.number().int().min(1).max(100000)).max(10000).default([])
+});
+
+export const updateAssetWarrantySchema = z.object({
+  warrantyOverrideStatus: z.enum(['no_warranty', 'denied', 'exception', 'cancelled', 'scrapped']).nullable(),
+  warrantyOverrideReason: z.string().trim().max(1000).default('')
+}).superRefine((value, context) => {
+  if (value.warrantyOverrideStatus && !value.warrantyOverrideReason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['warrantyOverrideReason'], message: '设置人工保修状态时必须填写原因' });
+});
+
+export const createAssetAfterSalesSchema = z.object({
+  storeId: z.string().uuid(),
+  caseType: z.enum(['产品异常', '安装使用', '物流问题', '配件缺失', '其他问题']),
+  subject: z.string().trim().min(3).max(160),
+  description: z.string().trim().min(10).max(5000)
+});

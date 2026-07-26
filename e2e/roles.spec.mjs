@@ -8,6 +8,7 @@ async function login(page, email) {
   await page.getByLabel('邮箱').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
+  await page.waitForFunction(() => location.hash !== '#/login');
 }
 
 test('各角色登录后进入正确工作台，刷新后会话仍有效', async ({ page }) => {

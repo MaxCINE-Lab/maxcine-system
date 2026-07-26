@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema } from '../packages/shared/dist/index.js';
+import { can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -51,4 +51,34 @@ test('order and after-sales schemas allow local demo data without contact detail
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
   assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, true);
+});
+
+test('historical warranty records preserve warnings without rejecting a whole batch', () => {
+  const rows = normalizeHistoricalWarrantyRecords([
+    { rowNumber: 5, values: { '序号': 1, '销售渠道': '官方店', '版本': '标准版', '购买日期': '2025 11 18（23）', '购买价格': '129x15=1935', SN: 'SF0123456789012', '保修状态': '过保', '发出单号': 'SF0123456789012', '发货仓库': '淄博', '用户画像': '内部标签', '到账状态': '已到账578', '保修开始': '2025 11 20', '保修结束': '2026 11 20', '维修记录1': '序列号更换为6901649532999', '备注1': '历史说明' } },
+    { rowNumber: 6, values: { '序号': 2, '销售渠道': '官方店', '版本': '标准版', SN: '6901649532888', '保修状态': '无保修', '保修开始': '无保修', '保修结束': '无保修', '到账状态': '已发货' } },
+    { rowNumber: 7, values: { '序号': 3, '销售渠道': '官方店', '版本': '标准版', SN: '6901649532888', '保修状态': '拒保', '保修开始': '不得保修！', '保修结束': '不得保修！' } }
+  ]);
+  assert.equal(rows.length, 3);
+  assert.equal(rows[0].currentSn, '6901649532999');
+  assert.equal(rows[0].issues.some((issue) => issue.code === 'tracking_as_sn'), true);
+  assert.equal(rows[0].purchaseDateAnnotation, '23');
+  assert.equal(rows[0].unitPriceCents, 12900);
+  assert.equal(rows[0].quantity, 15);
+  assert.equal(rows[0].totalPriceCents, 193500);
+  assert.equal(rows[0].paymentAmountCents, 57800);
+  assert.equal(rows[0].notes.some((note) => note.category === 'private_admin' && note.visibility === 'admin_private'), true);
+  assert.equal(rows[0].events.filter((event) => event.eventType === 'sn_changed').length, 1);
+  assert.equal(rows[1].warrantyOverrideStatus, 'no_warranty');
+  assert.equal(rows[2].warrantyOverrideStatus, 'denied');
+  assert.equal(rows[1].issues.some((issue) => issue.code === 'duplicate_sn'), true);
+  assert.equal(rows[2].issues.some((issue) => issue.code === 'duplicate_sn'), true);
+});
+
+test('warranty parsing and display favor manual status over dates', () => {
+  assert.deepEqual(parseHistoricalDate('2025 7 25'), { date: '2025-07-25', annotation: '', special: 'none', invalid: false });
+  assert.equal(parseHistoricalPrice('129x15=1935').totalPriceCents, 193500);
+  assert.equal(parseHistoricalPayment('已发货').status, 'shipped');
+  assert.equal(warrantyDisplayStatus({ warrantyStartAt: '2025-01-01', warrantyEndAt: '2028-01-01', warrantyOverrideStatus: 'denied' }), '拒保');
+  assert.equal(warrantyDisplayStatus({ warrantyStartAt: null, warrantyEndAt: null, warrantyOverrideStatus: null }), '无有效日期');
 });

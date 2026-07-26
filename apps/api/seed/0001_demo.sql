@@ -9,11 +9,19 @@ PRAGMA foreign_keys = ON;
 DELETE FROM login_attempts;
 DELETE FROM audit_logs;
 DELETE FROM notifications;
+DELETE FROM asset_events;
+DELETE FROM asset_notes;
+DELETE FROM asset_sale_assets;
+DELETE FROM asset_sales;
+DELETE FROM asset_import_rows;
+DELETE FROM asset_import_batches;
 DELETE FROM after_sales_approvals;
 DELETE FROM after_sales_recommendations;
 DELETE FROM after_sales_assessments;
 DELETE FROM after_sales_assignments;
 DELETE FROM after_sales_cases;
+DELETE FROM asset_identifiers;
+DELETE FROM assets;
 DELETE FROM serial_numbers;
 DELETE FROM shipments;
 DELETE FROM inventory_transactions;
@@ -68,7 +76,11 @@ INSERT INTO permissions (code, name, description) VALUES
   ('after-sales:receive', '受理售后', '受理分配给本服务中心的售后工单'),
   ('after-sales:damage-assess', '提交定损结果', '提交分配工单的检测和定损结果'),
   ('after-sales:recommend', '提交售后建议', '提交维修、换货或其他处理建议'),
-  ('after-sales:approve', '最终审批售后', '进行售后最终审批');
+  ('after-sales:approve', '最终审批售后', '进行售后最终审批'),
+  ('asset:read', '查看资产与保修', '查看授权范围内的资产、保修和生命周期信息'),
+  ('asset:manage', '管理资产与保修', '处理保修人工覆盖和资产数据异常'),
+  ('asset:import', '导入历史保修数据', '预检查并导入历史保修数据'),
+  ('asset:warehouse-read', '查看仓库资产信息', '查看履约所需的产品、SN 和仓库信息');
 
 INSERT INTO roles (id, code, name, description) VALUES
   ('21000000-0000-4000-8000-000000000001', 'super_admin', '超级管理员', '管理全部业务范围和系统设置'),
@@ -84,6 +96,7 @@ INSERT INTO role_permissions (role_id, permission_code) VALUES
   ('21000000-0000-4000-8000-000000000002', 'order:fulfill'),
   ('21000000-0000-4000-8000-000000000002', 'inventory:read'),
   ('21000000-0000-4000-8000-000000000002', 'inventory:warehouse-manage'),
+  ('21000000-0000-4000-8000-000000000002', 'asset:warehouse-read'),
   ('21000000-0000-4000-8000-000000000002', 'notifications:read'),
   ('21000000-0000-4000-8000-000000000003', 'catalog:read'),
   ('21000000-0000-4000-8000-000000000003', 'order:read'),
@@ -92,7 +105,9 @@ INSERT INTO role_permissions (role_id, permission_code) VALUES
   ('21000000-0000-4000-8000-000000000003', 'notifications:read'),
   ('21000000-0000-4000-8000-000000000003', 'after-sales:create'),
   ('21000000-0000-4000-8000-000000000003', 'after-sales:read'),
+  ('21000000-0000-4000-8000-000000000003', 'asset:read'),
   ('21000000-0000-4000-8000-000000000004', 'after-sales:read'),
+  ('21000000-0000-4000-8000-000000000004', 'asset:read'),
   ('21000000-0000-4000-8000-000000000004', 'after-sales:receive'),
   ('21000000-0000-4000-8000-000000000004', 'after-sales:damage-assess'),
   ('21000000-0000-4000-8000-000000000004', 'after-sales:recommend'),

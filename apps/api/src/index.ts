@@ -1,9 +1,9 @@
 import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
-  AppError, adjustInventorySchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, conflict, createAfterSalesSchema,
+  AppError, adjustInventorySchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema,
-  type ApiErrorBody, type OrderStatus, type SessionUser
+  historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, normalizeHistoricalWarrantyRecords, updateAssetWarrantySchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
@@ -114,6 +114,60 @@ function afterSalesScope(user: SessionUser): { sql: string; params: string[] } {
 
 function canOperateAssignedCase(user: SessionUser, serviceCenterId: string | null): boolean {
   return can(user, 'data:read:all') || Boolean(serviceCenterId && user.serviceCenterIds.includes(serviceCenterId));
+}
+
+function assetScope(user: SessionUser, alias = 'assets'): { sql: string; params: string[] } {
+  if (can(user, 'data:read:all')) return { sql: '1 = 1', params: [] };
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (can(user, 'asset:read') && user.storeIds.length) {
+    clauses.push(`${alias}.store_id IN (${placeholders(user.storeIds)})`);
+    params.push(...user.storeIds);
+  }
+  if (can(user, 'asset:read') && user.dealerIds.length) {
+    clauses.push(`${alias}.dealer_id IN (${placeholders(user.dealerIds)})`);
+    params.push(...user.dealerIds);
+  }
+  if (can(user, 'asset:read') && user.serviceCenterIds.length) {
+    clauses.push(`EXISTS (SELECT 1 FROM after_sales_cases ascases JOIN after_sales_assignments asa ON asa.case_id = ascases.id WHERE ascases.asset_id = ${alias}.id AND asa.service_center_id IN (${placeholders(user.serviceCenterIds)}))`);
+    params.push(...user.serviceCenterIds);
+  }
+  if (can(user, 'asset:warehouse-read')) {
+    clauses.push(`EXISTS (SELECT 1 FROM orders asset_orders WHERE asset_orders.id = ${alias}.latest_order_id AND asset_orders.status IN ('approved','picking','packed','shipped','delivered'))`);
+  }
+  if (!clauses.length) throw forbidden('当前账户没有授权的资产数据范围');
+  return { sql: `(${clauses.join(' OR ')})`, params };
+}
+
+function eventVisibilityScope(user: SessionUser): { sql: string; params: string[] } {
+  if (can(user, 'data:read:all')) return { sql: '1 = 1', params: [] };
+  if (user.serviceCenterIds.length) return { sql: "visibility IN ('service_center','customer_safe')", params: [] };
+  if (user.storeIds.length || user.dealerIds.length) return { sql: "visibility IN ('dealer','customer_safe')", params: [] };
+  return { sql: "visibility = 'customer_safe'", params: [] };
+}
+
+function productNameSnapshot(version: string): string {
+  return version ? `MaxCINE MAVIC 4 Pro 增广镜 · ${version}` : 'MaxCINE 历史产品';
+}
+
+function asImportPreviewRow(row: { sourceRowNumber: number; sequence: string; currentSn: string | null; originalSn: string | null; version: string; sourceChannel: string; issues: unknown[] }): Record<string, unknown> {
+  return { rowNumber: row.sourceRowNumber, sequence: row.sequence, currentSn: row.currentSn, originalSn: row.originalSn, version: row.version, sourceChannel: row.sourceChannel, issues: row.issues };
+}
+
+async function importBatchPreview(db: D1Database, batchId: string) {
+  const batch = await one<{ id: string; sourceFilename: string; sourceSheet: string; status: string; totalRows: number; normalRows: number; warningRows: number; errorRows: number; confirmedAt: string | null }>(db,
+    `SELECT id, source_filename AS sourceFilename, source_sheet AS sourceSheet, status, total_rows AS totalRows, normal_rows AS normalRows, warning_rows AS warningRows, error_rows AS errorRows, confirmed_at AS confirmedAt FROM asset_import_batches WHERE id = ?`, batchId);
+  if (!batch) throw notFound('未找到该历史保修导入批次');
+  const rows = await all<{ sourceRowNumber: number; normalizedJson: string; issuesJson: string; disposition: string }>(db,
+    `SELECT source_row_number AS sourceRowNumber, normalized_json AS normalizedJson, issues_json AS issuesJson, disposition FROM asset_import_rows WHERE import_batch_id = ? ORDER BY source_row_number`, batchId);
+  return {
+    batch,
+    rows: rows.map((row) => ({ ...asImportPreviewRow({ ...(JSON.parse(row.normalizedJson) as NormalizedWarrantyRecord), issues: JSON.parse(row.issuesJson) }), disposition: row.disposition }))
+  };
+}
+
+async function runStatementsInChunks(db: D1Database, statements: D1PreparedStatement[], size = 80): Promise<void> {
+  for (let offset = 0; offset < statements.length; offset += size) await db.batch(statements.slice(offset, offset + size));
 }
 
 app.use('*', async (c, next) => {
@@ -711,6 +765,246 @@ app.patch('/after-sales/:id', requireAuth, async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.approve', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { outcome: input.outcome } })
   ]);
   return c.json({ id: serviceCase.id, outcome: input.outcome });
+});
+
+app.post('/admin/gsx/imports/precheck', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:import');
+  const input = await parseBody(c.req.raw, historicalWarrantyPrecheckSchema);
+  const missingColumns = HISTORICAL_WARRANTY_COLUMNS.filter((column) => !input.headers.includes(column));
+  if (missingColumns.length) throw badRequest(`导入文件缺少必要列：${missingColumns.join('、')}`);
+  const duplicateRows = new Set<number>();
+  for (const record of input.records) {
+    if (duplicateRows.has(record.rowNumber)) throw badRequest('导入文件存在重复的行号，请重新选择原始文件');
+    duplicateRows.add(record.rowNumber);
+  }
+  const existing = await one<{ id: string }>(c.env.DB, 'SELECT id FROM asset_import_batches WHERE source_file_fingerprint = ?', input.sourceFileFingerprint);
+  if (existing) return c.json({ ...(await importBatchPreview(c.env.DB, existing.id)), alreadyPrepared: true });
+  const normalized = normalizeHistoricalWarrantyRecords(input.records);
+  const normalRows = normalized.filter((row) => !row.issues.length).length;
+  const warningRows = normalized.filter((row) => row.issues.some((issue) => issue.severity === 'warning')).length;
+  const errorRows = normalized.filter((row) => row.issues.some((issue) => issue.severity === 'error')).length;
+  const batchId = id();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`INSERT INTO asset_import_batches (id, source_filename, source_file_fingerprint, source_sheet, status, total_rows, normal_rows, warning_rows, error_rows, created_by)
+      VALUES (?, ?, ?, ?, 'prepared', ?, ?, ?, ?, ?)`)
+      .bind(batchId, input.sourceFilename, input.sourceFileFingerprint, input.sourceSheet, normalized.length, normalRows, warningRows, errorRows, user.id)
+  ];
+  for (const record of normalized) statements.push(c.env.DB.prepare(`INSERT INTO asset_import_rows (id, import_batch_id, source_row_number, raw_json, normalized_json, issues_json)
+    VALUES (?, ?, ?, ?, ?, ?)`)
+    .bind(id(), batchId, record.sourceRowNumber, JSON.stringify(input.records.find((item) => item.rowNumber === record.sourceRowNumber)?.values ?? {}), JSON.stringify(record), JSON.stringify(record.issues)));
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'asset_import.precheck', entityType: 'asset_import_batch', entityId: batchId, requestId: c.get('requestId'), after: { sourceFilename: input.sourceFilename, totalRows: normalized.length, normalRows, warningRows, errorRows } }));
+  await runStatementsInChunks(c.env.DB, statements);
+  return c.json(await importBatchPreview(c.env.DB, batchId), 201);
+});
+
+app.get('/admin/gsx/imports/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'asset:import');
+  return c.json(await importBatchPreview(c.env.DB, c.req.param('id')));
+});
+
+app.post('/admin/gsx/imports/:id/confirm', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:import');
+  const input = await parseBody(c.req.raw, confirmHistoricalWarrantyImportSchema);
+  const batch = await one<{ id: string; status: string }>(c.env.DB, 'SELECT id, status FROM asset_import_batches WHERE id = ?', c.req.param('id'));
+  if (!batch) throw notFound('未找到该历史保修导入批次');
+  if (batch.status !== 'prepared') return c.json({ ...(await importBatchPreview(c.env.DB, batch.id)), alreadyCompleted: true });
+  const rows = await all<{ id: string; sourceRowNumber: number; rawJson: string; normalizedJson: string; issuesJson: string; disposition: string }>(c.env.DB,
+    `SELECT id, source_row_number AS sourceRowNumber, raw_json AS rawJson, normalized_json AS normalizedJson, issues_json AS issuesJson, disposition FROM asset_import_rows WHERE import_batch_id = ? ORDER BY source_row_number`, batch.id);
+  const skipped = new Set(input.skipRowNumbers);
+  const blocked = rows.filter((row) => JSON.parse(row.issuesJson).some((issue: { severity: string }) => issue.severity === 'error') && !skipped.has(row.sourceRowNumber));
+  if (blocked.length) throw badRequest('存在需要跳过的严重错误行，请确认后再导入', Object.fromEntries(blocked.map((row) => [`第 ${row.sourceRowNumber} 行`, ['该行日期或关键字段无法解析，请跳过或修正后重新预检查']])));
+
+  const normalSns = rows.map((row) => JSON.parse(row.normalizedJson) as NormalizedWarrantyRecord)
+    .filter((record) => record.currentSn && record.dataQualityStatus === 'normal').map((record) => record.currentSn!);
+  const existingAssets = new Map<string, string>();
+  for (let offset = 0; offset < normalSns.length; offset += 90) {
+    const serials = [...new Set(normalSns.slice(offset, offset + 90))];
+    if (!serials.length) continue;
+    const assets = await all<{ id: string; currentSn: string }>(c.env.DB, `SELECT id, current_sn AS currentSn FROM assets WHERE data_quality_status = 'normal' AND current_sn IN (${placeholders(serials)})`, ...serials);
+    for (const asset of assets) existingAssets.set(asset.currentSn.toUpperCase(), asset.id);
+  }
+  const scopeByChannel = new Map<string, { storeId: string; dealerId: string }>();
+  const channels = [...new Set(rows.map((row) => (JSON.parse(row.normalizedJson) as NormalizedWarrantyRecord).sourceChannel).filter(Boolean))];
+  for (const channel of channels) {
+    const preferredCode = channel === '官方店' ? 'MAXCINE-DIRECT' : channel === '官方智选店' ? 'MAXCINE-SELECT' : null;
+    const store = preferredCode
+      ? await one<{ storeId: string; dealerId: string }>(c.env.DB, `SELECT id AS storeId, dealer_id AS dealerId FROM stores WHERE code = ? AND status = 'active'`, preferredCode)
+      : await one<{ storeId: string; dealerId: string }>(c.env.DB, `SELECT id AS storeId, dealer_id AS dealerId FROM stores WHERE status = 'active' AND (name = ? OR name LIKE ?) ORDER BY CASE WHEN name = ? THEN 0 ELSE 1 END, name LIMIT 1`, channel, `%${channel}%`, channel);
+    if (store) scopeByChannel.set(channel, store);
+  }
+  const statements: D1PreparedStatement[] = [];
+  let importedRows = 0;
+  let skippedRows = 0;
+  for (const row of rows) {
+    if (row.disposition === 'imported') continue;
+    if (skipped.has(row.sourceRowNumber)) {
+      skippedRows += 1;
+      statements.push(c.env.DB.prepare(`UPDATE asset_import_rows SET disposition = 'skipped', imported_at = CURRENT_TIMESTAMP WHERE id = ? AND disposition = 'pending'`).bind(row.id));
+      continue;
+    }
+    const record = JSON.parse(row.normalizedJson) as NormalizedWarrantyRecord;
+    const existingAssetId = record.currentSn && record.dataQualityStatus === 'normal' ? existingAssets.get(record.currentSn.toUpperCase()) : undefined;
+    const assetId = existingAssetId ?? id();
+    const saleId = id();
+    const sourceScope = scopeByChannel.get(record.sourceChannel);
+    if (!existingAssetId) {
+      statements.push(c.env.DB.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_name_snapshot, version_snapshot, asset_status, warranty_policy, warranty_start_at, warranty_end_at, warranty_override_status, warranty_override_reason, source_channel, shipping_warehouse, dealer_id, store_id, data_quality_status, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(assetId, record.currentSn, record.originalSn, productNameSnapshot(record.version), record.version, record.assetStatus, record.warrantyPolicy, record.warrantyStartAt, record.warrantyEndAt, record.warrantyOverrideStatus, record.warrantyOverrideReason, record.sourceChannel, record.shippingWarehouse, sourceScope?.dealerId ?? null, sourceScope?.storeId ?? null, record.dataQualityStatus, user.id, user.id));
+      for (const identifier of record.identifiers) statements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, reason, source, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, '历史保修表', ?)`)
+        .bind(id(), assetId, identifier.type, identifier.value, Number(identifier.isCurrent), identifier.reason, user.id));
+    }
+    statements.push(
+      c.env.DB.prepare(`INSERT INTO asset_sales (id, import_batch_id, source_row_number, source_channel, purchase_date, purchase_date_annotation, purchase_price_raw, unit_price_cents, quantity, total_price_cents, payment_status, payment_amount_cents, payment_raw, tracking_number, shipping_warehouse, raw_json, created_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(saleId, batch.id, row.sourceRowNumber, record.sourceChannel, record.purchaseDate, record.purchaseDateAnnotation, record.purchasePriceRaw, record.unitPriceCents, record.quantity, record.totalPriceCents, record.paymentStatus, record.paymentAmountCents, record.paymentRaw, record.trackingNumber, record.shippingWarehouse, row.rawJson, user.id),
+      c.env.DB.prepare('INSERT INTO asset_sale_assets (sale_id, asset_id) VALUES (?, ?)').bind(saleId, assetId),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, sale_id, operator_user_id, visibility, source)
+        VALUES (?, ?, 'imported', CURRENT_TIMESTAMP, '导入历史保修记录', ?, ?, ?, 'admin_private', '历史保修表')`).bind(id(), assetId, `第 ${row.sourceRowNumber} 行历史记录已导入`, saleId, user.id),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, sale_id, operator_user_id, visibility, source)
+        VALUES (?, ?, 'sold', ?, '历史销售记录', ?, ?, ?, 'dealer', '历史保修表')`).bind(id(), assetId, record.purchaseDate, `${record.sourceChannel || '未标注渠道'} · ${record.version || '未标注版本'}`, saleId, user.id)
+    );
+    if (record.warrantyStartAt) statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, sale_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'warranty_started', ?, '保修开始', '', ?, ?, 'dealer', '历史保修表')`).bind(id(), assetId, record.warrantyStartAt, saleId, user.id));
+    for (const event of record.events) statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, sale_id, new_value_json, operator_user_id, visibility, source)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '历史保修表')`).bind(id(), assetId, event.eventType, event.occurredAt, event.title, event.description, saleId, event.newValue ? JSON.stringify(event.newValue) : null, user.id, event.visibility));
+    for (const note of record.notes) statements.push(c.env.DB.prepare(`INSERT INTO asset_notes (id, asset_id, category, content, visibility, source, created_by)
+      VALUES (?, ?, ?, ?, ?, '历史保修表', ?)`).bind(id(), assetId, note.category, note.content, note.visibility, user.id));
+    statements.push(c.env.DB.prepare(`UPDATE asset_import_rows SET disposition = 'imported', imported_asset_id = ?, imported_at = CURRENT_TIMESTAMP WHERE id = ? AND disposition = 'pending'`).bind(assetId, row.id));
+    importedRows += 1;
+  }
+  statements.push(
+    c.env.DB.prepare(`UPDATE asset_import_batches SET status = ?, confirmed_at = CURRENT_TIMESTAMP, confirmed_by = ? WHERE id = ?`).bind(skippedRows ? 'completed_with_skips' : 'completed', user.id, batch.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'asset_import.confirm', entityType: 'asset_import_batch', entityId: batch.id, requestId: c.get('requestId'), after: { importedRows, skippedRows } })
+  );
+  await runStatementsInChunks(c.env.DB, statements);
+  return c.json({ ...(await importBatchPreview(c.env.DB, batch.id)), importedRows, skippedRows });
+});
+
+app.get('/gsx/search', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  const query = (c.req.query('q') ?? '').trim();
+  if (query.length < 2) throw badRequest('请输入至少两个字符进行查询');
+  const scope = assetScope(user);
+  const like = `%${query.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
+  const items = await all<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string; sourceChannel: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string }>(c.env.DB,
+    `SELECT DISTINCT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
+      assets.source_channel AS sourceChannel, assets.warranty_end_at AS warrantyEndAt, assets.warranty_start_at AS warrantyStartAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus
+     FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id LEFT JOIN asset_sales ON asset_sales.id IN (SELECT sale_id FROM asset_sale_assets WHERE asset_id = assets.id)
+     LEFT JOIN orders ON orders.id = assets.latest_order_id LEFT JOIN after_sales_cases ON after_sales_cases.asset_id = assets.id
+     WHERE ${scope.sql} AND (assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\' OR asset_sales.tracking_number LIKE ? ESCAPE '\\' OR orders.order_no LIKE ? ESCAPE '\\' OR after_sales_cases.case_no LIKE ? ESCAPE '\\')
+     ORDER BY assets.updated_at DESC LIMIT 50`, ...scope.params, like, like, like, like, like, like);
+  return c.json({ items: items.map((item) => ({ ...item, warrantyStatus: warrantyDisplayStatus(item) })) });
+});
+
+app.get('/assets', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  const scope = assetScope(user);
+  const filters: string[] = [scope.sql];
+  const params: unknown[] = [...scope.params];
+  const search = (c.req.query('search') ?? '').trim();
+  const version = (c.req.query('version') ?? '').trim();
+  const assetStatus = (c.req.query('assetStatus') ?? '').trim();
+  const channel = (c.req.query('channel') ?? '').trim();
+  const warehouse = (c.req.query('warehouse') ?? '').trim();
+  const quality = (c.req.query('quality') ?? '').trim();
+  const warrantyStatus = (c.req.query('warrantyStatus') ?? '').trim();
+  const today = new Date().toISOString().slice(0, 10);
+  if (search) { const like = `%${search.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`; filters.push(`(assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM asset_identifiers WHERE asset_id = assets.id AND identifier_value LIKE ? ESCAPE '\\'))`); params.push(like, like, like); }
+  if (version) { filters.push('assets.version_snapshot = ?'); params.push(version); }
+  if (assetStatus) { filters.push('assets.asset_status = ?'); params.push(assetStatus); }
+  if (channel) { filters.push('assets.source_channel = ?'); params.push(channel); }
+  if (warehouse) { filters.push('assets.shipping_warehouse = ?'); params.push(warehouse); }
+  if (quality === 'exception') filters.push(`(assets.data_quality_status <> 'normal' OR assets.warranty_override_status IN ('exception','denied','cancelled','scrapped'))`);
+  else if (quality) { filters.push('assets.data_quality_status = ?'); params.push(quality); }
+  if (warrantyStatus === '在保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_start_at <= ? AND assets.warranty_end_at >= ?`); params.push(today, today); }
+  if (warrantyStatus === '已过保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_end_at < ?`); params.push(today); }
+  if (warrantyStatus === '无有效日期') filters.push(`assets.warranty_override_status IS NULL AND (assets.warranty_start_at IS NULL OR assets.warranty_end_at IS NULL)`);
+  const overrideMap: Record<string, string> = { '无保修': 'no_warranty', '拒保': 'denied', '异常': 'exception', '注销': 'cancelled', '报废': 'scrapped' };
+  if (overrideMap[warrantyStatus]) { filters.push('assets.warranty_override_status = ?'); params.push(overrideMap[warrantyStatus]); }
+  const where = filters.join(' AND ');
+  const page = pageValue(c.req.query('page'));
+  const limit = limitValue(c.req.query('limit'), 30);
+  const [count, items, versions, channels, warehouses] = await Promise.all([
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM assets WHERE ${where}`, ...params),
+    all<{ id: string; currentSn: string | null; productName: string; version: string; sourceChannel: string; shippingWarehouse: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string; latestEvent: string | null; updatedAt: string }>(c.env.DB,
+      `SELECT assets.id, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse,
+       assets.warranty_end_at AS warrantyEndAt, assets.warranty_start_at AS warrantyStartAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus,
+       (SELECT title FROM asset_events WHERE asset_id = assets.id ORDER BY COALESCE(occurred_at, created_at) DESC, created_at DESC LIMIT 1) AS latestEvent, assets.updated_at AS updatedAt
+       FROM assets WHERE ${where} ORDER BY assets.updated_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit),
+    all<{ value: string }>(c.env.DB, `SELECT DISTINCT version_snapshot AS value FROM assets WHERE ${scope.sql} AND version_snapshot <> '' ORDER BY value`, ...scope.params),
+    all<{ value: string }>(c.env.DB, `SELECT DISTINCT source_channel AS value FROM assets WHERE ${scope.sql} AND source_channel <> '' ORDER BY value`, ...scope.params),
+    all<{ value: string }>(c.env.DB, `SELECT DISTINCT shipping_warehouse AS value FROM assets WHERE ${scope.sql} AND shipping_warehouse <> '' ORDER BY value`, ...scope.params)
+  ]);
+  return c.json({ items: items.map((item) => ({ ...item, warrantyStatus: warrantyDisplayStatus(item) })), filters: { versions: versions.map((row) => row.value), channels: channels.map((row) => row.value), warehouses: warehouses.map((row) => row.value) }, pagination: { page, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
+});
+
+app.get('/assets/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  const scope = assetScope(user);
+  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerName: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; dataQualityStatus: string; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
+      assets.warranty_start_at AS warrantyStartAt, assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.warranty_override_reason AS warrantyOverrideReason,
+      assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, dealers.name AS dealerName, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo,
+      assets.data_quality_status AS dataQualityStatus, assets.created_at AS createdAt, assets.updated_at AS updatedAt
+      FROM assets LEFT JOIN dealers ON dealers.id = assets.dealer_id LEFT JOIN stores ON stores.id = assets.store_id LEFT JOIN orders ON orders.id = assets.latest_order_id WHERE assets.id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
+  if (!asset) throw forbidden('未找到该资产或你无权查看');
+  const visibility = eventVisibilityScope(user);
+  const [identifiers, events, serviceCases, notes, sales, audit] = await Promise.all([
+    all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
+    all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
+    all(c.env.DB, `SELECT id, case_no AS caseNo, status, workflow_stage AS workflowStage, subject, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases WHERE asset_id = ? ORDER BY updated_at DESC`, asset.id),
+    can(user, 'data:read:all') ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt FROM asset_notes WHERE asset_id = ? AND visibility = 'admin_private' ORDER BY created_at DESC`, asset.id) : Promise.resolve([]),
+    can(user, 'data:read:all') ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
+    can(user, 'data:read:all') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
+  ]);
+  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), ...(can(user, 'data:read:all') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
+});
+
+app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  const input = await parseBody(c.req.raw, updateAssetWarrantySchema);
+  const asset = await one<{ id: string; warrantyOverrideStatus: string | null; warrantyOverrideReason: string }>(c.env.DB, 'SELECT id, warranty_override_status AS warrantyOverrideStatus, warranty_override_reason AS warrantyOverrideReason FROM assets WHERE id = ?', c.req.param('id'));
+  if (!asset) throw notFound('未找到该资产');
+  const eventType = input.warrantyOverrideStatus === 'denied' ? 'warranty_denied' : input.warrantyOverrideStatus === 'cancelled' ? 'warranty_cancelled' : input.warrantyOverrideStatus === 'scrapped' ? 'scrapped' : 'note_added';
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE assets SET warranty_override_status = ?, warranty_override_reason = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.warrantyOverrideStatus, input.warrantyOverrideReason, user.id, asset.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, old_value_json, new_value_json, operator_user_id, visibility, source)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP, '更新人工保修状态', ?, ?, ?, ?, 'admin_private', 'GSX')`).bind(id(), asset.id, eventType, input.warrantyOverrideReason || '已恢复按日期计算保修状态', JSON.stringify({ status: asset.warrantyOverrideStatus, reason: asset.warrantyOverrideReason }), JSON.stringify(input), user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'asset.warranty_override', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before: asset, after: input })
+  ]);
+  return c.json({ id: asset.id });
+});
+
+app.post('/assets/:id/after-sales', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:create');
+  const input = await parseBody(c.req.raw, createAssetAfterSalesSchema);
+  const scope = assetScope(user);
+  const asset = await one<{ id: string; productId: string | null; currentSn: string | null }>(c.env.DB, `SELECT id, product_id AS productId, current_sn AS currentSn FROM assets WHERE id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
+  if (!asset) throw forbidden('你无权为该资产创建售后工单');
+  assertStoreAccess(user, input.storeId);
+  const store = await one<{ dealerId: string }>(c.env.DB, `SELECT dealer_id AS dealerId FROM stores WHERE id = ? AND status = 'active'`, input.storeId);
+  if (!store) throw badRequest('所选店铺不可用');
+  const existing = await one<{ id: string }>(c.env.DB, `SELECT id FROM after_sales_cases WHERE asset_id = ? AND status IN ('open','in_progress')`, asset.id);
+  if (existing) throw conflict('该资产已有未关闭的售后工单，请先继续处理原工单');
+  const caseId = id();
+  const number = caseNo();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_cases (id, case_no, dealer_id, store_id, product_id, serial_number, asset_id, case_type, subject, description, status, workflow_stage, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'open', 'open', ?, ?)`).bind(caseId, number, store.dealerId, input.storeId, asset.productId, asset.currentSn, asset.id, input.caseType, input.subject, input.description, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'service_received', CURRENT_TIMESTAMP, '创建售后工单', ?, ?, ?, 'service_center', 'GSX')`).bind(id(), asset.id, input.subject, caseId, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'asset.after_sales_create', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: { caseId, caseNo: number } })
+  ]);
+  return c.json({ id: caseId, caseNo: number }, 201);
 });
 
 app.post('/admin/products', requireAuth, async (c) => {

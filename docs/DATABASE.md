@@ -13,6 +13,12 @@
 | `inventory` | 每产品可用库存；初值为零 |
 | `inventory_transactions` | 唯一允许改变库存的业务流水：期初、预留、释放、调整、退货 |
 | `serial_numbers` | 全局唯一 SN、产品、订单明细和 shipment 绑定状态 |
+| `assets` | GSX 资产主记录；允许保留历史重复、异常或缺失的 SN，并保存当前/原始 SN、产品快照、保修和数据质量状态 |
+| `asset_identifiers` | SN、旧标签、错误标签、替换 SN、临时编号等可追溯标识历史 |
+| `asset_events` | 无限扩展的资产生命周期事件，替代历史表中固定数量的维修记录列 |
+| `asset_notes` | 带可见范围的内部备注；历史用户画像仅可作为 `admin_private` 保存 |
+| `asset_sales` / `asset_sale_assets` | 历史销售记录及其与一项或多项资产的关联，保留原始价格/到账文本用于追溯 |
+| `asset_import_batches` / `asset_import_rows` | 历史保修 Excel 的预检查、原始行快照、行级问题和幂等导入状态 |
 | `orders` / `order_items` | 订单头、不可变的产品/SKU/单价快照与数量 |
 | `shipments` | 每订单一个 shipment、顺丰运单和发货状态 |
 | `after_sales_cases` / `after_sales_assignments` / `after_sales_assessments` / `after_sales_recommendations` / `after_sales_approvals` | 售后申请、服务中心分配、定损、处理建议和最终审批的独立记录 |
@@ -30,8 +36,32 @@
 5. 授权必须从 `user_roles → role_permissions` 和用户的店铺/服务中心关系计算；不得通过姓名、邮箱或旧兼容列判断权限。
 6. 超级管理员具有全局数据权限；经销商只能读取其 `store_user_assignments` 范围内的数据；仓库仅能读取已进入仓库流程的订单。
 7. 售后受理、定损、处理建议和最终审批分别需要不同权限；服务中心只能处理分配给自身服务中心的工单，最终审批不授予服务中心角色。
-6. 删除策略默认 `RESTRICT`（商业记录）或 `SET NULL`（审计/操作者引用），避免意外删除历史。
+8. 历史导入不会因重复、错误或缺失 SN 丢弃整批数据。`assets.current_sn` 仅对已核验的正常资产建立部分唯一索引；原始值及问题保留在导入行和标识历史中。
+9. 历史文件以 `file_fingerprint + source_row_number` 作为导入幂等键；同一文件重复确认不会重复创建资产、事件或备注。
+10. 删除策略默认 `RESTRICT`（商业记录）或 `SET NULL`（审计/操作者引用），避免意外删除历史。
 
 ## 原子性
 
 审核订单、绑定 SN、打包、发货、库存调整、创建售后和管理员创建操作均以 `D1Database.batch()` 提交。D1 batch 将这些语句作为事务处理；触发器或唯一/外键约束失败会中止整个批次。库存审核在批次中先更新订单再写入预留流水；建议在接入并发集成测试后补充一个数据库级“预留订单状态”断言触发器。
+
+## GSX 资产与保修中心
+
+```mermaid
+erDiagram
+  assets ||--o{ asset_identifiers : "标识历史"
+  assets ||--o{ asset_events : "生命周期"
+  assets ||--o{ asset_notes : "内部备注"
+  assets ||--o{ asset_sale_assets : "历史销售关联"
+  asset_sales ||--o{ asset_sale_assets : "一笔销售可关联多件资产"
+  asset_import_batches ||--o{ asset_import_rows : "源文件行"
+  assets ||--o{ after_sales_cases : "售后工单"
+  orders ||--o{ assets : "当前订单（可空）"
+  dealers ||--o{ assets : "销售范围（可空）"
+  stores ||--o{ assets : "销售店铺（可空）"
+```
+
+`assets` 不替代既有订单拣货 SN 表；它以历史与售后追溯为中心，逐步与订单、物流及售后工单关联。正常资产的当前 SN 可唯一，历史重复、顺丰单号误填、旧标签和早期无 SN 记录均不会被强制合并或丢弃。`asset_identifiers` 记录所有可查询标识，故当前 SN 与旧 SN 都可定位同一资产。
+
+历史保修导入使用三段式流程：预检查仅写入导入批次和原始行快照；人工确认才创建资产、销售关联、生命周期事件及私密备注；行级严重错误可跳过而不影响其余记录。固定的“维修记录 1～4”会变成多个 `asset_events`，固定的“备注 1～5”和“用户画像”会变成可无限追加的 `asset_notes`。其中用户画像和主观性历史备注始终为 `admin_private`，不向仓库、经销商或服务中心返回。
+
+保修展示优先使用人工覆盖（无保修、拒保、异常、注销、报废）；没有覆盖时根据保修起止日期动态计算在保、已过保、未开始或无有效日期。`after_sales_cases.asset_id` 复用既有售后工单体系，避免形成第二套彼此割裂的工单记录。
