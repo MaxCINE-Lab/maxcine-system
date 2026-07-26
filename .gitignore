@@ -10,3 +10,6 @@ coverage/
 apps/web/.vite/
 work/
 *.tsbuildinfo
+.maxcine-dev.json
+test-results/
+playwright-report/

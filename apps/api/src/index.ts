@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, conflict, createAfterSalesSchema,
-  createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateOrderSchema, updateProductSchema, updateUserSchema,
+  createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema,
   type ApiErrorBody, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
@@ -229,7 +229,7 @@ app.post('/orders', requireAuth, async (c) => {
   assertPermission(user, 'order:create');
   const input = await parseBody(c.req.raw, createOrderSchema);
   assertStoreAccess(user, input.storeId);
-  const store = await one<{ id: string; dealerId: string }>(c.env.DB, 'SELECT id, dealer_id AS dealerId FROM stores WHERE id = ? AND status = \'active\'', input.storeId);
+  const store = await one<{ id: string; dealerId: string }>(c.env.DB, `SELECT stores.id, stores.dealer_id AS dealerId FROM stores JOIN dealers ON dealers.id = stores.dealer_id WHERE stores.id = ? AND stores.status = 'active' AND dealers.status = 'active'`, input.storeId);
   if (!store) throw forbidden('该店铺不可用');
   if (new Set(input.items.map((item) => item.productId)).size !== input.items.length) throw badRequest('同一产品只能添加一次');
   const productIds = input.items.map((item) => item.productId);
@@ -386,6 +386,8 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   assertPermission(user, 'order:submit');
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
+  const dealer = await one<{ id: string }>(c.env.DB, "SELECT id FROM dealers WHERE id = ? AND status = 'active'", order.dealerId);
+  if (!dealer) throw forbidden('所属经销商已停用，无法提交订单');
   if (!canTransitionOrder(user, order.status, 'submitted') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
   const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
     JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
@@ -617,17 +619,17 @@ app.get('/after-sales', requireAuth, async (c) => {
 app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
-  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; storeId: string | null; storeName: string | null; orderId: string | null; productId: string | null; productName: string | null; serialNumber: string | null; caseType: string; subject: string; description: string; contactName: string | null; contactPhone: string | null; status: string; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, store_id AS storeId, stores.name AS storeName, order_id AS orderId, product_id AS productId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, description, contact_name AS contactName, contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, asa.service_center_id AS serviceCenterId, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
-     FROM after_sales_cases LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id LEFT JOIN after_sales_assignments AS asa ON asa.case_id = after_sales_cases.id WHERE after_sales_cases.id = ?`, c.req.param('id'));
+  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; productId: string | null; productName: string | null; serialNumber: string | null; caseType: string; subject: string; description: string; contactName: string | null; contactPhone: string | null; status: string; workflowStage: string; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, store_id AS storeId, stores.name AS storeName, order_id AS orderId, product_id AS productId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, description, contact_name AS contactName, contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
+     FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id LEFT JOIN after_sales_assignments AS asa ON asa.case_id = after_sales_cases.id LEFT JOIN service_centers ON service_centers.id = asa.service_center_id WHERE after_sales_cases.id = ?`, c.req.param('id'));
   if (!serviceCase) throw notFound('未找到该售后工单');
   const scope = afterSalesScope(user);
   const allowed = await one<{ id: string }>(c.env.DB, `SELECT id FROM after_sales_cases WHERE id = ? AND ${scope.sql}`, serviceCase.id, ...scope.params);
   if (!allowed) throw forbidden('你无权查看该售后工单');
   const [assessments, recommendations, approvals] = await Promise.all([
-    all(c.env.DB, 'SELECT result, details, assessed_at AS assessedAt FROM after_sales_assessments WHERE case_id = ? ORDER BY assessed_at DESC', serviceCase.id),
-    all(c.env.DB, 'SELECT recommendation, details, recommended_at AS recommendedAt FROM after_sales_recommendations WHERE case_id = ? ORDER BY recommended_at DESC', serviceCase.id),
-    all(c.env.DB, 'SELECT outcome, note, approved_at AS approvedAt FROM after_sales_approvals WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id)
+    all(c.env.DB, 'SELECT result, details, assessed_at AS assessedAt, users.name AS actorName FROM after_sales_assessments JOIN users ON users.id = after_sales_assessments.assessed_by WHERE case_id = ? ORDER BY assessed_at DESC', serviceCase.id),
+    all(c.env.DB, 'SELECT recommendation, details, recommended_at AS recommendedAt, users.name AS actorName FROM after_sales_recommendations JOIN users ON users.id = after_sales_recommendations.recommended_by WHERE case_id = ? ORDER BY recommended_at DESC', serviceCase.id),
+    all(c.env.DB, 'SELECT outcome, resolution, note, approved_at AS approvedAt, users.name AS actorName FROM after_sales_approvals JOIN users ON users.id = after_sales_approvals.approved_by WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id)
   ]);
   return c.json({ case: serviceCase, assessments, recommendations, approvals });
 });
@@ -702,10 +704,10 @@ app.patch('/after-sales/:id', requireAuth, async (c) => {
   const serviceCase = await one<{ id: string; dealerId: string; storeId: string }>(c.env.DB, 'SELECT id, dealer_id AS dealerId, store_id AS storeId FROM after_sales_cases WHERE id = ?', c.req.param('id'));
   if (!serviceCase) throw notFound('未找到该售后工单');
   await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO after_sales_approvals (id, case_id, outcome, note, approved_by) VALUES (?, ?, ?, ?, ?)').bind(id(), serviceCase.id, input.outcome, input.note ?? '', user.id),
+    c.env.DB.prepare('INSERT INTO after_sales_approvals (id, case_id, outcome, resolution, note, approved_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id(), serviceCase.id, input.outcome, input.resolution ?? '', input.note, user.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET status = ?, workflow_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.outcome === 'approved' ? 'resolved' : 'closed', input.outcome, user.id, serviceCase.id),
     c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id(), serviceCase.dealerId, serviceCase.storeId, 'after_sales_approved', '售后工单最终处理结果', input.note ?? `处理结果：${input.outcome}`, `/system/after-sales/${serviceCase.id}`),
+      .bind(id(), serviceCase.dealerId, serviceCase.storeId, 'after_sales_approved', '售后工单最终处理结果', input.note, `/system/after-sales/${serviceCase.id}`),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.approve', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { outcome: input.outcome } })
   ]);
   return c.json({ id: serviceCase.id, outcome: input.outcome });
@@ -718,9 +720,9 @@ app.post('/admin/products', requireAuth, async (c) => {
   const productId = id();
   const inventoryId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO products (id, sku, name, description, unit_price_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .bind(productId, input.sku, input.name, input.description, input.unitPriceCents, user.id, user.id),
-    c.env.DB.prepare('INSERT INTO inventory (id, product_id, created_by, updated_by) VALUES (?, ?, ?, ?)').bind(inventoryId, productId, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO products (id, sku, name, description, product_version, specification, unit_price_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(productId, input.sku, input.name, input.description, input.productVersion, input.specification, input.unitPriceCents, user.id, user.id),
+    c.env.DB.prepare('INSERT INTO inventory (id, product_id, reorder_level, created_by, updated_by) VALUES (?, ?, ?, ?, ?)').bind(inventoryId, productId, input.reorderLevel, user.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'product.create', entityType: 'product', entityId: productId, requestId: c.get('requestId'), after: { sku: input.sku } })
   ]);
   return c.json({ id: productId, inventoryId }, 201);
@@ -752,7 +754,7 @@ app.post('/admin/dealers', requireAuth, async (c) => {
   const input = await parseBody(c.req.raw, createDealerSchema);
   const dealerId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, user.id, user.id),
+    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, authorization_type, service_center_id, contact_name, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, user.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.create', entityType: 'dealer', entityId: dealerId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: dealerId }, 201);
@@ -814,9 +816,57 @@ app.get('/admin/users', requireAuth, async (c) => {
     GROUP BY users.id ORDER BY users.created_at DESC`) });
 });
 
+app.get('/admin/users/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'user:manage');
+  const account = await one(c.env.DB, 'SELECT id, email, name, is_active AS isActive, created_at AS createdAt, updated_at AS updatedAt FROM users WHERE id = ?', c.req.param('id'));
+  if (!account) throw notFound('未找到该用户');
+  const [roles, dealers, serviceCenters, stores] = await Promise.all([
+    all(c.env.DB, 'SELECT roles.id, roles.code, roles.name FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_id = ?', c.req.param('id')),
+    all(c.env.DB, 'SELECT dealers.id, dealers.name FROM dealer_user_assignments JOIN dealers ON dealers.id = dealer_user_assignments.dealer_id WHERE user_id = ? AND dealer_user_assignments.status = \'active\'', c.req.param('id')),
+    all(c.env.DB, 'SELECT service_centers.id, service_centers.name FROM service_center_user_assignments JOIN service_centers ON service_centers.id = service_center_user_assignments.service_center_id WHERE user_id = ? AND service_center_user_assignments.status = \'active\'', c.req.param('id')),
+    all(c.env.DB, 'SELECT stores.id, stores.name FROM store_user_assignments JOIN stores ON stores.id = store_user_assignments.store_id WHERE user_id = ? AND store_user_assignments.status = \'active\'', c.req.param('id'))
+  ]);
+  return c.json({ user: account, roles, dealers, serviceCenters, stores });
+});
+
+app.get('/admin/options', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'user:manage');
+  const [roles, dealers, stores, users, serviceCenters] = await Promise.all([
+    all(c.env.DB, "SELECT id, code, name FROM roles WHERE is_active = 1 ORDER BY name"),
+    all(c.env.DB, "SELECT id, name FROM dealers WHERE status = 'active' ORDER BY name"),
+    all(c.env.DB, "SELECT id, name FROM stores WHERE status = 'active' ORDER BY name"),
+    all(c.env.DB, 'SELECT id, name, email FROM users WHERE is_active = 1 ORDER BY name'),
+    all(c.env.DB, "SELECT id, name, province FROM service_centers WHERE status = 'active' ORDER BY name")
+  ]);
+  return c.json({ roles, dealers, stores, users, serviceCenters });
+});
+
 app.get('/admin/dealers', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'dealer:manage');
-  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.status, COUNT(stores.id) AS storeCount FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id GROUP BY dealers.id ORDER BY dealers.name`) });
+  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.contact_name AS contactName, dealers.status, service_centers.name AS serviceCenterName, COUNT(DISTINCT stores.id) AS storeCount, COUNT(DISTINCT dealer_user_assignments.user_id) AS userCount, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id LEFT JOIN dealer_user_assignments ON dealer_user_assignments.dealer_id = dealers.id AND dealer_user_assignments.status = 'active' LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id GROUP BY dealers.id ORDER BY dealers.name`) });
+});
+
+app.get('/admin/dealers/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'dealer:manage');
+  const dealer = await one(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.service_center_id AS serviceCenterId, dealers.contact_name AS contactName, dealers.status, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt, service_centers.name AS serviceCenterName FROM dealers LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id WHERE dealers.id = ?`, c.req.param('id'));
+  if (!dealer) throw notFound('未找到该经销商');
+  const [stores, users, summary] = await Promise.all([
+    all(c.env.DB, 'SELECT id, name, platform, status FROM stores WHERE dealer_id = ? ORDER BY name', c.req.param('id')),
+    all(c.env.DB, `SELECT users.id, users.name, users.email FROM dealer_user_assignments JOIN users ON users.id = dealer_user_assignments.user_id WHERE dealer_id = ? AND dealer_user_assignments.status = 'active' ORDER BY users.name`, c.req.param('id')),
+    one(c.env.DB, `SELECT (SELECT COUNT(*) FROM orders WHERE dealer_id = ?) AS orderCount, (SELECT COUNT(*) FROM after_sales_cases WHERE dealer_id = ?) AS afterSalesCount`, c.req.param('id'), c.req.param('id'))
+  ]);
+  return c.json({ dealer, stores, users, summary });
+});
+
+app.patch('/admin/dealers/:id', requireAuth, async (c) => {
+  const user = c.get('user'); assertPermission(user, 'dealer:manage'); const input = await parseBody(c.req.raw, updateDealerSchema);
+  const dealer = await one<{ id: string }>(c.env.DB, 'SELECT id FROM dealers WHERE id = ?', c.req.param('id')); if (!dealer) throw notFound('未找到该经销商');
+  if (input.serviceCenterId) { const center = await one<{ id: string }>(c.env.DB, "SELECT id FROM service_centers WHERE id = ? AND status = 'active'", input.serviceCenterId); if (!center) throw badRequest('所选授权服务中心不可用'); }
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE dealers SET code = ?, name = ?, province = ?, authorization_type = ?, service_center_id = ?, contact_name = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.status, user.id, dealer.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.update', entityType: 'dealer', entityId: dealer.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: dealer.id });
 });
 
 app.get('/admin/audit-logs', requireAuth, async (c) => {
@@ -840,14 +890,23 @@ app.get('/admin/dashboard', requireAuth, async (c) => {
 
 app.get('/admin/products', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'inventory:manage');
-  return c.json({ products: await all(c.env.DB, `SELECT products.id, sku, name, description, specification, unit_price_cents AS unitPriceCents, is_active AS isActive, inventory.id AS inventoryId, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel FROM products JOIN inventory ON inventory.product_id = products.id ORDER BY sku`) });
+  const search = new URL(c.req.url).searchParams.get('search')?.trim() ?? ''; const active = new URL(c.req.url).searchParams.get('active');
+  return c.json({ products: await all(c.env.DB, `SELECT products.id, sku, name, description, product_version AS productVersion, specification, unit_price_cents AS unitPriceCents, is_active AS isActive, products.created_at AS createdAt, products.updated_at AS updatedAt, inventory.id AS inventoryId, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel FROM products JOIN inventory ON inventory.product_id = products.id WHERE (? = '' OR sku LIKE '%' || ? || '%' OR name LIKE '%' || ? || '%') AND (? = '' OR is_active = ?) ORDER BY sku`, search, search, search, active === 'true' || active === 'false' ? active : '', active === 'true' ? 1 : active === 'false' ? 0 : '') });
+});
+
+app.get('/admin/products/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'inventory:manage');
+  const product = await one(c.env.DB, `SELECT products.id, sku, name, description, product_version AS productVersion, specification, unit_price_cents AS unitPriceCents, is_active AS isActive, products.created_at AS createdAt, products.updated_at AS updatedAt, inventory.id AS inventoryId, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel FROM products JOIN inventory ON inventory.product_id = products.id WHERE products.id = ?`, c.req.param('id'));
+  if (!product) throw notFound('未找到该产品');
+  const orderCount = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM order_items WHERE product_id = ?', c.req.param('id'));
+  return c.json({ product, orderCount: orderCount?.count ?? 0 });
 });
 
 app.patch('/admin/products/:id', requireAuth, async (c) => {
   const user = c.get('user'); assertPermission(user, 'inventory:manage'); const input = await parseBody(c.req.raw, updateProductSchema);
   const product = await one<{ id: string }>(c.env.DB, 'SELECT id FROM products WHERE id = ?', c.req.param('id')); if (!product) throw notFound('未找到该产品');
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE products SET sku = ?, name = ?, description = ?, specification = ?, unit_price_cents = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.sku, input.name, input.description, input.specification, input.unitPriceCents, Number(input.isActive), user.id, product.id),
+    c.env.DB.prepare('UPDATE products SET sku = ?, name = ?, description = ?, product_version = ?, specification = ?, unit_price_cents = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.sku, input.name, input.description, input.productVersion, input.specification, input.unitPriceCents, Number(input.isActive), user.id, product.id),
     c.env.DB.prepare('UPDATE inventory SET reorder_level = ?, updated_by = ? WHERE product_id = ?').bind(input.reorderLevel, user.id, product.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'product.update', entityType: 'product', entityId: product.id, requestId: c.get('requestId'), after: input })
   ]);
@@ -866,19 +925,45 @@ app.get('/admin/inventory/:id/transactions', requireAuth, async (c) => {
 
 app.get('/admin/stores', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'store:manage');
-  return c.json({ stores: await all(c.env.DB, `SELECT stores.id, stores.code, stores.name, stores.platform, stores.status, dealers.name AS dealerName, owner.name AS ownerName FROM stores JOIN dealers ON dealers.id = stores.dealer_id LEFT JOIN users AS owner ON owner.id = stores.owner_user_id ORDER BY stores.name`) });
+  return c.json({ stores: await all(c.env.DB, `SELECT stores.id, stores.dealer_id AS dealerId, stores.code, stores.name, stores.platform, stores.owner_user_id AS ownerUserId, stores.status, stores.created_at AS createdAt, stores.updated_at AS updatedAt, dealers.name AS dealerName, owner.name AS ownerName FROM stores JOIN dealers ON dealers.id = stores.dealer_id LEFT JOIN users AS owner ON owner.id = stores.owner_user_id ORDER BY stores.name`) });
+});
+
+app.get('/admin/stores/:id', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'store:manage');
+  const store = await one(c.env.DB, `SELECT stores.id, stores.dealer_id AS dealerId, stores.code, stores.name, stores.platform, stores.owner_user_id AS ownerUserId, stores.status, stores.created_at AS createdAt, stores.updated_at AS updatedAt, dealers.name AS dealerName, owner.name AS ownerName FROM stores JOIN dealers ON dealers.id = stores.dealer_id LEFT JOIN users AS owner ON owner.id = stores.owner_user_id WHERE stores.id = ?`, c.req.param('id'));
+  if (!store) throw notFound('未找到该店铺');
+  const [users, summary] = await Promise.all([
+    all(c.env.DB, `SELECT users.id, users.name, users.email, store_user_assignments.access_level AS accessLevel FROM store_user_assignments JOIN users ON users.id = store_user_assignments.user_id WHERE store_id = ? AND store_user_assignments.status = 'active' ORDER BY users.name`, c.req.param('id')),
+    one(c.env.DB, `SELECT (SELECT COUNT(*) FROM orders WHERE store_id = ?) AS orderCount, (SELECT COUNT(*) FROM after_sales_cases WHERE store_id = ?) AS afterSalesCount`, c.req.param('id'), c.req.param('id'))
+  ]);
+  return c.json({ store, users, summary });
 });
 
 app.patch('/admin/stores/:id', requireAuth, async (c) => {
-  const user = c.get('user'); assertPermission(user, 'store:manage');
-  const input = await parseBody(c.req.raw, z.object({ name: z.string().trim().min(2).max(160), platform: z.string().trim().min(2).max(64), ownerUserId: z.string().uuid().nullable(), status: z.enum(['active', 'inactive']) }));
-  await c.env.DB.prepare('UPDATE stores SET name = ?, platform = ?, owner_user_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.name, input.platform, input.ownerUserId, input.status, user.id, c.req.param('id')).run();
-  return c.json({ id: c.req.param('id') });
+  const user = c.get('user'); assertPermission(user, 'store:manage'); const input = await parseBody(c.req.raw, updateStoreSchema);
+  const store = await one<{ id: string; ownerUserId: string | null }>(c.env.DB, 'SELECT id, owner_user_id AS ownerUserId FROM stores WHERE id = ?', c.req.param('id')); if (!store) throw notFound('未找到该店铺');
+  const dealer = await one<{ id: string }>(c.env.DB, "SELECT id FROM dealers WHERE id = ? AND status = 'active'", input.dealerId); if (!dealer) throw badRequest('所选经销商不可用');
+  if (input.ownerUserId) { const owner = await one<{ id: string }>(c.env.DB, 'SELECT id FROM users WHERE id = ? AND is_active = 1', input.ownerUserId); if (!owner) throw badRequest('所选负责人不可用'); }
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE stores SET dealer_id = ?, code = ?, name = ?, platform = ?, owner_user_id = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.dealerId, input.code, input.name, input.platform, input.ownerUserId, input.status, user.id, store.id),
+    ...(input.ownerUserId ? [c.env.DB.prepare("INSERT INTO store_user_assignments (user_id, store_id, access_level, assigned_by) VALUES (?, ?, 'owner', ?) ON CONFLICT(user_id, store_id) DO UPDATE SET access_level = 'owner', status = 'active', assigned_by = excluded.assigned_by").bind(input.ownerUserId, store.id, user.id)] : []),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'store.update', entityType: 'store', entityId: store.id, requestId: c.get('requestId'), before: { ownerUserId: store.ownerUserId }, after: input })
+  ]);
+  return c.json({ id: store.id });
 });
 
 app.patch('/admin/users/:id', requireAuth, async (c) => {
   const user = c.get('user'); assertPermission(user, 'user:manage'); const input = await parseBody(c.req.raw, updateUserSchema); const targetId = c.req.param('id');
   const dealerIds = input.dealerIds ?? []; const serviceCenterIds = input.serviceCenterIds ?? []; const storeIds = input.storeIds ?? [];
+  const [target, requestedRoles, superAdminCount] = await Promise.all([
+    one<{ id: string }>(c.env.DB, 'SELECT id FROM users WHERE id = ?', targetId),
+    all<{ id: string; code: string }>(c.env.DB, `SELECT id, code FROM roles WHERE is_active = 1 AND id IN (${placeholders(input.roleIds)})`, ...input.roleIds),
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN roles ON roles.id = user_roles.role_id WHERE users.is_active = 1 AND roles.code = 'super_admin'`)
+  ]);
+  if (!target || requestedRoles.length !== new Set(input.roleIds).size) throw badRequest('角色包含不可用的记录');
+  const keepsSuperAdmin = requestedRoles.some((role) => role.code === 'super_admin') && input.isActive;
+  const currentlySuperAdmin = await one<{ id: string }>(c.env.DB, `SELECT users.id FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN roles ON roles.id = user_roles.role_id WHERE users.id = ? AND roles.code = 'super_admin'`, targetId);
+  if (currentlySuperAdmin && !keepsSuperAdmin && (superAdminCount?.count ?? 0) <= 1) throw conflict('至少需要保留一名启用的超级管理员');
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM dealer_user_assignments WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM service_center_user_assignments WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM store_user_assignments WHERE user_id = ?').bind(targetId),
     c.env.DB.prepare('UPDATE users SET name = ?, is_active = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.name, Number(input.isActive), user.id, targetId),

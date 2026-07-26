@@ -19,5 +19,9 @@ export default tseslint.config(
       'react-hooks/exhaustive-deps': 'warn',
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }]
     }
+  },
+  {
+    files: ['scripts/**/*.mjs', 'e2e/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } }
   }
 );

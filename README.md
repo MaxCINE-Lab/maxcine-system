@@ -33,7 +33,14 @@ npm run db:seed:local
 npm run dev
 ```
 
-Web 默认位于 `http://localhost:5173`，Worker 本地端口由 Wrangler 输出。Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库；本地开发账户的初始化说明仅保留在受控开发流程中，绝不可在共享环境、预发布环境或生产环境应用该种子数据。
+`npm run dev` 固定使用 Web `http://localhost:5173` 与 API `http://localhost:8787`，并显示本地 D1 路径 `apps/api/.wrangler/state/v3/d1`。启动前会检测端口；如端口已被占用会给出中文提示，不会偷偷切换端口或终止不明进程。使用以下命令查看或停止**由该脚本启动**的服务：
+
+```bash
+npm run dev:status
+npm run dev:stop
+```
+
+Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库；本地开发账户的初始化说明仅保留在受控开发流程中，绝不可在共享环境、预发布环境或生产环境应用该种子数据。
 
 本地浏览器始终访问 `http://localhost:5173`，不要直接在页面中使用 Worker 的 `8787` 端口；开发代理会去除 `/api` 前缀并转发请求。登录密码最少 8 位；真实账户与密码不得加入本地种子数据。
 
@@ -89,5 +96,13 @@ npm run typecheck
 npm test
 npm run build
 ```
+
+浏览器端验收使用隔离临时 D1，不会改写日常本地演示数据。为避免把测试密码写入仓库，运行时由本机环境变量提供：
+
+```bash
+E2E_PASSWORD='<仅限本机的演示密码>' npm run test:e2e
+```
+
+该脚本固定使用 `5175`（Web）和 `8791`（API）；任一端口被占用时会停止并提示，不会切换到其他端口。
 
 详细架构、安全、品牌、数据库和待办事项分别见 [ARCHITECTURE.md](ARCHITECTURE.md)、[SECURITY.md](SECURITY.md)、[BRAND_GUIDELINES.md](BRAND_GUIDELINES.md)、[docs/DATABASE.md](docs/DATABASE.md) 与 [TODO.md](TODO.md)。

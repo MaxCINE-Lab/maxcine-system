@@ -47,12 +47,13 @@ export const createProductSchema = z.object({
   sku: z.string().trim().min(2).max(64).regex(/^[A-Z0-9._-]+$/, 'SKU 只能使用大写字母、数字和常用连接符'),
   name: z.string().trim().min(2).max(160),
   description: z.string().trim().max(2000).default(''),
-  unitPriceCents: z.number().int().min(0).max(999999999)
+  unitPriceCents: z.number().int().min(0).max(999999999),
+  productVersion: z.string().trim().max(80).default(''),
+  specification: z.string().trim().max(160).default(''),
+  reorderLevel: z.number().int().min(0).max(999999).default(0)
 });
 
 export const updateProductSchema = createProductSchema.extend({
-  specification: z.string().trim().max(160).default(''),
-  reorderLevel: z.number().int().min(0).max(999999).default(0),
   isActive: z.boolean().default(true)
 });
 
@@ -64,7 +65,15 @@ export const adjustInventorySchema = z.object({
 export const createDealerSchema = z.object({
   code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '经销商编码只能使用大写字母、数字和连字符'),
   name: z.string().trim().min(2).max(160),
-  province: z.string().trim().max(64).default('')
+  province: z.string().trim().max(64).default(''),
+  authorizationType: z.string().trim().min(2).max(80).default('授权经销商'),
+  serviceCenterId: z.string().uuid().nullable().default(null),
+  contactName: z.string().trim().max(80).default('')
+});
+
+export const updateDealerSchema = createDealerSchema.omit({ code: true }).extend({
+  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '经销商编码只能使用大写字母、数字和连字符'),
+  status: z.enum(['active', 'inactive'])
 });
 
 export const createStoreSchema = z.object({
@@ -73,6 +82,15 @@ export const createStoreSchema = z.object({
   name: z.string().trim().min(2).max(160),
   platform: z.string().trim().min(2).max(64),
   ownerUserId: z.string().uuid()
+});
+
+export const updateStoreSchema = z.object({
+  dealerId: z.string().uuid(),
+  code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '店铺编码只能使用大写字母、数字和连字符'),
+  name: z.string().trim().min(2).max(160),
+  platform: z.enum(['闲鱼', '淘宝', '官方渠道', '线下门店', '其他']),
+  ownerUserId: z.string().uuid().nullable(),
+  status: z.enum(['active', 'inactive'])
 });
 
 export const createUserSchema = z.object({
@@ -103,7 +121,8 @@ export const passwordResetSchema = z.object({ nextPassword: z.string().min(12).m
 
 export const updateAfterSalesSchema = z.object({
   outcome: z.enum(['approved', 'rejected']),
-  note: z.string().trim().max(1000).optional()
+  resolution: z.enum(['维修', '换货', '补发配件', '退款建议', '拒绝保修', '其他处理']).optional(),
+  note: z.string().trim().min(2).max(1000)
 });
 
 export const assignAfterSalesSchema = z.object({

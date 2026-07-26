@@ -4,6 +4,7 @@ import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } fro
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
 import { OperationsPortal } from './OperationsPortal';
+import { ServiceCenterPortal } from './ServiceCenterPortal';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -185,6 +186,7 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (route === '/terms') return <Legal type="terms" />;
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
+  if (user.roles.includes('authorized_service_center') && !user.roles.includes('super_admin') && !user.roles.includes('warehouse_manager') && route.startsWith('/system/service-center')) return <ServiceCenterPortal user={user} route={route} />;
   if (user.roles.includes('dealer') && !user.roles.includes('super_admin') && !user.roles.includes('warehouse_manager') && route.startsWith('/system')) return <DealerPortal user={user} route={route} />;
   if ((user.roles.includes('super_admin') || user.roles.includes('warehouse_manager')) && route.startsWith('/system')) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (route === '/system/dashboard') return <Dashboard user={user} />;
