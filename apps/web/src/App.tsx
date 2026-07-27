@@ -212,6 +212,9 @@ export function App() {
   const route = useRoute();
   const [user, setUser] = useState<SessionUser | null>(null);
   useEffect(() => { api<CurrentUserResponse>('/me').then((result) => setUser(result.user)).catch(() => undefined); }, []);
+  useEffect(() => {
+    if (route.startsWith('/system')) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+  }, [route]);
   const logout = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); location.hash = '#/login'; } };
   return <AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />;
 }

@@ -1,4 +1,4 @@
-import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { type ChangeEvent, type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as XLSX from 'xlsx';
 import { HISTORICAL_WARRANTY_COLUMNS, type SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
@@ -24,6 +24,8 @@ const errorText = (error: unknown) => {
 };
 const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${value.replace(' ', 'T')}Z`)) : '—';
 const statusTone = (value: string) => value === '在保' || value === 'active' ? 'good' : ['异常', '拒保', '注销', '报废', 'duplicate_identifier', 'invalid_identifier', 'missing_identifier'].includes(value) ? 'risk' : 'neutral';
+const assetStatusName: Record<string, string> = { active: '在库', in_service: '使用中', refurbished: '已翻新', returned_to_inventory: '已退回库存', resold: '已重新销售', scrapped: '已报废', unknown: '待核验' };
+const dataQualityName: Record<string, string> = { normal: '正常', warning: '待核验', duplicate_identifier: '重复标签', invalid_identifier: '标签异常', missing_identifier: '缺少 SN' };
 
 function GsxTabs({ active, canImport }: { active: string; canImport: boolean }) {
   const tabs = [
@@ -33,7 +35,7 @@ function GsxTabs({ active, canImport }: { active: string; canImport: boolean }) 
 }
 
 function Notice({ notice }: { notice: Notice }) { return notice ? <div className={`notice notice--${notice.tone === 'error' ? 'error' : 'info'}`}>{notice.text}</div> : null; }
-function Pill({ value }: { value: string }) { return <span className={`status gsx-status gsx-status--${statusTone(value)}`}>{value}</span>; }
+function Pill({ value }: { value: string }) { return <span className={`status gsx-status gsx-status--${statusTone(value)}`}>{dataQualityName[value] ?? assetStatusName[value] ?? value}</span>; }
 
 async function fingerprint(buffer: ArrayBuffer): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', buffer);
@@ -67,12 +69,20 @@ function SearchHome({ user, route, logout }: Props) {
   const [query, setQuery] = useState('');
   const [items, setItems] = useState<Asset[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
+  const [searching, setSearching] = useState(false);
+  const [hasSearched, setHasSearched] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
   const [recentQueries, setRecentQueries] = useState<string[]>(() => {
     try { return JSON.parse(sessionStorage.getItem('maxcine-gsx-recent-queries') || '[]') as string[]; }
     catch { return []; }
   });
+  const [recentOpened, setRecentOpened] = useState<Asset[]>(() => {
+    try { return JSON.parse(sessionStorage.getItem('maxcine-gsx-recent-opened') || '[]') as Asset[]; }
+    catch { return []; }
+  });
+  useEffect(() => { inputRef.current?.focus(); }, []);
   const search = async (event: FormEvent) => {
-    event.preventDefault(); setNotice(null);
+    event.preventDefault(); setNotice(null); setItems([]); setHasSearched(true); setSearching(true);
     try {
       const result = await api<{ items: Asset[] }>(`/gsx/search?q=${encodeURIComponent(query)}`);
       setItems(result.items);
@@ -82,11 +92,16 @@ function SearchHome({ user, route, logout }: Props) {
         setRecentQueries(next);
         sessionStorage.setItem('maxcine-gsx-recent-queries', JSON.stringify(next));
       }
-      if (!result.items.length) setNotice({ tone: 'success', text: '未找到匹配的资产、订单、运单或工单。' });
     }
     catch (error) { setNotice({ tone: 'error', text: errorText(error) }); }
+    finally { setSearching(false); }
   };
-  return <Shell user={user} route={route} title="GSX 查询" subtitle="通过 SN、运单号、订单号或工单号查找资产。" logout={logout}><GsxTabs active="/system/admin/assets" canImport={user.permissions.includes('asset:import')} /><div className="gsx-home-grid"><section className="panel gsx-search"><form onSubmit={search}><label htmlFor="gsx-search">统一查询</label><p>支持当前 SN、历史 SN、顺丰单号、订单号和售后工单号。</p><div className="gsx-search-row"><input id="gsx-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入当前 SN、原 SN、顺丰单号、订单号或工单号" minLength={2} /><button className="button" type="submit" disabled={query.trim().length < 2}>查询</button></div></form>{recentQueries.length > 0 && <div className="gsx-recent-queries"><span>最近查询</span>{recentQueries.map((item) => <button type="button" key={item} onClick={() => setQuery(item)}>{item}</button>)}</div>}</section><section className="panel gsx-home-actions"><div className="panel-title"><h2>快捷入口</h2></div><div className="gsx-quick-grid"><a href="#/system/admin/assets/list"><strong>资产列表</strong><span>浏览全部资产记录</span></a><a href="#/system/admin/assets/warranty"><strong>在保资产</strong><span>查看有效保修中的资产</span></a><a href="#/system/admin/assets/exceptions"><strong>异常资产</strong><span>处理待核验的历史数据</span></a><a href="#/system/admin/after-sales"><strong>最近售后</strong><span>进入售后工单处理列表</span></a>{user.permissions.includes('asset:import') && <a href="#/system/admin/assets/import"><strong>历史导入</strong><span>查看并继续历史数据导入</span></a>}</div></section></div><section className="panel gsx-search-help"><div><h2>查询说明</h2><p>优先使用产品 SN 查询；当标签异常或更换过 SN 时，也可以输入原 SN 或历史标签。</p></div><span>查询结果会按资产、订单、物流和售后关联信息汇总展示。</span></section><Notice notice={notice} />{items.length > 0 && <section className="panel"><div className="panel-title"><h2>查询结果</h2><span>{items.length} 条结果</span></div><div className="gsx-result-grid">{items.map((item) => <a className="gsx-result" href={`#/system/admin/assets/${item.id}`} key={item.id}><Pill value={item.warrantyStatus} /><strong>{item.currentSn || item.originalSn || '待补充 SN'}</strong><span>{item.productName} · {item.version || '未标注版本'}</span><small>{item.sourceChannel || '未标注渠道'} · {item.assetStatus}</small></a>)}</div></section>}</Shell>;
+  const rememberOpened = (item: Asset) => {
+    const next = [item, ...recentOpened.filter((value) => value.id !== item.id)].slice(0, 4);
+    setRecentOpened(next);
+    sessionStorage.setItem('maxcine-gsx-recent-opened', JSON.stringify(next));
+  };
+  return <Shell user={user} route={route} title="GSX 查询" subtitle="通过 SN、运单号、订单号或工单号查找资产。" logout={logout}><GsxTabs active="/system/admin/assets" canImport={user.permissions.includes('asset:import')} /><div className="gsx-home-grid"><section className="panel gsx-search"><form onSubmit={search}><label htmlFor="gsx-search">统一查询</label><p>支持当前 SN、历史 SN、顺丰单号、订单号和售后工单号。</p><div className="gsx-search-row"><input ref={inputRef} id="gsx-search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="输入当前 SN、原 SN、顺丰单号、订单号或工单号" minLength={2} /><button className="button" type="submit" disabled={searching || query.trim().length < 2}>{searching ? '正在查询…' : '查询'}</button></div></form>{recentQueries.length > 0 && <div className="gsx-recent-queries"><span>最近查询</span>{recentQueries.map((item) => <button type="button" key={item} onClick={() => { setQuery(item); inputRef.current?.focus(); }}>{item}</button>)}</div>}</section><section className="panel gsx-home-actions"><div className="panel-title"><h2>快捷入口</h2></div><div className="gsx-quick-grid"><a href="#/system/admin/assets/list"><strong>资产列表</strong><span>浏览全部资产记录</span></a><a href="#/system/admin/assets/warranty"><strong>在保资产</strong><span>查看有效保修中的资产</span></a><a href="#/system/admin/assets/exceptions"><strong>异常资产</strong><span>处理待核验的历史数据</span></a><a href="#/system/admin/after-sales"><strong>最近售后</strong><span>进入售后工单处理列表</span></a>{user.permissions.includes('asset:import') && <a href="#/system/admin/assets/import"><strong>历史导入</strong><span>查看并继续历史数据导入</span></a>}</div>{recentOpened.length > 0 && <div className="gsx-recent-opened"><span>最近打开</span>{recentOpened.map((item) => <a href={`#/system/admin/assets/${item.id}`} key={item.id}><strong>{item.currentSn || item.originalSn || '待补充 SN'}</strong><small>{item.productName} · {item.warrantyStatus}</small></a>)}</div>}</section></div><section className="panel gsx-search-help"><div><h2>查询说明</h2><p>优先使用产品 SN 查询；当标签异常或更换过 SN 时，也可以输入原 SN 或历史标签。</p></div><span>查询结果会按资产、订单、物流和售后关联信息汇总展示。</span></section><Notice notice={notice} />{searching && <section className="panel gsx-search-loading" aria-live="polite"><span className="skeleton" /><span className="skeleton" /><span className="skeleton" /><p>正在查询相关资产…</p></section>}{hasSearched && !searching && !notice && !items.length && <section className="empty-state gsx-search-empty"><h2>没有找到匹配记录</h2><p>请核对输入内容，或尝试原 SN、历史标签、顺丰单号、订单号或工单号。</p></section>}{items.length > 0 && <section className="panel"><div className="panel-title"><h2>查询结果</h2><span>{items.length} 条结果</span></div><div className="gsx-result-grid">{items.map((item) => <a className="gsx-result" href={`#/system/admin/assets/${item.id}`} onClick={() => rememberOpened(item)} key={item.id}><Pill value={item.warrantyStatus} /><strong>{item.currentSn || item.originalSn || '待补充 SN'}</strong><span>{item.productName} · {item.version || '未标注版本'}</span><small>{item.sourceChannel || '未标注渠道'} · {item.assetStatus}</small></a>)}</div></section>}</Shell>;
 }
 
 function AssetList({ user, route, logout, mode = 'all' }: Props & { mode?: 'all' | 'warranty' | 'exceptions' }) {
