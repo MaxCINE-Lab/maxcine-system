@@ -8,7 +8,14 @@ export const loginSchema = z.object({
 export const createOrderSchema = z.object({
   storeId: z.string().uuid(),
   items: z.array(z.object({ productId: z.string().uuid(), quantity: z.number().int().min(1).max(999) })).min(1).max(100),
-  note: z.string().trim().max(500).default('')
+  note: z.string().trim().max(500).default(''),
+  salePriceCents: z.number().int().min(0).max(999999999).nullable().default(null),
+  shippingAddress: z.string().trim().max(500).default(''),
+  customerProfile: z.string().trim().max(120).default(''),
+  screenshotDataUrl: z.string().max(750000).refine(
+    (value) => value === '' || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+    '订单截图仅支持 PNG、JPG 或 WebP 图片'
+  ).default('')
 });
 
 export const updateOrderSchema = createOrderSchema;

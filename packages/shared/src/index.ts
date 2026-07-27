@@ -3,3 +3,4 @@ export * from './schemas.js';
 export * from './policy.js';
 export * from './errors.js';
 export * from './gsx.js';
+export * from './warranty.js';

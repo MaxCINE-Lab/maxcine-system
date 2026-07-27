@@ -649,6 +649,23 @@
 .quantity-control button { border-color: var(--mc-border-strong); background: var(--mc-surface); color: var(--mc-text); }
 .quantity-control .line-remove { color: var(--mc-danger); }
 
+.order-screenshot-preview {
+  display: grid;
+  width: min(100%, 360px);
+  gap: var(--mc-space-3);
+  margin-top: var(--mc-space-3);
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+}
+.order-screenshot-preview img {
+  width: 100%;
+  max-height: 280px;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-control);
+  background: var(--mc-surface-muted);
+  object-fit: contain;
+}
+
 .nav-badge { background: var(--mc-danger); color: var(--mc-white); }
 .portal-flash { border: 1px solid color-mix(in srgb, var(--mc-success) 30%, var(--mc-border)); background: var(--mc-success-surface); color: var(--mc-success); box-shadow: var(--mc-shadow-floating); }
 

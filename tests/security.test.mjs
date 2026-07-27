@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, shipmentWarrantyDates, shipmentWarrantyRule, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -51,6 +51,38 @@ test('order and after-sales schemas allow local demo data without contact detail
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
   assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, true);
+});
+
+test('submitted-order fields accept bounded image data and reject unsafe screenshot text', () => {
+  const input = createOrderSchema.parse({
+    storeId: '30000000-0000-4000-8000-000000000001',
+    items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }],
+    salePriceCents: 129900,
+    shippingAddress: '本地演示收货地址',
+    customerProfile: '专业飞手',
+    screenshotDataUrl: 'data:image/png;base64,aGVsbG8='
+  });
+  assert.equal(input.salePriceCents, 129900);
+  assert.equal(createOrderSchema.safeParse({ ...input, screenshotDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }).success, false);
+});
+
+test('super administrators receive the same effective workflow permissions as warehouse and service center roles', () => {
+  const fullSuperAdmin = user({ id: 'full-super-admin', roles: ['super_admin'], permissions: [...PERMISSIONS] });
+  assert.equal(can(fullSuperAdmin, 'order:fulfill'), true);
+  assert.equal(can(fullSuperAdmin, 'after-sales:receive'), true);
+  assert.equal(can(fullSuperAdmin, 'after-sales:damage-assess'), true);
+  assert.equal(canTransitionOrder(fullSuperAdmin, 'approved', 'picking'), true);
+  assert.equal(canTransitionOrder(fullSuperAdmin, 'packed', 'shipped'), true);
+});
+
+test('shipment warranty rules use the confirmed SKU durations only', () => {
+  assert.equal(shipmentWarrantyRule('W101')?.durationDays, 90);
+  assert.equal(shipmentWarrantyRule('W113')?.durationDays, 90);
+  assert.equal(shipmentWarrantyRule('W102')?.durationDays, 180);
+  assert.equal(shipmentWarrantyRule('W103')?.durationDays, 365);
+  assert.equal(shipmentWarrantyRule('W124')?.durationDays, 90);
+  assert.equal(shipmentWarrantyRule('W114'), null);
+  assert.deepEqual(shipmentWarrantyDates('2026-07-27 08:00:00', 90), { startAt: '2026-07-27', endAt: '2026-10-24' });
 });
 
 test('historical warranty records preserve warnings without rejecting a whole batch', () => {

@@ -16,7 +16,7 @@ function Shell({ user, route, logout, title, text, children }: { user: SessionUs
   const [accountOpen, setAccountOpen] = useState(false);
   const path = route.split('?')[0];
   const groups = [
-    { label: '业务运营', items: [['工作台', '/system/admin'], ['待审核订单', '/system/admin/orders?status=submitted'], ['全部订单', '/system/admin/orders']] },
+    { label: '业务运营', items: [['工作台', '/system/admin'], ['待审核订单', '/system/admin/orders?status=submitted'], ['全部订单', '/system/admin/orders'], ...(user.roles.includes('super_admin') ? [['仓库工作台', '/system/warehouse'], ['服务中心工作台', '/system/service-center']] : [])] },
     { label: '基础资料', items: [['产品管理', '/system/admin/products'], ['库存管理', '/system/admin/inventory'], ['经销商管理', '/system/admin/dealers'], ['店铺管理', '/system/admin/stores'], ['用户与权限', '/system/admin/users']] },
     { label: '资产与售后', items: [['资产与保修', '/system/admin/assets'], ['售后管理', '/system/admin/after-sales']] },
     { label: '系统', items: [['站内通知', '/system/notifications'], ['审计记录', '/system/admin/audit'], ['系统设置', '/system/admin/settings']] }

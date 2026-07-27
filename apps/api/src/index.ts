@@ -3,14 +3,14 @@ import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema,
-  historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, normalizeHistoricalWarrantyRecords, updateAssetWarrantySchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, normalizeHistoricalWarrantyRecords, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
 import type { Env, Variables } from './types';
 
 type App = { Bindings: Env; Variables: Variables };
-type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
+type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
 type OrderItemRow = { id: string; productId: string; name: string; sku: string; quantity: number; unitPriceCents: number };
 type DbUser = { id: string; email: string; passwordHash: string; name: string; isActive: number };
 
@@ -83,9 +83,17 @@ async function parseBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> 
 
 async function getOrder(db: D1Database, orderId: string): Promise<OrderRow> {
   const order = await one<OrderRow>(db, `SELECT id, order_no AS orderNo, dealer_id AS dealerId, store_id AS storeId, status, total_cents AS totalCents, note,
+    sale_price_cents AS salePriceCents, shipping_address AS shippingAddress, customer_profile AS customerProfile, screenshot_data_url AS screenshotDataUrl,
     created_at AS createdAt, updated_at AS updatedAt, submitted_at AS submittedAt, reviewed_at AS reviewedAt FROM orders WHERE id = ?`, orderId);
   if (!order) throw notFound('未找到该订单');
   return order;
+}
+
+function orderForViewer(user: SessionUser, order: OrderRow): OrderRow {
+  // Warehouse users need the delivery address to fulfil an order, but not a
+  // customer profile, sales amount or the dealer's order screenshot.
+  const warehouseOnly = !can(user, 'data:read:all') && can(user, 'order:warehouse-read') && !can(user, 'order:read');
+  return warehouseOnly ? { ...order, salePriceCents: null, customerProfile: '', screenshotDataUrl: '' } : order;
 }
 
 function assertOrderAccess(user: SessionUser, order: OrderRow): void {
@@ -247,7 +255,8 @@ app.get('/stores', requireAuth, async (c) => {
 });
 
 app.get('/inventory', requireAuth, async (c) => {
-  assertPermission(c.get('user'), 'inventory:read');
+  const user = c.get('user');
+  if (!can(user, 'inventory:read') && !can(user, 'catalog:read')) throw forbidden();
   const search = new URL(c.req.url).searchParams.get('search')?.trim() ?? '';
   const items = await all<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
     `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
@@ -260,7 +269,8 @@ app.get('/inventory', requireAuth, async (c) => {
 });
 
 app.get('/inventory/:id', requireAuth, async (c) => {
-  assertPermission(c.get('user'), 'inventory:read');
+  const user = c.get('user');
+  if (!can(user, 'inventory:read') && !can(user, 'catalog:read')) throw forbidden();
   const item = await one<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
     `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
       products.unit_price_cents AS unitPriceCents, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel,
@@ -309,8 +319,8 @@ app.post('/orders', requireAuth, async (c) => {
   if (lines.some((line) => line.quantity > line.product.availableQuantity)) throw conflict('订购数量不能超过当前可用库存');
   const total = lines.reduce((sum, line) => sum + line.quantity * line.product.price, 0);
   const statements: D1PreparedStatement[] = [
-    c.env.DB.prepare(`INSERT INTO orders (id, order_no, dealer_id, store_id, note, total_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(orderId, orderNo(), store.dealerId, input.storeId, input.note, total, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO orders (id, order_no, dealer_id, store_id, note, sale_price_cents, shipping_address, customer_profile, screenshot_data_url, total_cents, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(orderId, orderNo(), store.dealerId, input.storeId, input.note, input.salePriceCents, input.shippingAddress, input.customerProfile, input.screenshotDataUrl, total, user.id, user.id),
     ...lines.map((line) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), orderId, line.productId, line.product.name, line.product.sku, line.product.price, line.quantity, user.id, user.id)),
     dbAudit(c.env.DB, { actorId: user.id, action: 'order.create', entityType: 'order', entityId: orderId, requestId: c.get('requestId'), after: { status: 'draft' } })
@@ -341,8 +351,8 @@ app.put('/orders/:id', requireAuth, async (c) => {
   const total = lines.reduce((sum, line) => sum + line.quantity * line.product.price, 0);
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(order.id),
-    c.env.DB.prepare(`UPDATE orders SET store_id = ?, note = ?, total_cents = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`)
-      .bind(input.storeId, input.note, total, user.id, order.id),
+    c.env.DB.prepare(`UPDATE orders SET store_id = ?, note = ?, sale_price_cents = ?, shipping_address = ?, customer_profile = ?, screenshot_data_url = ?, total_cents = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`)
+      .bind(input.storeId, input.note, input.salePriceCents, input.shippingAddress, input.customerProfile, input.screenshotDataUrl, total, user.id, order.id),
     ...lines.map((line) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), order.id, line.productId, line.product.name, line.product.sku, line.product.price, line.quantity, user.id, user.id)),
     dbAudit(c.env.DB, { actorId: user.id, action: 'order.update', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { totalCents: order.totalCents }, after: { totalCents: total, status: 'draft' } })
@@ -418,10 +428,11 @@ app.get('/orders', requireAuth, async (c) => {
   const count = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders${clause}`, ...params);
   const orders = await all<OrderRow & { storeName: string; itemCount: number }>(c.env.DB,
     `SELECT orders.id, orders.order_no AS orderNo, orders.dealer_id AS dealerId, orders.store_id AS storeId, orders.status, orders.total_cents AS totalCents, orders.note,
+      orders.sale_price_cents AS salePriceCents, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, orders.screenshot_data_url AS screenshotDataUrl,
       orders.created_at AS createdAt, orders.updated_at AS updatedAt, orders.submitted_at AS submittedAt, orders.reviewed_at AS reviewedAt, stores.name AS storeName,
       COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) AS itemCount
      FROM orders JOIN stores ON stores.id = orders.store_id${clause} ORDER BY orders.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit);
-  return c.json({ orders, pagination: { page, limit, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
+  return c.json({ orders: orders.map((order) => ({ ...order, ...orderForViewer(user, order) })), pagination: { page, limit, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
 });
 
 app.get('/orders/:id', requireAuth, async (c) => {
@@ -443,7 +454,7 @@ app.get('/orders/:id', requireAuth, async (c) => {
     ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
     ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
   ];
-  return c.json({ order: { ...order, ...overview }, items, serials, shipment, timeline });
+  return c.json({ order: { ...orderForViewer(user, order), ...overview }, items, serials, shipment, timeline });
 });
 
 app.post('/orders/:id/submit', requireAuth, async (c) => {
@@ -453,6 +464,9 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   assertOrderAccess(user, order);
   const dealer = await one<{ id: string }>(c.env.DB, "SELECT id FROM dealers WHERE id = ? AND status = 'active'", order.dealerId);
   if (!dealer) throw forbidden('所属经销商已停用，无法提交订单');
+  if (!order.screenshotDataUrl || order.salePriceCents === null || order.salePriceCents <= 0 || !order.shippingAddress || !order.customerProfile) {
+    throw badRequest('提交审核前请补充订单截图、售卖价格、收货地址和用户画像');
+  }
   if (!canTransitionOrder(user, order.status, 'submitted') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
   const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
     JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
@@ -594,6 +608,51 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   const existingTracking = await one<{ id: string }>(c.env.DB, 'SELECT id FROM shipments WHERE tracking_number = ?', input.trackingNumber);
   if (existingTracking) throw conflict('该运单号已被使用');
   const items = await all<{ productId: string; quantity: number; inventoryId: string }>(c.env.DB, `SELECT order_items.product_id AS productId, order_items.quantity, inventory.id AS inventoryId FROM order_items JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ?`, order.id);
+  const serials = await all<{ serialNumber: string; productId: string; sku: string; productName: string; productVersion: string }>(c.env.DB,
+    `SELECT serial_numbers.serial_number AS serialNumber, serial_numbers.product_id AS productId, order_items.sku_snapshot AS sku,
+      order_items.product_name_snapshot AS productName, products.product_version AS productVersion
+     FROM serial_numbers JOIN order_items ON order_items.id = serial_numbers.order_item_id
+     LEFT JOIN products ON products.id = serial_numbers.product_id
+     WHERE serial_numbers.state = 'allocated' AND order_items.order_id = ?`, order.id);
+  if (!serials.length) throw conflict('请先录入订单产品的 SN');
+  const shippedAt = new Date();
+  const assetStatements: D1PreparedStatement[] = [];
+  let createdAssets = 0;
+  for (const serial of serials) {
+    const existingAsset = await one<{ id: string }>(c.env.DB,
+      `SELECT id FROM assets WHERE current_sn = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1`, serial.serialNumber);
+    const rule = shipmentWarrantyRule(serial.sku);
+    const dates = rule ? shipmentWarrantyDates(shippedAt, rule.durationDays) : null;
+    const assetId = existingAsset?.id ?? id();
+    const warrantyPolicy = rule && rule.durationDays > 90 ? 'extended' : rule ? 'standard' : 'unknown';
+    if (existingAsset) {
+      assetStatements.push(c.env.DB.prepare(`UPDATE assets SET product_id = ?, product_name_snapshot = ?, version_snapshot = ?, asset_status = 'in_service',
+        warranty_policy = ?, warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '',
+        dealer_id = ?, store_id = ?, latest_order_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+        .bind(serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, assetId));
+    } else {
+      createdAssets += 1;
+      assetStatements.push(c.env.DB.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
+        warranty_policy, warranty_start_at, warranty_end_at, source_channel, dealer_id, store_id, latest_order_id, data_quality_status, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '订单发货自动建档', ?, ?, ?, 'normal', ?, ?)`)
+        .bind(assetId, serial.serialNumber, serial.serialNumber, serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, user.id));
+      assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_from, reason, source, created_by)
+        VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '订单发货绑定 SN', '订单发货自动建档', ?)`)
+        .bind(id(), assetId, serial.serialNumber, user.id));
+    }
+    assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
+      operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '订单已发货', ?, ?, ?, 'dealer', '订单履约')`)
+      .bind(id(), assetId, `${input.carrier}：${input.trackingNumber}`, order.id, user.id));
+    if (rule && dates) {
+      assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
+        operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', CURRENT_TIMESTAMP, ?, ?, ?, ?, 'dealer', '订单履约')`)
+        .bind(id(), assetId, rule.label, `保修有效期：${dates.startAt} 至 ${dates.endAt}`, order.id, user.id));
+    } else {
+      assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
+        operator_user_id, visibility, source) VALUES (?, ?, 'note_added', CURRENT_TIMESTAMP, '保修规则待确认', '该 SKU 尚未配置可自动套用的保修期限。', ?, ?, 'admin_private', '订单履约')`)
+        .bind(id(), assetId, order.id, user.id));
+    }
+  }
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
       .bind(shipmentId, order.id, input.carrier, input.trackingNumber, user.id, user.id),
@@ -604,7 +663,8 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     ...items.map((item) => c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by) VALUES (?, ?, ?, ?, 'order_shipped', 0, ?, ?, ?)`).bind(id(), item.inventoryId, item.productId, order.id, -item.quantity, `订单 ${order.orderNo} 已发货，预留库存正式出库`, user.id)),
     c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', `${input.carrier}运单号：${input.trackingNumber}`, `/system/orders/${order.id}`),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'packed' }, after: { status: 'shipped', trackingNumber: input.trackingNumber } })
+    ...assetStatements,
+    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'packed' }, after: { status: 'shipped', trackingNumber: input.trackingNumber, createdAssets } })
   ]);
   return c.json({ id: order.id, status: 'shipped', trackingNumber: input.trackingNumber });
 });
@@ -685,7 +745,7 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
   const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; productId: string | null; productName: string | null; serialNumber: string | null; caseType: string; subject: string; description: string; contactName: string | null; contactPhone: string | null; status: string; workflowStage: string; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, store_id AS storeId, stores.name AS storeName, order_id AS orderId, product_id AS productId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, description, contact_name AS contactName, contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
+    `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, after_sales_cases.store_id AS storeId, stores.name AS storeName, after_sales_cases.order_id AS orderId, after_sales_cases.product_id AS productId, products.name AS productName, after_sales_cases.serial_number AS serialNumber, after_sales_cases.case_type AS caseType, after_sales_cases.subject AS subject, after_sales_cases.description AS description, after_sales_cases.contact_name AS contactName, after_sales_cases.contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
      FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id LEFT JOIN after_sales_assignments AS asa ON asa.case_id = after_sales_cases.id LEFT JOIN service_centers ON service_centers.id = asa.service_center_id WHERE after_sales_cases.id = ?`, c.req.param('id'));
   if (!serviceCase) throw notFound('未找到该售后工单');
   const scope = afterSalesScope(user);
