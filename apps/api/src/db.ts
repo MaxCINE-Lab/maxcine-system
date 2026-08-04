@@ -16,7 +16,8 @@ export function orderNo(): string {
 }
 
 export function caseNo(): string {
-  return `AS-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+  const token = crypto.randomUUID().replaceAll('-', '').toUpperCase();
+  return `CAS-${token.slice(0, 5)}-${token.slice(5, 10)}`;
 }
 
 export async function audit(

@@ -1,18 +1,22 @@
-// Email is intentionally disabled for this local-only release. These addresses
-// are identity/configuration data, not active provider accounts.
+// Functional addresses are configuration defaults. Delivery remains disabled
+// unless an explicit provider and its secret are configured.
 export const FUNCTIONAL_EMAILS = {
   support: 'support@maxcine.cn',
-  notifications: 'notifications@maxcine.cn',
+  notifications: 'notification@maxcine.cn',
   noreply: 'noreply@maxcine.cn'
 } as const;
 
 export type EmailKind = 'order_submitted' | 'order_approved' | 'order_rejected' | 'order_shipped' | 'after_sales_created' | 'after_sales_updated' | 'verification' | 'password_reset';
 
 export type MailMessage = {
-  from: (typeof FUNCTIONAL_EMAILS)[keyof typeof FUNCTIONAL_EMAILS];
+  from: string;
+  fromName?: string;
+  replyTo?: string;
+  replyToName?: string;
   to: string;
   subject: string;
   html: string;
+  text?: string;
 };
 
 export interface EmailAdapter {
@@ -22,6 +26,54 @@ export interface EmailAdapter {
 export class DisabledEmailAdapter implements EmailAdapter {
   async send(_message: MailMessage): Promise<void> {
     throw new Error('Email delivery is disabled in this local-only build');
+  }
+}
+
+export type EmailDeliveryEnv = {
+  EMAIL_PROVIDER: 'mock' | 'resend' | 'ses';
+  RESEND_API_KEY?: string;
+};
+
+export type EmailDeliveryResult = {
+  sent: boolean;
+  provider: string;
+  providerMessageId: string;
+  failureReason: string;
+};
+
+export async function sendEmail(env: EmailDeliveryEnv, message: MailMessage, idempotencyKey: string): Promise<EmailDeliveryResult> {
+  if (env.EMAIL_PROVIDER !== 'resend' || !env.RESEND_API_KEY) {
+    return {
+      sent: false,
+      provider: env.EMAIL_PROVIDER || 'mock',
+      providerMessageId: '',
+      failureReason: env.EMAIL_PROVIDER === 'resend' ? 'Resend 密钥未配置' : '邮件服务未配置'
+    };
+  }
+  try {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+        'Idempotency-Key': idempotencyKey
+      },
+      body: JSON.stringify({
+        from: `${message.fromName || 'MaxCINE 通知中心'} <${message.from}>`,
+        reply_to: message.replyTo ? `${message.replyToName || 'MaxCINE 客户支持'} <${message.replyTo}>` : undefined,
+        to: [message.to],
+        subject: message.subject,
+        html: message.html,
+        text: message.text ?? ''
+      })
+    });
+    const payload = await response.json().catch(() => ({})) as { id?: string; message?: string; name?: string };
+    if (!response.ok || !payload.id) {
+      return { sent: false, provider: 'resend', providerMessageId: '', failureReason: payload.message || `邮件服务返回 ${response.status}` };
+    }
+    return { sent: true, provider: 'resend', providerMessageId: payload.id, failureReason: '' };
+  } catch {
+    return { sent: false, provider: 'resend', providerMessageId: '', failureReason: '邮件服务连接失败，请稍后重试' };
   }
 }
 

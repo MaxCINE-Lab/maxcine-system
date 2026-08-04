@@ -186,12 +186,11 @@ export function normalizeHistoricalWarrantyRecords(records: Array<{ rowNumber: n
   return records.map((record) => normalizeHistoricalWarrantyRecord(record, duplicates));
 }
 
-export function warrantyDisplayStatus(asset: { warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null }, now = new Date()): '在保' | '已过保' | '未开始' | '无有效日期' | '无保修' | '拒保' | '异常' | '注销' | '报废' {
+export function warrantyDisplayStatus(asset: { warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null }, now = new Date()): '保修中' | '已过保' | '待生效' | '无有效日期' | '无保修' | '拒保' | '异常' | '注销' | '报废' {
   const overrides: Record<string, '无保修' | '拒保' | '异常' | '注销' | '报废'> = { no_warranty: '无保修', denied: '拒保', exception: '异常', cancelled: '注销', scrapped: '报废' };
   if (asset.warrantyOverrideStatus && overrides[asset.warrantyOverrideStatus]) return overrides[asset.warrantyOverrideStatus];
   if (!asset.warrantyStartAt || !asset.warrantyEndAt) return '无有效日期';
-  const start = new Date(`${asset.warrantyStartAt}T00:00:00Z`);
-  const end = new Date(`${asset.warrantyEndAt}T23:59:59Z`);
-  if (now < start) return '未开始';
-  return now > end ? '已过保' : '在保';
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  if (today < asset.warrantyStartAt) return '待生效';
+  return today > asset.warrantyEndAt ? '已过保' : '保修中';
 }

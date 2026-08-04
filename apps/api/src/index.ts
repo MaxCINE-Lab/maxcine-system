@@ -1,21 +1,23 @@
 import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
-  AppError, adjustInventorySchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
-  createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema,
-  historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, normalizeHistoricalWarrantyRecords, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
+  createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
+import { sendEmail } from './email';
 import type { Env, Variables } from './types';
 
 type App = { Bindings: Env; Variables: Variables };
-type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
-type OrderItemRow = { id: string; productId: string; name: string; sku: string; quantity: number; unitPriceCents: number };
+type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
+type OrderItemRow = { id: string; productId: string; name: string; sku: string; productVersion?: string; specification?: string; quantity: number; unitPriceCents: number };
 type DbUser = { id: string; email: string; passwordHash: string; name: string; isActive: number };
 
 const app = new Hono<App>();
 const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const localHostnames = new Set(['localhost', '127.0.0.1', '::1']);
 
 function errorResponse(c: Context<App>, error: AppError): Response {
   const payload: ApiErrorBody = { error: { code: error.code, message: error.message, requestId: c.get('requestId') ?? 'unknown', ...(error.details ? { details: error.details } : {}) } };
@@ -40,6 +42,28 @@ function limitValue(value: string | undefined, fallback = 20): number {
   return Number.isInteger(parsed) && parsed > 0 ? Math.min(parsed, 100) : fallback;
 }
 
+function allowedOrigins(value: string | undefined): string[] {
+  return (value ?? '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function isEquivalentLocalOrigin(origin: string, expected: string): boolean {
+  try {
+    const originUrl = new URL(origin);
+    const expectedUrl = new URL(expected);
+    return originUrl.protocol === expectedUrl.protocol
+      && originUrl.port === expectedUrl.port
+      && localHostnames.has(originUrl.hostname)
+      && localHostnames.has(expectedUrl.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function isAllowedOrigin(origin: string | undefined, appOrigin: string | undefined): boolean {
+  if (!origin) return false;
+  return allowedOrigins(appOrigin).some((expected) => origin === expected || isEquivalentLocalOrigin(origin, expected));
+}
+
 function statusLabel(status: string): string {
   return ({ draft: '草稿', submitted: '待审核', approved: '审核通过', rejected: '审核未通过', picking: '配货中', packed: '已打包', shipped: '已发货', delivered: '已签收', cancelled: '已取消' } as Record<string, string>)[status] ?? status;
 }
@@ -55,8 +79,21 @@ function hasGlobalAssetAccess(user: SessionUser): boolean {
   return can(user, 'data:read:all');
 }
 
+function hasAssetCenterReadAccess(user: SessionUser): boolean {
+  return hasGlobalAssetAccess(user) || can(user, 'asset:manage') || user.roles.includes('authorized_service_center');
+}
+
 function assertAssetReadAccess(user: SessionUser): void {
-  if (!hasGlobalAssetAccess(user) && !can(user, 'asset:read') && !can(user, 'asset:warehouse-read')) throw forbidden();
+  if (!hasAssetCenterReadAccess(user)) throw forbidden();
+}
+
+function normalizeLookup(value: string): string {
+  return value.replace(/[\r\n\t]/g, '').trim().toUpperCase();
+}
+
+function likePattern(value: string, mode: 'prefix' | 'contains'): string {
+  const escaped = normalizeLookup(value).replace(/[\\%_]/g, (match) => `\\${match}`);
+  return mode === 'prefix' ? `${escaped}%` : `%${escaped}%`;
 }
 
 // Creates the matching D1 statement while keeping audit inserts in the same D1 batch as business writes.
@@ -83,7 +120,9 @@ async function parseBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> 
 
 async function getOrder(db: D1Database, orderId: string): Promise<OrderRow> {
   const order = await one<OrderRow>(db, `SELECT id, order_no AS orderNo, dealer_id AS dealerId, store_id AS storeId, status, total_cents AS totalCents, note,
+    review_note AS reviewNote,
     sale_price_cents AS salePriceCents, shipping_address AS shippingAddress, customer_profile AS customerProfile, screenshot_data_url AS screenshotDataUrl,
+    package_materials AS packageMaterials, fulfillment_carrier AS fulfillmentCarrier, fulfillment_tracking_number AS fulfillmentTrackingNumber, fulfillment_updated_at AS fulfillmentUpdatedAt,
     created_at AS createdAt, updated_at AS updatedAt, submitted_at AS submittedAt, reviewed_at AS reviewedAt FROM orders WHERE id = ?`, orderId);
   if (!order) throw notFound('未找到该订单');
   return order;
@@ -115,10 +154,139 @@ function notificationScope(user: SessionUser): { sql: string; params: string[] }
   return { sql: `(user_id = ? OR store_id IN (${placeholders(user.storeIds)}))`, params: [user.id, ...user.storeIds] };
 }
 
+const riskStatusWeight: Record<string, number> = { normal: 0, watchlist: 1, risk: 2, blacklist: 3 };
+const riskLevelWeight: Record<string, number> = { low: 0, medium: 1, high: 2 };
+const riskStatusText: Record<string, string> = { normal: '正常', watchlist: '观察名单', risk: '风险客户', blacklist: '共享黑名单' };
+const riskLevelText: Record<string, string> = { low: '低', medium: '中', high: '高' };
+const strongCustomerContactTypes = new Set(['phone', 'platform_nickname', 'wechat', 'qq', 'telegram', 'whatsapp']);
+
+function normalizeRiskContact(type: string, value: string): string {
+  const trimmed = value.trim();
+  if (type === 'phone') return trimmed.replace(/\D/g, '');
+  return trimmed.replace(/\s+/g, '').toUpperCase();
+}
+
+function riskLikePattern(value: string): string {
+  return `%${value.trim().replace(/[\\%_]/g, (match) => `\\${match}`).toUpperCase()}%`;
+}
+
+function riskPrefixPattern(value: string): string {
+  return `${value.trim().replace(/[\\%_]/g, (match) => `\\${match}`).toUpperCase()}%`;
+}
+
+function parseJsonArray(value: string | null | undefined): string[] {
+  try {
+    const parsed = JSON.parse(value || '[]');
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function strongestByWeight(values: string[], weights: Record<string, number>, fallback: string): string {
+  return values.reduce((current, value) => (weights[value] ?? -1) > (weights[current] ?? -1) ? value : current, fallback);
+}
+
+type CustomerContactCandidate = { type: string; value: string; normalized: string };
+type CustomerRiskInputCustomer = {
+  name: string;
+  phone: string;
+  recipientName: string;
+  platformNickname: string;
+  wechatNickname: string;
+  qqNickname: string;
+  telegram: string;
+  whatsapp: string;
+  shippingAddress: string;
+  city: string;
+  ipLocation: string;
+  keyword: string;
+  note: string;
+};
+
+function customerRiskContacts(customer: CustomerRiskInputCustomer): CustomerContactCandidate[] {
+  const rows: Array<[string, string]> = [
+    ['name', customer.name],
+    ['phone', customer.phone],
+    ['recipient_name', customer.recipientName],
+    ['platform_nickname', customer.platformNickname],
+    ['wechat', customer.wechatNickname],
+    ['qq', customer.qqNickname],
+    ['telegram', customer.telegram],
+    ['whatsapp', customer.whatsapp],
+    ['address', customer.shippingAddress],
+    ['city', customer.city],
+    ['ip_location', customer.ipLocation],
+    ['keyword', customer.keyword]
+  ];
+  return rows
+    .map(([type, value]) => ({ type, value: value.trim(), normalized: normalizeRiskContact(type, value) }))
+    .filter((item) => item.value && item.normalized);
+}
+
+async function findExistingRiskCustomer(db: D1Database, explicitCustomerId: string | undefined, contacts: CustomerContactCandidate[]): Promise<string | null> {
+  if (explicitCustomerId) {
+    const existing = await one<{ id: string }>(db, 'SELECT id FROM customers WHERE id = ?', explicitCustomerId);
+    if (!existing) throw notFound('未找到该客户档案');
+    return existing.id;
+  }
+  const strong = contacts.filter((item) => strongCustomerContactTypes.has(item.type));
+  if (!strong.length) return null;
+  const found = await one<{ customerId: string }>(db,
+    `SELECT customer_id AS customerId FROM customer_contacts
+     WHERE ${strong.map(() => '(contact_type = ? AND normalized_value = ?)').join(' OR ')}
+     ORDER BY created_at LIMIT 1`,
+    ...strong.flatMap((item) => [item.type, item.normalized]));
+  return found?.customerId ?? null;
+}
+
+async function dealerForRiskEvent(db: D1Database, user: SessionUser, storeId: string | null | undefined, dealerId: string | null | undefined): Promise<{ dealerId: string | null; storeId: string | null }> {
+  if (storeId) {
+    if (!can(user, 'customer-risk:manage') && !can(user, 'data:read:all')) assertStoreAccess(user, storeId);
+    const store = await one<{ id: string; dealerId: string }>(db, 'SELECT id, dealer_id AS dealerId FROM stores WHERE id = ?', storeId);
+    if (!store) throw notFound('未找到该店铺');
+    return { dealerId: store.dealerId, storeId: store.id };
+  }
+  if ((can(user, 'customer-risk:manage') || can(user, 'data:read:all')) && dealerId) {
+    const dealer = await one<{ id: string }>(db, 'SELECT id FROM dealers WHERE id = ?', dealerId);
+    if (!dealer) throw notFound('未找到该经销商');
+    return { dealerId: dealer.id, storeId: null };
+  }
+  if (user.dealerIds[0]) return { dealerId: user.dealerIds[0], storeId: null };
+  if (user.storeIds[0]) {
+    const store = await one<{ id: string; dealerId: string }>(db, 'SELECT id, dealer_id AS dealerId FROM stores WHERE id = ?', user.storeIds[0]);
+    if (store) return { dealerId: store.dealerId, storeId: store.id };
+  }
+  if (can(user, 'customer-risk:manage') || can(user, 'data:read:all')) return { dealerId: null, storeId: null };
+  throw forbidden('当前账户没有经销商授权，不能登记客户风险');
+}
+
+async function recomputeCustomerRiskProfile(db: D1Database, customerId: string, actorId: string): Promise<void> {
+  const events = await all<{ status: string; riskLevel: string; riskReasonsJson: string; otherReason: string }>(db,
+    'SELECT status, risk_level AS riskLevel, risk_reasons_json AS riskReasonsJson, other_reason AS otherReason FROM customer_risk_events WHERE customer_id = ?', customerId);
+  const status = strongestByWeight(events.map((event) => event.status), riskStatusWeight, 'normal');
+  const riskLevel = strongestByWeight(events.map((event) => event.riskLevel), riskLevelWeight, 'low');
+  const reasons = Array.from(new Set(events.flatMap((event) => parseJsonArray(event.riskReasonsJson))));
+  const otherReason = Array.from(new Set(events.map((event) => event.otherReason.trim()).filter(Boolean))).join('；');
+  await db.prepare(`UPDATE customer_risk_profiles SET status = ?, risk_level = ?, risk_reasons_json = ?, other_reason = ?,
+    registration_count = (SELECT COUNT(*) FROM customer_risk_events WHERE customer_id = ?),
+    consultation_count = (SELECT COUNT(*) FROM customer_risk_events WHERE customer_id = ?),
+    deal_count = (SELECT COUNT(*) FROM customer_risk_events WHERE customer_id = ? AND consultation_result = '成交'),
+    no_deal_count = (SELECT COUNT(*) FROM customer_risk_events WHERE customer_id = ? AND consultation_result = '未成交'),
+    involved_dealer_count = (SELECT COUNT(DISTINCT dealer_id) FROM customer_risk_events WHERE customer_id = ? AND dealer_id IS NOT NULL),
+    last_consulted_at = (SELECT MAX(happened_at) FROM customer_risk_events WHERE customer_id = ?),
+    last_registered_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE customer_id = ?`)
+    .bind(status, riskLevel, JSON.stringify(reasons), otherReason, customerId, customerId, customerId, customerId, customerId, customerId, actorId, customerId)
+    .run();
+  await db.prepare('UPDATE customers SET updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(actorId, customerId).run();
+}
+
 function afterSalesScope(user: SessionUser): { sql: string; params: string[] } {
   if (can(user, 'data:read:all')) return { sql: '1 = 1', params: [] };
   const clauses: string[] = [];
   const params: string[] = [];
+  clauses.push('after_sales_cases.created_by = ?');
+  params.push(user.id);
   if (user.storeIds.length) {
     clauses.push(`after_sales_cases.store_id IN (${placeholders(user.storeIds)})`);
     params.push(...user.storeIds);
@@ -135,27 +303,26 @@ function canOperateAssignedCase(user: SessionUser, serviceCenterId: string | nul
   return can(user, 'data:read:all') || Boolean(serviceCenterId && user.serviceCenterIds.includes(serviceCenterId));
 }
 
-function assetScope(user: SessionUser, alias = 'assets'): { sql: string; params: string[] } {
-  if (hasGlobalAssetAccess(user)) return { sql: '1 = 1', params: [] };
+function afterSalesAssetScope(user: SessionUser, alias = 'assets'): { sql: string; params: string[] } {
+  if (can(user, 'data:read:all') || can(user, 'asset:manage') || user.roles.includes('authorized_service_center')) return { sql: '1 = 1', params: [] };
   const clauses: string[] = [];
   const params: string[] = [];
-  if (can(user, 'asset:read') && user.storeIds.length) {
+  if (user.storeIds.length) {
     clauses.push(`${alias}.store_id IN (${placeholders(user.storeIds)})`);
     params.push(...user.storeIds);
   }
-  if (can(user, 'asset:read') && user.dealerIds.length) {
+  if (user.dealerIds.length) {
     clauses.push(`${alias}.dealer_id IN (${placeholders(user.dealerIds)})`);
     params.push(...user.dealerIds);
   }
-  if (can(user, 'asset:read') && user.serviceCenterIds.length) {
-    clauses.push(`EXISTS (SELECT 1 FROM after_sales_cases ascases JOIN after_sales_assignments asa ON asa.case_id = ascases.id WHERE ascases.asset_id = ${alias}.id AND asa.service_center_id IN (${placeholders(user.serviceCenterIds)}))`);
-    params.push(...user.serviceCenterIds);
-  }
-  if (can(user, 'asset:warehouse-read')) {
-    clauses.push(`EXISTS (SELECT 1 FROM orders asset_orders WHERE asset_orders.id = ${alias}.latest_order_id AND asset_orders.status IN ('approved','picking','packed','shipped','delivered'))`);
-  }
   if (!clauses.length) throw forbidden('当前账户没有授权的资产数据范围');
   return { sql: `(${clauses.join(' OR ')})`, params };
+}
+
+function assetScope(user: SessionUser, _alias = 'assets'): { sql: string; params: string[] } {
+  if (hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center')) return { sql: '1 = 1', params: [] };
+  if (can(user, 'asset:manage')) return { sql: '1 = 1', params: [] };
+  throw forbidden('当前账户没有授权的资产数据范围');
 }
 
 function eventVisibilityScope(user: SessionUser): { sql: string; params: string[] } {
@@ -189,6 +356,456 @@ async function runStatementsInChunks(db: D1Database, statements: D1PreparedState
   for (let offset = 0; offset < statements.length; offset += size) await db.batch(statements.slice(offset, offset + size));
 }
 
+async function orderItemsForFulfillment(db: D1Database, orderId: string): Promise<Array<OrderItemRow & { inventoryId: string }>> {
+  return all<OrderItemRow & { inventoryId: string }>(db,
+    `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
+      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents, inventory.id AS inventoryId
+     FROM order_items JOIN inventory ON inventory.product_id = order_items.product_id LEFT JOIN products ON products.id = order_items.product_id
+     WHERE order_items.order_id = ?`, orderId);
+}
+
+async function allocatedSerialsForOrder(db: D1Database, orderId: string): Promise<Array<{ id: string; serialNumber: string; productId: string; orderItemId: string; state: string }>> {
+  return all<{ id: string; serialNumber: string; productId: string; orderItemId: string; state: string }>(db,
+    `SELECT serial_numbers.id, serial_numbers.serial_number AS serialNumber, serial_numbers.product_id AS productId, serial_numbers.order_item_id AS orderItemId, serial_numbers.state
+     FROM serial_numbers JOIN order_items ON order_items.id = serial_numbers.order_item_id
+     WHERE order_items.order_id = ? AND serial_numbers.state IN ('allocated','shipped')`, orderId);
+}
+
+async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string } | null> {
+  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string }>(db,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus
+     FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id
+     WHERE assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
+     ORDER BY CASE WHEN assets.current_sn = ? COLLATE NOCASE THEN 0 WHEN assets.original_sn = ? COLLATE NOCASE THEN 1 ELSE 2 END, assets.updated_at DESC
+     LIMIT 1`, serialNumber, serialNumber, serialNumber, serialNumber, serialNumber);
+}
+
+async function allocationStatementsForSerials(db: D1Database, input: { orderId: string; serialNumbers: string[]; actorId: string; allowExistingOnly?: boolean }): Promise<{ statements: D1PreparedStatement[]; serials: Array<{ serialNumber: string; productId: string; orderItemId: string }> }> {
+  const items = await orderItemsForFulfillment(db, input.orderId);
+  const expected = items.reduce((sum, item) => sum + item.quantity, 0);
+  const serialNumbers = input.serialNumbers.map(normalizeLookup).filter(Boolean);
+  if (serialNumbers.length !== expected) throw conflict(`应扫描 ${expected} 个 SN，目前扫描了 ${serialNumbers.length} 个`);
+  const seen = new Set<string>();
+  for (const value of serialNumbers) {
+    if (seen.has(value)) throw conflict(`该 SN 已重复扫描：${value}`);
+    seen.add(value);
+  }
+  const existingForOrder = await allocatedSerialsForOrder(db, input.orderId);
+  const existingBySerial = new Map(existingForOrder.map((serial) => [normalizeLookup(serial.serialNumber), serial]));
+  const counts = new Map(items.map((item) => [item.id, existingForOrder.filter((serial) => serial.orderItemId === item.id).length]));
+  const statements: D1PreparedStatement[] = [];
+  const serials: Array<{ serialNumber: string; productId: string; orderItemId: string }> = [];
+  for (const serialNumber of serialNumbers) {
+    const alreadyInOrder = existingBySerial.get(serialNumber);
+    if (alreadyInOrder) {
+      serials.push({ serialNumber: alreadyInOrder.serialNumber, productId: alreadyInOrder.productId, orderItemId: alreadyInOrder.orderItemId });
+      continue;
+    }
+    if (input.allowExistingOnly) throw conflict(`该 SN 与管理员预留 SN 不一致：${serialNumber}`);
+    const existing = await one<{ id: string; state: string; orderId: string | null }>(db,
+      `SELECT serial_numbers.id, serial_numbers.state, order_items.order_id AS orderId
+       FROM serial_numbers LEFT JOIN order_items ON order_items.id = serial_numbers.order_item_id
+       WHERE serial_numbers.serial_number = ? COLLATE NOCASE LIMIT 1`, serialNumber);
+    if (existing?.state === 'shipped') throw conflict(`该 SN 已经发货：${serialNumber}`);
+    if (existing?.orderId && existing.orderId !== input.orderId) throw conflict(`该 SN 已绑定其他订单：${serialNumber}`);
+    const asset = await findAssetByIdentifier(db, serialNumber);
+    if (!asset) throw notFound(`该 SN 不存在：${serialNumber}`);
+    const item = asset.productId
+      ? items.find((value) => value.productId === asset.productId)
+      : items.find((value) => asset.version && [value.productVersion, value.specification].filter(Boolean).includes(asset.version))
+        ?? items.find((value) => asset.productName && asset.productName.includes(value.name))
+        ?? (items.length === 1 ? items[0] : null);
+    if (!item) throw conflict(`该 SN 不属于本订单产品：${serialNumber}`);
+    if ((counts.get(item.id) ?? 0) >= item.quantity) throw conflict(`产品 ${item.name} 已达到订单数量，不能继续绑定 SN`);
+    counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+    statements.push(db.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, order_item_id, bound_at, created_by, updated_by)
+      VALUES (?, ?, ?, 'allocated', ?, CURRENT_TIMESTAMP, ?, ?)`).bind(id(), item.productId, serialNumber, item.id, input.actorId, input.actorId));
+    serials.push({ serialNumber, productId: item.productId, orderItemId: item.id });
+  }
+  for (const item of items) {
+    const itemCount = serials.filter((serial) => serial.orderItemId === item.id).length;
+    if (itemCount !== item.quantity) throw conflict(`产品 ${item.name} 应扫描 ${item.quantity} 个 SN，目前扫描了 ${itemCount} 个`);
+  }
+  return { statements, serials };
+}
+
+async function randomAvailableSerials(db: D1Database, orderId: string): Promise<string[]> {
+  const items = await orderItemsForFulfillment(db, orderId);
+  const already = await allocatedSerialsForOrder(db, orderId);
+  const result: string[] = already.map((serial) => serial.serialNumber);
+  for (const item of items) {
+    const needed = item.quantity - already.filter((serial) => serial.productId === item.productId).length;
+    if (needed <= 0) continue;
+    const rows = await all<{ currentSn: string }>(db,
+      `SELECT assets.current_sn AS currentSn FROM assets
+       WHERE assets.current_sn IS NOT NULL AND assets.product_id = ? AND assets.asset_status IN ('active','returned_to_inventory','refurbished','unknown')
+       AND NOT EXISTS (SELECT 1 FROM serial_numbers WHERE serial_numbers.serial_number = assets.current_sn COLLATE NOCASE AND serial_numbers.state IN ('allocated','shipped'))
+       ORDER BY assets.updated_at DESC, assets.current_sn LIMIT ?`, item.productId, needed);
+    if (rows.length < needed) throw conflict(`产品 ${item.name} 可用 SN 不足，无法随机分配`);
+    result.push(...rows.map((row) => row.currentSn));
+  }
+  return result;
+}
+
+const afterSalesCaseTypeLabel: Record<string, string> = {
+  OUT_OF_WARRANTY_REPAIR: '保外维修类',
+  INSTALLATION_ISSUE: '安装异常类',
+  QUALITY_ISSUE: '质量问题类',
+  IMAGE_QUALITY_ISSUE: '拍摄效果类',
+  MISSING_ACCESSORY: '缺少配件类',
+  PART_PURCHASE: '单独购买部件类'
+};
+
+function quoteNo(): string {
+  return `QT-${new Date().toISOString().slice(0, 10).replaceAll('-', '')}-${crypto.randomUUID().slice(0, 6).toUpperCase()}`;
+}
+
+function attachmentObjectKey(caseId: string, category: string, filename: string): string {
+  const ext = filename.includes('.') ? filename.split('.').pop()?.toLowerCase().replace(/[^a-z0-9]/g, '') : '';
+  return `after-sales/${caseId}/${category}/${crypto.randomUUID()}${ext ? `.${ext}` : ''}`;
+}
+
+function escapeHtml(value: string): string {
+  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+}
+
+async function getCaseForAccess(db: D1Database, user: SessionUser, caseId: string): Promise<{ id: string; dealerId: string; storeId: string | null; serviceCenterId: string | null; serviceStage: string; status: string; assetId: string | null; contactEmail: string; contactName: string | null; caseNo: string; productName: string | null; serialNumber: string | null }> {
+  const scope = afterSalesScope(user);
+  const serviceCase = await one<{ id: string; dealerId: string; storeId: string | null; serviceCenterId: string | null; serviceStage: string; status: string; assetId: string | null; contactEmail: string; contactName: string | null; caseNo: string; productName: string | null; serialNumber: string | null }>(db,
+    `SELECT after_sales_cases.id, after_sales_cases.dealer_id AS dealerId, after_sales_cases.store_id AS storeId, asa.service_center_id AS serviceCenterId,
+      after_sales_cases.service_stage AS serviceStage, after_sales_cases.status, after_sales_cases.asset_id AS assetId, after_sales_cases.customer_email AS contactEmail,
+      after_sales_cases.contact_name AS contactName, after_sales_cases.case_no AS caseNo, products.name AS productName, after_sales_cases.serial_number AS serialNumber
+     FROM after_sales_cases LEFT JOIN after_sales_assignments asa ON asa.case_id = after_sales_cases.id LEFT JOIN products ON products.id = after_sales_cases.product_id
+     WHERE after_sales_cases.id = ? AND ${scope.sql}`, caseId, ...scope.params);
+  if (!serviceCase) throw forbidden('你无权查看或处理该售后工单');
+  return serviceCase;
+}
+
+async function requireAttachments(db: D1Database, caseId: string, requirements: Array<{ category: string; slot?: string; label: string }>): Promise<void> {
+  for (const requirement of requirements) {
+    const attachment = await one<{ id: string }>(db, `SELECT id FROM after_sales_attachments WHERE case_id = ? AND category = ? AND photo_slot = ? ORDER BY created_at DESC LIMIT 1`, caseId, requirement.category, requirement.slot ?? '');
+    if (!attachment) throw conflict(`请先上传${requirement.label}`);
+  }
+}
+
+async function countAttachments(db: D1Database, caseId: string, category: string): Promise<number> {
+  const row = await one<{ count: number }>(db, 'SELECT COUNT(*) AS count FROM after_sales_attachments WHERE case_id = ? AND category = ?', caseId, category);
+  return row?.count ?? 0;
+}
+
+type QuoteSnapshotItem = {
+  materialId?: string;
+  materialCode: string;
+  itemName: string;
+  itemType: string;
+  quantity: number;
+  unitPriceCents: number;
+  serviceFeeCents: number;
+  discountCents: number;
+  subtotalCents: number;
+  customerNote: string;
+};
+
+type QuoteSnapshot = {
+  quoteNumber: string;
+  quoteVersion: number;
+  caseNumber: string;
+  reportDate: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  customerAddress: string;
+  productName: string;
+  productVersion: string;
+  serialNumber: string;
+  warrantyStatus: string;
+  serviceCenter: string;
+  engineer: string;
+  inspectedAt: string;
+  customerDescription: string;
+  diagnosisSummary: string;
+  liabilityResult: string;
+  finalSolution: string;
+  quoteItems: QuoteSnapshotItem[];
+  subtotalCents: number;
+  discountCents: number;
+  shippingFeeCents: number;
+  grandTotalCents: number;
+  currency: string;
+  validUntil: string;
+  estimatedCycle: string;
+  customerNote: string;
+  paymentInstructions: string;
+  fromEmail: string;
+  replyToEmail: string;
+  pdfObjectKey: string | null;
+};
+
+function moneyText(value: number): string {
+  return `¥${(value / 100).toFixed(2)}`;
+}
+
+function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string } {
+  return {
+    address: env.NOTIFICATION_EMAIL_FROM || 'notification@maxcine.cn',
+    name: env.NOTIFICATION_EMAIL_NAME || 'MaxCINE 通知中心',
+    replyTo: env.SUPPORT_EMAIL_REPLY_TO || 'support@maxcine.cn',
+    replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持'
+  };
+}
+
+function quoteHtml(snapshot: QuoteSnapshot): string {
+  const rows = snapshot.quoteItems.map((item) => `<tr>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.materialCode || '—')}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.itemName)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:center">${item.quantity}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.unitPriceCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.serviceFeeCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${item.discountCents ? `-${moneyText(item.discountCents)}` : '—'}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600">${moneyText(item.subtotalCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.customerNote || '—')}</td>
+  </tr>`).join('');
+  const detailRow = (label: string, value: string) => `<tr><td style="width:120px;padding:7px 0;color:#6b7280;vertical-align:top">${escapeHtml(label)}</td><td style="padding:7px 0;color:#111827">${escapeHtml(value || '暂无数据')}</td></tr>`;
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>产品服务报告书 ${escapeHtml(snapshot.caseNumber)}</title></head>
+  <body style="margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+  <main style="max-width:760px;margin:0 auto;padding:28px 14px"><section style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden">
+  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="https://maxcine.cn/assets/maxcine-logo-on-light.png" alt="MaxCINE" width="168" style="display:block;width:168px;max-width:48%;height:auto;margin-bottom:26px"><h1 style="margin:0 0 8px;font-size:26px;line-height:1.25">产品服务报告书</h1><p style="margin:0;color:#6b7280;font-size:14px">案例号 ${escapeHtml(snapshot.caseNumber)}</p></header>
+  <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 12px;font-size:17px">案例详情</h2><table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px">${detailRow('案例号', snapshot.caseNumber)}${detailRow('报告日期', snapshot.reportDate)}${detailRow('客户', snapshot.customerName)}${detailRow('产品', `${snapshot.productName} ${snapshot.productVersion}`.trim())}${detailRow('产品 SN', snapshot.serialNumber)}${detailRow('检测时间', snapshot.inspectedAt)}${detailRow('保障状态', snapshot.warrantyStatus)}${detailRow('服务站点', snapshot.serviceCenter)}${detailRow('检测工程师', snapshot.engineer)}</table></section>
+  <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 10px;font-size:17px">用户问题描述</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.customerDescription || '暂无数据')}</p><h2 style="margin:24px 0 10px;font-size:17px">检测结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.diagnosisSummary)}</p><h2 style="margin:24px 0 10px;font-size:17px">定责结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.liabilityResult || '由 MaxCINE 管理员复核确认')}</p><h2 style="margin:24px 0 10px;font-size:17px">最终处理方案</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.finalSolution)}</p></section>
+  <section style="padding:24px 20px 28px"><h2 style="margin:0 14px 14px;font-size:17px">消耗物料和服务明细</h2><div style="overflow-x:auto"><table style="width:100%;min-width:680px;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f9fafb;color:#4b5563"><th style="padding:10px 8px;text-align:left">料号</th><th style="padding:10px 8px;text-align:left">项目</th><th style="padding:10px 8px">数量</th><th style="padding:10px 8px;text-align:right">单价</th><th style="padding:10px 8px;text-align:right">服务费</th><th style="padding:10px 8px;text-align:right">折扣</th><th style="padding:10px 8px;text-align:right">小计</th><th style="padding:10px 8px;text-align:left">说明</th></tr></thead><tbody>${rows}</tbody></table></div>
+  <table role="presentation" style="width:100%;max-width:360px;margin:22px 0 0 auto;border-collapse:collapse;font-size:14px">${detailRow('项目及服务合计', moneyText(snapshot.subtotalCents))}${detailRow('折扣', snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0))}${detailRow('运费', moneyText(snapshot.shippingFeeCents))}<tr><td style="padding:12px 0;border-top:1px solid #111827;font-weight:700">总金额</td><td style="padding:12px 0;border-top:1px solid #111827;text-align:right;font-size:20px;font-weight:750">${moneyText(snapshot.grandTotalCents)}</td></tr></table></section>
+  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7"><p style="margin:0 0 6px">报价有效期：${escapeHtml(snapshot.validUntil)}；预计处理周期：${escapeHtml(snapshot.estimatedCycle || '待确认')}</p><p style="margin:0 0 6px">${escapeHtml(snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。')}</p>${snapshot.customerNote ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.customerNote)}</p>` : ''}<p style="margin:18px 0 0">此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。</p></footer>
+  </section></main></body></html>`;
+}
+
+function quoteText(snapshot: QuoteSnapshot): string {
+  const items = snapshot.quoteItems.map((item) => `${item.materialCode || '—'} ${item.itemName} × ${item.quantity}：${moneyText(item.subtotalCents)}${item.customerNote ? `（${item.customerNote}）` : ''}`).join('\n');
+  return `MaxCINE 产品服务报告书
+案例号：${snapshot.caseNumber}
+客户：${snapshot.customerName}
+产品：${snapshot.productName} ${snapshot.productVersion}
+产品 SN：${snapshot.serialNumber || '暂无数据'}
+保障状态：${snapshot.warrantyStatus || '暂无数据'}
+服务站点：${snapshot.serviceCenter || '暂无数据'}
+检测工程师：${snapshot.engineer || '暂无数据'}
+
+用户问题描述：
+${snapshot.customerDescription || '暂无数据'}
+
+检测结果：
+${snapshot.diagnosisSummary}
+
+定责结果：
+${snapshot.liabilityResult || '由 MaxCINE 管理员复核确认'}
+
+最终处理方案：
+${snapshot.finalSolution}
+
+消耗物料和服务明细：
+${items}
+
+项目及服务合计：${moneyText(snapshot.subtotalCents)}
+折扣：-${moneyText(snapshot.discountCents)}
+运费：${moneyText(snapshot.shippingFeeCents)}
+总金额：${moneyText(snapshot.grandTotalCents)}
+报价有效期：${snapshot.validUntil}
+预计处理周期：${snapshot.estimatedCycle || '待确认'}
+
+${snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。'}
+
+此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。`;
+}
+
+type QuoteCaseContext = {
+  id: string;
+  caseNo: string;
+  caseType: string;
+  customerName: string;
+  customerPhone: string;
+  customerEmail: string;
+  customerAddress: string;
+  customerDescription: string;
+  productName: string;
+  productVersion: string;
+  serialNumber: string;
+  warrantyStartAt: string | null;
+  warrantyEndAt: string | null;
+  warrantyOverrideStatus: string | null;
+  serviceCenter: string;
+  engineer: string;
+  inspectedAt: string;
+};
+
+async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCaseContext> {
+  const value = await one<QuoteCaseContext>(db, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.case_type AS caseType,
+    COALESCE(after_sales_cases.contact_name, '') AS customerName, COALESCE(after_sales_cases.contact_phone, '') AS customerPhone,
+    after_sales_cases.customer_email AS customerEmail, after_sales_cases.customer_address AS customerAddress, after_sales_cases.description AS customerDescription,
+    COALESCE(products.name, assets.product_name_snapshot, '') AS productName, COALESCE(products.product_version, assets.version_snapshot, '') AS productVersion,
+    COALESCE(after_sales_cases.serial_number, assets.current_sn, '') AS serialNumber, assets.warranty_start_at AS warrantyStartAt,
+    assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, COALESCE(service_centers.name, '') AS serviceCenter,
+    COALESCE(engineer.name, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt
+    FROM after_sales_cases
+    LEFT JOIN products ON products.id = after_sales_cases.product_id
+    LEFT JOIN assets ON assets.id = after_sales_cases.asset_id
+    LEFT JOIN after_sales_assignments assignment ON assignment.id = (
+      SELECT latest_assignment.id FROM after_sales_assignments latest_assignment WHERE latest_assignment.case_id = after_sales_cases.id ORDER BY latest_assignment.assigned_at DESC LIMIT 1
+    )
+    LEFT JOIN service_centers ON service_centers.id = assignment.service_center_id
+    LEFT JOIN after_sales_inspections_v2 inspection ON inspection.id = (
+      SELECT latest_inspection.id FROM after_sales_inspections_v2 latest_inspection WHERE latest_inspection.case_id = after_sales_cases.id ORDER BY latest_inspection.version DESC LIMIT 1
+    )
+    LEFT JOIN users engineer ON engineer.id = inspection.submitted_by
+    WHERE after_sales_cases.id = ?`, caseId);
+  if (!value) throw notFound('未找到该售后工单');
+  return value;
+}
+
+function quoteAmounts(items: QuoteSnapshotItem[]): { subtotalCents: number; discountCents: number; shippingFeeCents: number; grandTotalCents: number } {
+  let subtotalCents = 0;
+  let discountCents = 0;
+  let shippingFeeCents = 0;
+  for (const item of items) {
+    const beforeDiscount = item.quantity * item.unitPriceCents + item.serviceFeeCents;
+    if (item.itemType === '运费') {
+      shippingFeeCents += beforeDiscount - item.discountCents;
+    } else if (item.itemType === '折扣' && beforeDiscount < 0) {
+      discountCents += Math.abs(beforeDiscount) + item.discountCents;
+    } else {
+      subtotalCents += beforeDiscount;
+      discountCents += item.discountCents;
+    }
+  }
+  return { subtotalCents, discountCents, shippingFeeCents, grandTotalCents: subtotalCents - discountCents + shippingFeeCents };
+}
+
+function quoteSnapshotFor(input: {
+  quoteNumber: string;
+  quoteVersion: number;
+  context: QuoteCaseContext;
+  inspectionSummary: string;
+  finalDecision: string;
+  items: QuoteSnapshotItem[];
+  currency: string;
+  validUntil: string;
+  estimatedCycle: string;
+  paymentInstructions: string;
+  customerNote: string;
+  sender: ReturnType<typeof notificationSender>;
+}): QuoteSnapshot {
+  const amounts = quoteAmounts(input.items);
+  const reportDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  return {
+    quoteNumber: input.quoteNumber,
+    quoteVersion: input.quoteVersion,
+    caseNumber: input.context.caseNo,
+    reportDate,
+    customerName: input.context.customerName || '客户',
+    customerPhone: input.context.customerPhone,
+    customerEmail: input.context.customerEmail,
+    customerAddress: input.context.customerAddress,
+    productName: input.context.productName || 'MaxCINE 产品',
+    productVersion: input.context.productVersion,
+    serialNumber: input.context.serialNumber,
+    warrantyStatus: warrantyDisplayStatus({
+      warrantyStartAt: input.context.warrantyStartAt,
+      warrantyEndAt: input.context.warrantyEndAt,
+      warrantyOverrideStatus: input.context.warrantyOverrideStatus
+    }),
+    serviceCenter: input.context.serviceCenter,
+    engineer: input.context.engineer,
+    inspectedAt: input.context.inspectedAt,
+    customerDescription: input.context.customerDescription,
+    diagnosisSummary: input.inspectionSummary,
+    liabilityResult: input.finalDecision,
+    finalSolution: input.finalDecision,
+    quoteItems: input.items,
+    ...amounts,
+    currency: input.currency,
+    validUntil: input.validUntil,
+    estimatedCycle: input.estimatedCycle,
+    customerNote: input.customerNote,
+    paymentInstructions: input.paymentInstructions,
+    fromEmail: input.sender.address,
+    replyToEmail: input.sender.replyTo,
+    pdfObjectKey: null
+  };
+}
+
+type RepairMaterialRow = {
+  id: string; materialCode: string | null; materialName: string; applicableModels: string; description: string;
+  outOfWarrantyPriceCents: number | null; priceStatus: string; outOfWarrantyServiceFeeCents: number | null; serviceFeeStatus: string; serviceFeeRuleJson: string;
+  retailCategory: string; canReplaceAsWholeSet: number; warrantyPolicy: string; warrantyDays: number | null; warrantyRuleJson: string; active: number; sourceNote: string; dataQualityStatus: string; issuesJson: string; updatedAt: string;
+};
+type RepairMaterialContext = { assetId: string | null; productId: string | null; productName: string; productVersion: string; materialCode: string; serialNumber: string };
+
+function parseJsonValue<T>(value: string | null | undefined, fallback: T): T {
+  if (!value) return fallback;
+  try { return JSON.parse(value) as T; } catch { return fallback; }
+}
+
+function modelCandidates(context: RepairMaterialContext | null): string[] {
+  if (!context) return [];
+  const values = [context.productName, context.productVersion, context.materialCode, context.serialNumber]
+    .flatMap((item) => item.split(/[\s/，,;；、]+/g)).map((item) => item.trim()).filter(Boolean);
+  const codes = values.flatMap((value) => {
+    const upper = value.toUpperCase();
+    const match = upper.match(/(?:CG\.)?W(\d{3})/);
+    return match ? [upper, `CG.W${match[1]}`, `W${match[1]}`] : [upper];
+  });
+  return [...new Set(codes)];
+}
+
+function codeNumber(value: string): number | null {
+  const match = value.toUpperCase().match(/CG\.W(\d{3})/);
+  return match ? Number(match[1]) : null;
+}
+
+function materialCompatibility(applicableModels: string, context: RepairMaterialContext | null): { status: 'matched' | 'all' | 'unknown' | 'not_applicable'; warning: string } {
+  const applicable = applicableModels.trim();
+  if (!applicable) return { status: 'unknown', warning: '该物料未标记适用型号，请确认后继续。' };
+  if (applicable.toUpperCase() === 'ALL') return { status: 'all', warning: '' };
+  if (!context) return { status: 'unknown', warning: '未关联资产型号，请人工确认适配性。' };
+  const candidates = modelCandidates(context);
+  const parts = applicable.split(/[\s/，,;；、]+/g).map((item) => item.trim().toUpperCase()).filter(Boolean);
+  for (const part of parts) {
+    const normalized = /^W\d{3}$/.test(part) ? `CG.${part}` : part;
+    if (candidates.includes(normalized) || candidates.includes(normalized.replace(/^CG\./, ''))) return { status: 'matched', warning: '' };
+    const range = normalized.match(/^CG\.W(\d{3})-CG\.W(\d{3})$/);
+    const productCodes = candidates.map((item) => /^W\d{3}$/.test(item) ? `CG.${item}` : item).map(codeNumber).filter((item): item is number => item !== null);
+    if (range && productCodes.some((value) => value >= Number(range[1]) && value <= Number(range[2]))) return { status: 'matched', warning: '' };
+  }
+  return { status: 'not_applicable', warning: '该物料未标记为适用于当前产品，请确认后继续。' };
+}
+
+function calculatedServiceFee(material: RepairMaterialRow, context: RepairMaterialContext | null): { cents: number | null; status: string } {
+  if (material.serviceFeeStatus === 'fixed' || material.serviceFeeStatus === 'zero') return { cents: material.outOfWarrantyServiceFeeCents ?? 0, status: material.serviceFeeStatus };
+  if (material.serviceFeeStatus === 'included') return { cents: 0, status: 'included' };
+  if (material.serviceFeeStatus !== 'version_rule') return { cents: null, status: material.serviceFeeStatus || 'missing' };
+  const rule = parseJsonValue<{ standard?: number; enhanced?: number; raw?: string }>(material.serviceFeeRuleJson, {});
+  const textValue = `${context?.productName ?? ''} ${context?.productVersion ?? ''} ${context?.materialCode ?? ''}`;
+  if (/增强|创作|创作者|W102|W103/i.test(textValue) && typeof rule.enhanced === 'number') return { cents: rule.enhanced, status: 'version_rule' };
+  if (/标准|官翻|瑕疵|W101|W104|W105/i.test(textValue) && typeof rule.standard === 'number') return { cents: rule.standard, status: 'version_rule' };
+  return { cents: null, status: 'manual_confirm' };
+}
+
+function materialForResponse(material: RepairMaterialRow, context: RepairMaterialContext | null): RepairMaterialRow & { compatibilityStatus: string; compatibilityWarning: string; calculatedServiceFeeCents: number | null; calculatedServiceFeeStatus: string } {
+  const compatibility = materialCompatibility(material.applicableModels, context);
+  const fee = calculatedServiceFee(material, context);
+  return { ...material, compatibilityStatus: compatibility.status, compatibilityWarning: compatibility.warning, calculatedServiceFeeCents: fee.cents, calculatedServiceFeeStatus: fee.status };
+}
+
+async function repairMaterialContext(db: D1Database, assetId: string | null, caseId?: string): Promise<RepairMaterialContext | null> {
+  if (!assetId && !caseId) return null;
+  return one<RepairMaterialContext>(db, `SELECT assets.id AS assetId, assets.product_id AS productId,
+      COALESCE(products.name, assets.product_name_snapshot, '') AS productName,
+      COALESCE(products.product_version, assets.version_snapshot, '') AS productVersion,
+      COALESCE(products.sku, '') AS materialCode,
+      COALESCE(assets.current_sn, '') AS serialNumber
+    FROM assets LEFT JOIN products ON products.id = assets.product_id
+    ${caseId ? 'JOIN after_sales_cases ON after_sales_cases.asset_id = assets.id' : ''}
+    WHERE ${caseId ? 'after_sales_cases.id = ?' : 'assets.id = ?'} LIMIT 1`, caseId ?? assetId);
+}
+
 app.use('*', async (c, next) => {
   const requestId = c.req.header('X-Request-ID') ?? crypto.randomUUID();
   c.set('requestId', requestId);
@@ -196,13 +813,14 @@ app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   const origin = c.req.header('Origin');
-  if (origin && origin === c.env.APP_ORIGIN) {
+  const allowedOrigin = isAllowedOrigin(origin, c.env.APP_ORIGIN);
+  if (origin && allowedOrigin) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Credentials', 'true');
     c.header('Vary', 'Origin');
   }
   if (c.req.method === 'OPTIONS') return c.body(null, 204, { 'Access-Control-Allow-Methods': 'GET,POST,PUT,PATCH,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Authorization,Content-Type,X-Request-ID' });
-  if (unsafeMethods.has(c.req.method) && origin && origin !== c.env.APP_ORIGIN) throw forbidden('当前请求来源无权限提交数据');
+  if (unsafeMethods.has(c.req.method) && origin && !allowedOrigin) throw forbidden('当前请求来源无权限提交数据');
   await next();
 });
 
@@ -214,6 +832,57 @@ app.onError((error, c) => {
 });
 
 app.get('/health', (c) => c.json({ ok: true, service: 'maxcine-api', requestId: c.get('requestId') }));
+
+app.get('/repair-materials', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'after-sales:damage-assess') && !can(user, 'after-sales:approve') && !can(user, 'data:read:all')) throw forbidden('你无权查看售后物料');
+  const url = new URL(c.req.url);
+  const q = normalizeLookup(url.searchParams.get('q') ?? '');
+  const showAll = url.searchParams.get('showAll') === 'true';
+  const assetId = url.searchParams.get('assetId');
+  const context = await repairMaterialContext(c.env.DB, assetId);
+  const where = showAll ? ['1 = 1'] : ['active = 1'];
+  const params: unknown[] = [];
+  if (q) {
+    where.push(`(material_code LIKE ? ESCAPE '\\' OR material_name LIKE ? ESCAPE '\\' OR source_note LIKE ? ESCAPE '\\')`);
+    const pattern = likePattern(q, 'contains');
+    params.push(pattern, pattern, pattern);
+  }
+  const rows = await all<RepairMaterialRow>(c.env.DB, `SELECT id, material_code AS materialCode, material_name AS materialName, applicable_models AS applicableModels, description,
+      out_of_warranty_price_cents AS outOfWarrantyPriceCents, price_status AS priceStatus, out_of_warranty_service_fee_cents AS outOfWarrantyServiceFeeCents,
+      service_fee_status AS serviceFeeStatus, service_fee_rule_json AS serviceFeeRuleJson, retail_category AS retailCategory, can_replace_as_whole_set AS canReplaceAsWholeSet,
+      warranty_policy AS warrantyPolicy, warranty_days AS warrantyDays, warranty_rule_json AS warrantyRuleJson, active, source_note AS sourceNote,
+      data_quality_status AS dataQualityStatus, issues_json AS issuesJson, updated_at AS updatedAt
+    FROM repair_materials WHERE ${where.join(' AND ')}
+    ORDER BY CASE WHEN material_code LIKE 'CG.W1%' THEN 0 ELSE 1 END, material_code COLLATE NOCASE, source_row_number LIMIT 120`, ...params);
+  const materials = rows.map((row) => materialForResponse(row, context));
+  return c.json({ materials: showAll || !context ? materials : materials.sort((a, b) => {
+    const rank = (status: string) => status === 'matched' ? 0 : status === 'all' ? 1 : status === 'unknown' ? 2 : 3;
+    return rank(a.compatibilityStatus) - rank(b.compatibilityStatus) || (a.materialCode ?? '').localeCompare(b.materialCode ?? '', 'zh-CN');
+  }) });
+});
+
+app.patch('/admin/repair-materials/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, updateRepairMaterialSchema);
+  const before = await one<RepairMaterialRow>(c.env.DB, `SELECT id, material_code AS materialCode, material_name AS materialName, applicable_models AS applicableModels, description,
+      out_of_warranty_price_cents AS outOfWarrantyPriceCents, price_status AS priceStatus, out_of_warranty_service_fee_cents AS outOfWarrantyServiceFeeCents,
+      service_fee_status AS serviceFeeStatus, service_fee_rule_json AS serviceFeeRuleJson, retail_category AS retailCategory, can_replace_as_whole_set AS canReplaceAsWholeSet,
+      warranty_policy AS warrantyPolicy, warranty_days AS warrantyDays, warranty_rule_json AS warrantyRuleJson, active, source_note AS sourceNote,
+      data_quality_status AS dataQualityStatus, issues_json AS issuesJson, updated_at AS updatedAt
+    FROM repair_materials WHERE id = ?`, c.req.param('id'));
+  if (!before) throw notFound('未找到该售后物料');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE repair_materials SET material_name = ?, applicable_models = ?, description = ?, out_of_warranty_price_cents = ?, price_status = ?,
+      out_of_warranty_service_fee_cents = ?, service_fee_status = ?, service_fee_rule_json = ?, retail_category = ?, can_replace_as_whole_set = ?,
+      warranty_policy = ?, warranty_days = ?, warranty_rule_json = ?, active = ?, source_note = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.materialName, input.applicableModels, input.description, input.outOfWarrantyPriceCents, input.priceStatus, input.outOfWarrantyServiceFeeCents, input.serviceFeeStatus,
+        input.serviceFeeRuleJson, input.retailCategory, Number(input.canReplaceAsWholeSet), input.warrantyPolicy, input.warrantyDays, input.warrantyRuleJson, Number(input.active), input.sourceNote, user.id, before.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'repair_material.update', entityType: 'repair_material', entityId: before.id, requestId: c.get('requestId'), before, after: input })
+  ]);
+  return c.json({ id: before.id });
+});
 
 app.post('/auth/login', async (c) => {
   const input = await parseBody(c.req.raw, loginSchema);
@@ -258,8 +927,8 @@ app.get('/inventory', requireAuth, async (c) => {
   const user = c.get('user');
   if (!can(user, 'inventory:read') && !can(user, 'catalog:read')) throw forbidden();
   const search = new URL(c.req.url).searchParams.get('search')?.trim() ?? '';
-  const items = await all<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
-    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
+  const items = await all<{ id: string; productId: string; sku: string; name: string; description: string; productVersion: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
+    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.product_version AS productVersion, products.specification,
       products.unit_price_cents AS unitPriceCents, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel,
       inventory.updated_at AS updatedAt
      FROM inventory JOIN products ON products.id = inventory.product_id
@@ -271,8 +940,8 @@ app.get('/inventory', requireAuth, async (c) => {
 app.get('/inventory/:id', requireAuth, async (c) => {
   const user = c.get('user');
   if (!can(user, 'inventory:read') && !can(user, 'catalog:read')) throw forbidden();
-  const item = await one<{ id: string; productId: string; sku: string; name: string; description: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
-    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.specification,
+  const item = await one<{ id: string; productId: string; sku: string; name: string; description: string; productVersion: string; specification: string; unitPriceCents: number; availableQuantity: number; reservedQuantity: number; reorderLevel: number; updatedAt: string }>(c.env.DB,
+    `SELECT inventory.id, products.id AS productId, products.sku, products.name, products.description, products.product_version AS productVersion, products.specification,
       products.unit_price_cents AS unitPriceCents, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel,
       inventory.updated_at AS updatedAt
      FROM inventory JOIN products ON products.id = inventory.product_id WHERE inventory.id = ?`, c.req.param('id'));
@@ -297,6 +966,326 @@ app.get('/dealer/dashboard', requireAuth, async (c) => {
     summary: { draftOrders: draft?.count ?? 0, submittedOrders: submitted?.count ?? 0, inventoryAlerts: inventoryAlert?.count ?? 0 },
     notifications
   });
+});
+
+app.get('/customer-risk', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'customer-risk:read');
+  const url = new URL(c.req.url);
+  const rawQuery = (url.searchParams.get('q') ?? '').trim();
+  const terms = [
+    url.searchParams.get('phone'),
+    url.searchParams.get('name'),
+    url.searchParams.get('recipientName'),
+    url.searchParams.get('wechatNickname'),
+    url.searchParams.get('qqNickname'),
+    url.searchParams.get('telegram'),
+    url.searchParams.get('whatsapp'),
+    url.searchParams.get('platformNickname'),
+    url.searchParams.get('address'),
+    url.searchParams.get('city'),
+    url.searchParams.get('ipLocation'),
+    url.searchParams.get('keyword')
+  ].map((item) => item?.trim() ?? '').filter(Boolean).slice(0, 12);
+  const status = url.searchParams.get('status')?.trim() ?? '';
+  const riskLevel = url.searchParams.get('riskLevel')?.trim() ?? '';
+  const limit = limitValue(url.searchParams.get('limit') ?? undefined, 20);
+  const clauses: string[] = ["EXISTS (SELECT 1 FROM customer_risk_events scoped_events WHERE scoped_events.customer_id = customers.id AND scoped_events.product_scope = 'MAVIC_4_PRO_ANAMORPHIC')"];
+  const params: unknown[] = [];
+  let prioritySql = '9';
+  const priorityParams: unknown[] = [];
+  if (['normal', 'watchlist', 'risk', 'blacklist'].includes(status)) { clauses.push('customer_risk_profiles.status = ?'); params.push(status); }
+  if (['low', 'medium', 'high'].includes(riskLevel)) { clauses.push('customer_risk_profiles.risk_level = ?'); params.push(riskLevel); }
+  if (rawQuery) {
+    const exact = rawQuery.toUpperCase();
+    const compact = rawQuery.replace(/\s+/g, '').toUpperCase();
+    const phone = rawQuery.replace(/\D/g, '');
+    const prefix = riskPrefixPattern(rawQuery);
+    const pattern = riskLikePattern(rawQuery);
+    const compactPattern = riskLikePattern(rawQuery.replace(/\s+/g, ''));
+    const platformExact = `(UPPER(customers.platform_nickname) = ? OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND customer_contacts.contact_type = 'platform_nickname' AND customer_contacts.normalized_value = ?))`;
+    const phoneExact = phone ? `(REPLACE(REPLACE(customers.phone, ' ', ''), '-', '') = ? OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND customer_contacts.contact_type = 'phone' AND customer_contacts.normalized_value = ?))` : '0';
+    const ipExact = `(UPPER(customers.ip_location) = ? OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND customer_contacts.contact_type = 'ip_location' AND customer_contacts.normalized_value = ?))`;
+    const otherExact = `(UPPER(customers.display_name) = ? OR UPPER(customers.recipient_name) = ? OR UPPER(customers.wechat_nickname) = ? OR UPPER(customers.qq_nickname) = ? OR UPPER(customers.telegram) = ? OR UPPER(customers.whatsapp) = ? OR UPPER(customers.shipping_address) = ? OR UPPER(customers.city) = ?)`;
+    const platformPrefix = `(UPPER(customers.platform_nickname) LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND customer_contacts.contact_type = 'platform_nickname' AND UPPER(customer_contacts.contact_value) LIKE ? ESCAPE '\\'))`;
+    const fuzzy = `(
+      UPPER(customers.display_name) LIKE ? ESCAPE '\\'
+      OR ${phone ? "REPLACE(REPLACE(customers.phone, ' ', ''), '-', '') LIKE ? ESCAPE '\\' OR" : ''}
+      UPPER(customers.recipient_name) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.platform_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.wechat_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.qq_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.telegram) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.whatsapp) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.shipping_address) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.city) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.ip_location) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.note) LIKE ? ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND (customer_contacts.normalized_value LIKE ? ESCAPE '\\' OR UPPER(customer_contacts.contact_value) LIKE ? ESCAPE '\\'))
+      OR EXISTS (SELECT 1 FROM customer_risk_events WHERE customer_risk_events.customer_id = customers.id AND (UPPER(customer_risk_events.note) LIKE ? ESCAPE '\\' OR UPPER(customer_risk_events.risk_reasons_json) LIKE ? ESCAPE '\\' OR UPPER(customer_risk_events.other_reason) LIKE ? ESCAPE '\\'))
+    )`;
+    clauses.push(`(${platformExact} OR ${phoneExact} OR ${ipExact} OR ${otherExact} OR ${platformPrefix} OR ${fuzzy})`);
+    params.push(
+      exact, compact,
+      ...(phone ? [phone, phone] : []),
+      exact, compact,
+      exact, exact, exact, exact, exact, exact, exact, exact,
+      prefix, prefix,
+      pattern,
+      ...(phone ? [riskLikePattern(phone)] : []),
+      pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern,
+      compactPattern, pattern, pattern, pattern, pattern
+    );
+    prioritySql = `CASE
+      WHEN ${platformExact} THEN 1
+      WHEN ${phoneExact} THEN 2
+      WHEN ${ipExact} THEN 3
+      WHEN ${otherExact} THEN 4
+      WHEN ${platformPrefix} THEN 5
+      ELSE 6
+    END`;
+    priorityParams.push(
+      exact, compact,
+      ...(phone ? [phone, phone] : []),
+      exact, compact,
+      exact, exact, exact, exact, exact, exact, exact, exact,
+      prefix, prefix
+    );
+  }
+  for (const term of terms) {
+    const pattern = riskLikePattern(term);
+    const compactPattern = riskLikePattern(term.replace(/\s+/g, ''));
+    clauses.push(`(
+      UPPER(customers.display_name) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.phone) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.recipient_name) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.platform_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.wechat_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.qq_nickname) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.telegram) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.whatsapp) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.shipping_address) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.city) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.ip_location) LIKE ? ESCAPE '\\'
+      OR UPPER(customers.note) LIKE ? ESCAPE '\\'
+      OR EXISTS (SELECT 1 FROM customer_contacts WHERE customer_contacts.customer_id = customers.id AND (customer_contacts.normalized_value LIKE ? ESCAPE '\\' OR UPPER(customer_contacts.contact_value) LIKE ? ESCAPE '\\'))
+      OR EXISTS (SELECT 1 FROM customer_risk_events WHERE customer_risk_events.customer_id = customers.id AND (UPPER(customer_risk_events.note) LIKE ? ESCAPE '\\' OR UPPER(customer_risk_events.risk_reasons_json) LIKE ? ESCAPE '\\' OR UPPER(customer_risk_events.other_reason) LIKE ? ESCAPE '\\'))
+    )`);
+    params.push(pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, compactPattern, pattern, pattern, pattern, pattern);
+  }
+  const items = await all<{
+    id: string; displayName: string; phone: string; recipientName: string; platformNickname: string; wechatNickname: string; shippingAddress: string; city: string; ipLocation: string; status: string; riskLevel: string; riskReasonsJson: string;
+    registrationCount: number; involvedDealerCount: number; consultationCount: number; dealCount: number; noDealCount: number; lastConsultedAt: string | null; updatedAt: string; priority: number;
+  }>(c.env.DB, `SELECT customers.id, customers.display_name AS displayName, customers.phone, customers.platform_nickname AS platformNickname,
+      customers.recipient_name AS recipientName, customers.wechat_nickname AS wechatNickname, customers.shipping_address AS shippingAddress, customers.city, customers.ip_location AS ipLocation,
+      customer_risk_profiles.status, customer_risk_profiles.risk_level AS riskLevel, customer_risk_profiles.risk_reasons_json AS riskReasonsJson,
+      customer_risk_profiles.registration_count AS registrationCount, customer_risk_profiles.involved_dealer_count AS involvedDealerCount,
+      customer_risk_profiles.consultation_count AS consultationCount, customer_risk_profiles.deal_count AS dealCount, customer_risk_profiles.no_deal_count AS noDealCount,
+      customer_risk_profiles.last_consulted_at AS lastConsultedAt, customers.updated_at AS updatedAt, ${prioritySql} AS priority
+    FROM customers JOIN customer_risk_profiles ON customer_risk_profiles.customer_id = customers.id
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY priority,
+      CASE customer_risk_profiles.status WHEN 'blacklist' THEN 0 WHEN 'risk' THEN 1 WHEN 'watchlist' THEN 2 ELSE 3 END,
+      customer_risk_profiles.updated_at DESC, customers.display_name
+    LIMIT ?`, ...priorityParams, ...params, limit);
+  return c.json({ items: items.map((item) => ({ ...item, statusText: riskStatusText[item.status] ?? item.status, riskLevelText: riskLevelText[item.riskLevel] ?? item.riskLevel, riskReasons: parseJsonArray(item.riskReasonsJson) })) });
+});
+
+app.get('/customer-risk/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'customer-risk:read');
+  const customer = await one<{
+    id: string; displayName: string; phone: string; recipientName: string; platformNickname: string; wechatNickname: string; qqNickname: string; telegram: string; whatsapp: string;
+    shippingAddress: string; city: string; ipLocation: string; note: string; createdAt: string; updatedAt: string; createdByName: string | null; status: string; riskLevel: string; riskReasonsJson: string; otherReason: string;
+    firstRegisteredAt: string; lastRegisteredAt: string; registrationCount: number; involvedDealerCount: number; consultationCount: number; dealCount: number; noDealCount: number; lastConsultedAt: string | null;
+  }>(c.env.DB, `SELECT customers.id, customers.display_name AS displayName, customers.phone, customers.recipient_name AS recipientName,
+      customers.platform_nickname AS platformNickname, customers.wechat_nickname AS wechatNickname, customers.qq_nickname AS qqNickname,
+      customers.telegram, customers.whatsapp, customers.shipping_address AS shippingAddress, customers.city, customers.ip_location AS ipLocation, customers.note,
+      customers.created_at AS createdAt, customers.updated_at AS updatedAt, creator.name AS createdByName,
+      customer_risk_profiles.status, customer_risk_profiles.risk_level AS riskLevel, customer_risk_profiles.risk_reasons_json AS riskReasonsJson, customer_risk_profiles.other_reason AS otherReason,
+      customer_risk_profiles.first_registered_at AS firstRegisteredAt, customer_risk_profiles.last_registered_at AS lastRegisteredAt,
+      customer_risk_profiles.registration_count AS registrationCount, customer_risk_profiles.involved_dealer_count AS involvedDealerCount,
+      customer_risk_profiles.consultation_count AS consultationCount, customer_risk_profiles.deal_count AS dealCount, customer_risk_profiles.no_deal_count AS noDealCount,
+      customer_risk_profiles.last_consulted_at AS lastConsultedAt
+    FROM customers
+    JOIN customer_risk_profiles ON customer_risk_profiles.customer_id = customers.id
+    LEFT JOIN users creator ON creator.id = customers.created_by
+    WHERE customers.id = ?`, c.req.param('id'));
+  if (!customer) throw notFound('未找到该客户风险档案');
+  const [contacts, events] = await Promise.all([
+    all<{ id: string; contactType: string; contactValue: string; firstSeenAt: string; lastSeenAt: string; createdAt: string }>(c.env.DB,
+      'SELECT id, contact_type AS contactType, contact_value AS contactValue, first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt, created_at AS createdAt FROM customer_contacts WHERE customer_id = ? ORDER BY contact_type, created_at', customer.id),
+    all<{ id: string; dealerName: string | null; storeName: string | null; productScope: string; consultationResult: string; status: string; riskLevel: string; riskReasonsJson: string; otherReason: string; note: string; happenedAt: string; createdAt: string; createdBy: string | null; createdByName: string | null; updatedAt: string }>(c.env.DB,
+      `SELECT customer_risk_events.id, dealers.name AS dealerName, stores.name AS storeName, customer_risk_events.product_scope AS productScope,
+        customer_risk_events.consultation_result AS consultationResult, customer_risk_events.status, customer_risk_events.risk_level AS riskLevel,
+        customer_risk_events.risk_reasons_json AS riskReasonsJson, customer_risk_events.other_reason AS otherReason, customer_risk_events.note,
+        customer_risk_events.happened_at AS happenedAt, customer_risk_events.created_at AS createdAt, customer_risk_events.created_by AS createdBy,
+        users.name AS createdByName, customer_risk_events.updated_at AS updatedAt
+      FROM customer_risk_events
+      LEFT JOIN dealers ON dealers.id = customer_risk_events.dealer_id
+      LEFT JOIN stores ON stores.id = customer_risk_events.store_id
+      LEFT JOIN users ON users.id = customer_risk_events.created_by
+      WHERE customer_risk_events.customer_id = ? AND customer_risk_events.product_scope = 'MAVIC_4_PRO_ANAMORPHIC'
+      ORDER BY customer_risk_events.happened_at DESC, customer_risk_events.created_at DESC`, customer.id)
+  ]);
+  const manage = can(user, 'customer-risk:manage') || can(user, 'data:read:all');
+  return c.json({
+    customer: { ...customer, statusText: riskStatusText[customer.status] ?? customer.status, riskLevelText: riskLevelText[customer.riskLevel] ?? customer.riskLevel, riskReasons: parseJsonArray(customer.riskReasonsJson) },
+    contacts,
+    events: events.map((event) => ({ ...event, statusText: riskStatusText[event.status] ?? event.status, riskLevelText: riskLevelText[event.riskLevel] ?? event.riskLevel, riskReasons: parseJsonArray(event.riskReasonsJson), canEdit: manage }))
+  });
+});
+
+app.patch('/customer-risk/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'customer-risk:manage') && !can(user, 'data:read:all')) throw forbidden('只有管理员可以编辑客户风险档案');
+  const input = await parseBody(c.req.raw, updateCustomerRiskProfileSchema);
+  const current = await one<{
+    id: string; displayName: string; phone: string; recipientName: string; platformNickname: string; wechatNickname: string; qqNickname: string; telegram: string; whatsapp: string;
+    shippingAddress: string; city: string; ipLocation: string; note: string; status: string; riskLevel: string; riskReasonsJson: string; otherReason: string;
+  }>(c.env.DB, `SELECT customers.id, customers.display_name AS displayName, customers.phone, customers.recipient_name AS recipientName,
+      customers.platform_nickname AS platformNickname, customers.wechat_nickname AS wechatNickname, customers.qq_nickname AS qqNickname,
+      customers.telegram, customers.whatsapp, customers.shipping_address AS shippingAddress, customers.city, customers.ip_location AS ipLocation, customers.note,
+      customer_risk_profiles.status, customer_risk_profiles.risk_level AS riskLevel, customer_risk_profiles.risk_reasons_json AS riskReasonsJson, customer_risk_profiles.other_reason AS otherReason
+    FROM customers JOIN customer_risk_profiles ON customer_risk_profiles.customer_id = customers.id WHERE customers.id = ?`, c.req.param('id'));
+  if (!current) throw notFound('未找到该客户风险档案');
+  const inputCustomer = input.customer ?? {};
+  const nextCustomer: CustomerRiskInputCustomer = {
+    name: inputCustomer.name ?? current.displayName,
+    phone: inputCustomer.phone ?? current.phone,
+    recipientName: inputCustomer.recipientName ?? current.recipientName,
+    platformNickname: inputCustomer.platformNickname ?? current.platformNickname,
+    wechatNickname: inputCustomer.wechatNickname ?? current.wechatNickname,
+    qqNickname: inputCustomer.qqNickname ?? current.qqNickname,
+    telegram: inputCustomer.telegram ?? current.telegram,
+    whatsapp: inputCustomer.whatsapp ?? current.whatsapp,
+    shippingAddress: inputCustomer.shippingAddress ?? current.shippingAddress,
+    city: inputCustomer.city ?? current.city,
+    ipLocation: inputCustomer.ipLocation ?? current.ipLocation,
+    keyword: inputCustomer.keyword ?? '',
+    note: inputCustomer.note ?? current.note
+  };
+  const nextStatus = input.status ?? current.status;
+  const nextRiskLevel = input.riskLevel ?? current.riskLevel;
+  const nextReasons = input.riskReasons ?? parseJsonArray(current.riskReasonsJson);
+  const nextOtherReason = input.otherReason ?? current.otherReason;
+  const contacts = customerRiskContacts(nextCustomer);
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`UPDATE customers SET display_name = ?, phone = ?, recipient_name = ?, platform_nickname = ?, wechat_nickname = ?, qq_nickname = ?,
+      telegram = ?, whatsapp = ?, shipping_address = ?, city = ?, ip_location = ?, note = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(nextCustomer.name, nextCustomer.phone, nextCustomer.recipientName, nextCustomer.platformNickname, nextCustomer.wechatNickname, nextCustomer.qqNickname,
+        nextCustomer.telegram, nextCustomer.whatsapp, nextCustomer.shippingAddress, nextCustomer.city, nextCustomer.ipLocation, nextCustomer.note, user.id, current.id),
+    c.env.DB.prepare(`UPDATE customer_risk_profiles SET status = ?, risk_level = ?, risk_reasons_json = ?, other_reason = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE customer_id = ?`)
+      .bind(nextStatus, nextRiskLevel, JSON.stringify(nextReasons), nextOtherReason, user.id, current.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'customer_risk.profile_update', entityType: 'customer', entityId: current.id, requestId: c.get('requestId'), before: current, after: { customer: nextCustomer, status: nextStatus, riskLevel: nextRiskLevel, riskReasons: nextReasons, otherReason: nextOtherReason } })
+  ];
+  statements.push(...contacts.map((contact) => c.env.DB.prepare(`INSERT INTO customer_contacts (id, customer_id, contact_type, contact_value, normalized_value, created_by)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(customer_id, contact_type, normalized_value) DO UPDATE SET contact_value = excluded.contact_value, last_seen_at = CURRENT_TIMESTAMP`)
+    .bind(id(), current.id, contact.type, contact.value, contact.normalized, user.id)));
+  await c.env.DB.batch(statements);
+  return c.json({ ok: true });
+});
+
+app.post('/customer-risk', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'customer-risk:create');
+  const input = await parseBody(c.req.raw, createCustomerRiskRecordSchema);
+  const riskCustomer: CustomerRiskInputCustomer = {
+    name: input.customer.name ?? '',
+    phone: input.customer.phone ?? '',
+    recipientName: input.customer.recipientName ?? '',
+    platformNickname: input.customer.platformNickname ?? '',
+    wechatNickname: input.customer.wechatNickname ?? '',
+    qqNickname: input.customer.qqNickname ?? '',
+    telegram: input.customer.telegram ?? '',
+    whatsapp: input.customer.whatsapp ?? '',
+    shippingAddress: input.customer.shippingAddress ?? '',
+    city: input.customer.city ?? '',
+    ipLocation: input.customer.ipLocation ?? '',
+    keyword: input.customer.keyword ?? '',
+    note: input.customer.note ?? ''
+  };
+  const contacts = customerRiskContacts(riskCustomer);
+  const existingCustomerId = await findExistingRiskCustomer(c.env.DB, input.customerId, contacts);
+  const customerId = existingCustomerId ?? id();
+  const eventScope = await dealerForRiskEvent(c.env.DB, user, input.storeId, input.dealerId);
+  const eventId = id();
+  const profileId = id();
+  const happenedAt = input.happenedAt || new Date().toISOString();
+  const statements: D1PreparedStatement[] = [];
+  if (!existingCustomerId) {
+    statements.push(c.env.DB.prepare(`INSERT INTO customers (id, display_name, phone, recipient_name, platform_nickname, wechat_nickname, qq_nickname, telegram, whatsapp,
+      shipping_address, city, ip_location, note, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(customerId, riskCustomer.name, riskCustomer.phone, riskCustomer.recipientName, riskCustomer.platformNickname, riskCustomer.wechatNickname,
+        riskCustomer.qqNickname, riskCustomer.telegram, riskCustomer.whatsapp, riskCustomer.shippingAddress, riskCustomer.city, riskCustomer.ipLocation, riskCustomer.note, user.id, user.id));
+  } else {
+    statements.push(c.env.DB.prepare(`UPDATE customers SET
+      display_name = CASE WHEN display_name = '' AND ? != '' THEN ? ELSE display_name END,
+      phone = CASE WHEN phone = '' AND ? != '' THEN ? ELSE phone END,
+      recipient_name = CASE WHEN recipient_name = '' AND ? != '' THEN ? ELSE recipient_name END,
+      platform_nickname = CASE WHEN platform_nickname = '' AND ? != '' THEN ? ELSE platform_nickname END,
+      wechat_nickname = CASE WHEN wechat_nickname = '' AND ? != '' THEN ? ELSE wechat_nickname END,
+      qq_nickname = CASE WHEN qq_nickname = '' AND ? != '' THEN ? ELSE qq_nickname END,
+      telegram = CASE WHEN telegram = '' AND ? != '' THEN ? ELSE telegram END,
+      whatsapp = CASE WHEN whatsapp = '' AND ? != '' THEN ? ELSE whatsapp END,
+      shipping_address = CASE WHEN shipping_address = '' AND ? != '' THEN ? ELSE shipping_address END,
+      city = CASE WHEN city = '' AND ? != '' THEN ? ELSE city END,
+      ip_location = CASE WHEN ip_location = '' AND ? != '' THEN ? ELSE ip_location END,
+      note = CASE WHEN note = '' AND ? != '' THEN ? ELSE note END,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(riskCustomer.name, riskCustomer.name, riskCustomer.phone, riskCustomer.phone, riskCustomer.recipientName, riskCustomer.recipientName,
+        riskCustomer.platformNickname, riskCustomer.platformNickname, riskCustomer.wechatNickname, riskCustomer.wechatNickname, riskCustomer.qqNickname, riskCustomer.qqNickname,
+        riskCustomer.telegram, riskCustomer.telegram, riskCustomer.whatsapp, riskCustomer.whatsapp, riskCustomer.shippingAddress, riskCustomer.shippingAddress,
+        riskCustomer.city, riskCustomer.city, riskCustomer.ipLocation, riskCustomer.ipLocation, riskCustomer.note, riskCustomer.note, user.id, customerId));
+  }
+  statements.push(c.env.DB.prepare(`INSERT OR IGNORE INTO customer_risk_profiles (id, customer_id, status, risk_level, risk_reasons_json, other_reason, created_by, updated_by)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(profileId, customerId, input.status, input.riskLevel, JSON.stringify(input.riskReasons), input.otherReason, user.id, user.id));
+  statements.push(...contacts.map((contact) => c.env.DB.prepare(`INSERT INTO customer_contacts (id, customer_id, contact_type, contact_value, normalized_value, created_by)
+    VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(customer_id, contact_type, normalized_value) DO UPDATE SET contact_value = excluded.contact_value, last_seen_at = CURRENT_TIMESTAMP`)
+    .bind(id(), customerId, contact.type, contact.value, contact.normalized, user.id)));
+  statements.push(c.env.DB.prepare(`INSERT INTO customer_risk_events (id, customer_id, dealer_id, store_id, product_scope, consultation_result, status, risk_level,
+    risk_reasons_json, other_reason, note, happened_at, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .bind(eventId, customerId, eventScope.dealerId, eventScope.storeId, input.productScope, input.consultationResult, input.status, input.riskLevel,
+      JSON.stringify(input.riskReasons), input.otherReason, input.note, happenedAt, user.id, user.id));
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'customer_risk.record_create', entityType: 'customer', entityId: customerId, requestId: c.get('requestId'), after: { eventId, merged: Boolean(existingCustomerId), status: input.status, riskLevel: input.riskLevel } }));
+  await c.env.DB.batch(statements);
+  await recomputeCustomerRiskProfile(c.env.DB, customerId, user.id);
+  return c.json({ customerId, eventId, merged: Boolean(existingCustomerId) }, 201);
+});
+
+app.patch('/customer-risk/events/:eventId', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'customer-risk:manage') && !can(user, 'data:read:all')) throw forbidden('只有管理员可以编辑已有咨询记录');
+  const input = await parseBody(c.req.raw, updateCustomerRiskEventSchema);
+  const event = await one<{ id: string; customerId: string; createdBy: string | null; beforeJson: string }>(c.env.DB,
+    `SELECT id, customer_id AS customerId, created_by AS createdBy,
+      json_object('status', status, 'riskLevel', risk_level, 'riskReasons', risk_reasons_json, 'consultationResult', consultation_result, 'note', note) AS beforeJson
+    FROM customer_risk_events WHERE id = ?`, c.req.param('eventId'));
+  if (!event) throw notFound('未找到该咨询记录');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE customer_risk_events SET status = ?, risk_level = ?, risk_reasons_json = ?, other_reason = ?, consultation_result = ?,
+      happened_at = COALESCE(NULLIF(?, ''), happened_at), note = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.status, input.riskLevel, JSON.stringify(input.riskReasons), input.otherReason, input.consultationResult, input.happenedAt, input.note, user.id, event.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'customer_risk.event_update', entityType: 'customer_risk_event', entityId: event.id, requestId: c.get('requestId'), before: JSON.parse(event.beforeJson), after: input })
+  ]);
+  await recomputeCustomerRiskProfile(c.env.DB, event.customerId, user.id);
+  return c.json({ id: event.id, customerId: event.customerId });
+});
+
+app.delete('/customer-risk/events/:eventId', requireAuth, async (c) => {
+  const user = c.get('user');
+  if (!can(user, 'customer-risk:manage') && !can(user, 'data:read:all')) throw forbidden('只有管理员可以删除错误咨询记录');
+  const event = await one<{ id: string; customerId: string; beforeJson: string }>(c.env.DB,
+    `SELECT id, customer_id AS customerId,
+      json_object('status', status, 'riskLevel', risk_level, 'riskReasons', risk_reasons_json, 'consultationResult', consultation_result, 'note', note) AS beforeJson
+    FROM customer_risk_events WHERE id = ?`, c.req.param('eventId'));
+  if (!event) throw notFound('未找到该咨询记录');
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM customer_risk_events WHERE id = ?').bind(event.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'customer_risk.event_delete', entityType: 'customer_risk_event', entityId: event.id, requestId: c.get('requestId'), before: JSON.parse(event.beforeJson) })
+  ]);
+  await recomputeCustomerRiskProfile(c.env.DB, event.customerId, user.id);
+  return c.body(null, 204);
 });
 
 app.post('/orders', requireAuth, async (c) => {
@@ -335,7 +1324,7 @@ app.put('/orders/:id', requireAuth, async (c) => {
   const input = await parseBody(c.req.raw, updateOrderSchema);
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  if (order.status !== 'draft' || !canAccessStore(user, order.storeId)) throw conflict('只有授权范围内的草稿订单可以编辑');
+  if (!['draft', 'rejected'].includes(order.status) || !canAccessStore(user, order.storeId)) throw conflict('只有授权范围内的草稿或已驳回订单可以编辑');
   assertStoreAccess(user, input.storeId);
   const store = await one<{ id: string }>(c.env.DB, 'SELECT id FROM stores WHERE id = ? AND status = \'active\'', input.storeId);
   if (!store) throw forbidden('该店铺不可用');
@@ -351,7 +1340,7 @@ app.put('/orders/:id', requireAuth, async (c) => {
   const total = lines.reduce((sum, line) => sum + line.quantity * line.product.price, 0);
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM order_items WHERE order_id = ?').bind(order.id),
-    c.env.DB.prepare(`UPDATE orders SET store_id = ?, note = ?, sale_price_cents = ?, shipping_address = ?, customer_profile = ?, screenshot_data_url = ?, total_cents = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`)
+    c.env.DB.prepare(`UPDATE orders SET store_id = ?, status = 'draft', note = ?, sale_price_cents = ?, shipping_address = ?, customer_profile = ?, screenshot_data_url = ?, total_cents = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('draft','rejected')`)
       .bind(input.storeId, input.note, input.salePriceCents, input.shippingAddress, input.customerProfile, input.screenshotDataUrl, total, user.id, order.id),
     ...lines.map((line) => c.env.DB.prepare(`INSERT INTO order_items (id, order_id, product_id, product_name_snapshot, sku_snapshot, unit_price_cents, quantity, created_by, updated_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), order.id, line.productId, line.product.name, line.product.sku, line.product.price, line.quantity, user.id, user.id)),
@@ -416,7 +1405,8 @@ app.get('/orders', requireAuth, async (c) => {
       params.push(...user.storeIds);
     }
   }
-  if (status && ['draft', 'submitted', 'approved', 'rejected', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'].includes(status)) { where.push('orders.status = ?'); params.push(status); }
+  if (status === 'pending_shipment') where.push(`orders.status IN ('approved','picking','packed')`);
+  else if (status && ['draft', 'submitted', 'approved', 'rejected', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'].includes(status)) { where.push('orders.status = ?'); params.push(status); }
   if (search) { where.push('orders.order_no LIKE ?'); params.push(`%${search}%`); }
   if (storeId) {
     if (!canAccessStore(user, storeId) && !can(user, 'order:warehouse-read')) throw forbidden('该店铺不在你的授权范围内');
@@ -426,12 +1416,16 @@ app.get('/orders', requireAuth, async (c) => {
   if (to) { where.push('orders.created_at <= ?'); params.push(`${to} 23:59:59`); }
   const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const count = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders${clause}`, ...params);
-  const orders = await all<OrderRow & { storeName: string; itemCount: number }>(c.env.DB,
+  const orders = await all<OrderRow & { storeName: string; dealerName: string; itemCount: number; itemSummary: string; serialSummary: string }>(c.env.DB,
     `SELECT orders.id, orders.order_no AS orderNo, orders.dealer_id AS dealerId, orders.store_id AS storeId, orders.status, orders.total_cents AS totalCents, orders.note,
+      orders.review_note AS reviewNote,
       orders.sale_price_cents AS salePriceCents, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, orders.screenshot_data_url AS screenshotDataUrl,
-      orders.created_at AS createdAt, orders.updated_at AS updatedAt, orders.submitted_at AS submittedAt, orders.reviewed_at AS reviewedAt, stores.name AS storeName,
-      COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) AS itemCount
-     FROM orders JOIN stores ON stores.id = orders.store_id${clause} ORDER BY orders.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit);
+      orders.package_materials AS packageMaterials, orders.fulfillment_carrier AS fulfillmentCarrier, orders.fulfillment_tracking_number AS fulfillmentTrackingNumber, orders.fulfillment_updated_at AS fulfillmentUpdatedAt,
+      orders.created_at AS createdAt, orders.updated_at AS updatedAt, orders.submitted_at AS submittedAt, orders.reviewed_at AS reviewedAt, stores.name AS storeName, dealers.name AS dealerName,
+      COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) AS itemCount,
+      COALESCE((SELECT GROUP_CONCAT(product_name_snapshot || ' ×' || quantity, '、') FROM order_items WHERE order_id = orders.id), '') AS itemSummary,
+      COALESCE((SELECT GROUP_CONCAT(serial_number, '、') FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = orders.id) AND state IN ('allocated','shipped')), '') AS serialSummary
+     FROM orders JOIN stores ON stores.id = orders.store_id JOIN dealers ON dealers.id = orders.dealer_id${clause} ORDER BY orders.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit);
   return c.json({ orders: orders.map((order) => ({ ...order, ...orderForViewer(user, order) })), pagination: { page, limit, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
 });
 
@@ -440,8 +1434,10 @@ app.get('/orders/:id', requireAuth, async (c) => {
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
   const [items, shipment, overview] = await Promise.all([
-    all<OrderItemRow>(c.env.DB, `SELECT id, product_id AS productId, product_name_snapshot AS name, sku_snapshot AS sku, quantity, unit_price_cents AS unitPriceCents FROM order_items WHERE order_id = ?`, order.id),
-    one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, tracking_number AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id),
+    all<OrderItemRow>(c.env.DB, `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
+      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents
+      FROM order_items LEFT JOIN products ON products.id = order_items.product_id WHERE order_items.order_id = ?`, order.id),
+    one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, CASE WHEN tracking_number LIKE 'NO-TRACKING-%' THEN '' ELSE tracking_number END AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id),
     one<{ storeName: string; createdByName: string; reviewedByName: string | null }>(c.env.DB, `SELECT stores.name AS storeName, creator.name AS createdByName, reviewer.name AS reviewedByName
       FROM orders JOIN stores ON stores.id = orders.store_id JOIN users AS creator ON creator.id = orders.created_by
       LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id)
@@ -454,7 +1450,58 @@ app.get('/orders/:id', requireAuth, async (c) => {
     ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
     ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
   ];
-  return c.json({ order: { ...orderForViewer(user, order), ...overview }, items, serials, shipment, timeline });
+  return c.json({ order: { ...orderForViewer(user, order), ...overview }, items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })), serials, shipment, timeline });
+});
+
+app.get('/orders/:id/available-serials', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:review');
+  const order = await getOrder(c.env.DB, c.req.param('id'));
+  assertOrderAccess(user, order);
+  const items = await orderItemsForFulfillment(c.env.DB, order.id);
+  const groups = await Promise.all(items.map(async (item) => {
+    const serials = await all<{
+      assetId: string;
+      serialNumber: string;
+      originalSn: string | null;
+      assetStatus: string;
+      dataQualityStatus: string;
+      sourceChannel: string;
+      shippingWarehouse: string;
+      productNote: string;
+      assetNote: string | null;
+      allocatedToThisOrder: number;
+      updatedAt: string;
+    }>(c.env.DB, `SELECT assets.id AS assetId, assets.current_sn AS serialNumber, assets.original_sn AS originalSn,
+        assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus, assets.source_channel AS sourceChannel,
+        assets.shipping_warehouse AS shippingWarehouse, COALESCE(products.description, '') AS productNote,
+        (SELECT GROUP_CONCAT(content, '；') FROM (SELECT content FROM asset_notes WHERE asset_id = assets.id ORDER BY created_at DESC LIMIT 3)) AS assetNote,
+        CASE WHEN assigned_items.order_id = ? THEN 1 ELSE 0 END AS allocatedToThisOrder,
+        assets.updated_at AS updatedAt
+      FROM assets
+      LEFT JOIN products ON products.id = assets.product_id
+      LEFT JOIN serial_numbers ON serial_numbers.serial_number = assets.current_sn COLLATE NOCASE AND serial_numbers.state IN ('allocated','shipped')
+      LEFT JOIN order_items AS assigned_items ON assigned_items.id = serial_numbers.order_item_id
+      WHERE assets.current_sn IS NOT NULL AND (assets.product_id = ? OR (assets.product_id IS NULL AND (
+          (? <> '' AND assets.version_snapshot = ?)
+          OR (? <> '' AND assets.version_snapshot = ?)
+          OR (? <> '' AND assets.product_name_snapshot = ?)
+          OR assets.product_name_snapshot LIKE '%' || ? || '%'
+        )))
+        AND assets.asset_status IN ('active','returned_to_inventory','refurbished','unknown')
+        AND (serial_numbers.id IS NULL OR assigned_items.order_id = ?)
+      ORDER BY allocatedToThisOrder DESC, assets.updated_at DESC, assets.current_sn COLLATE NOCASE
+      LIMIT 200`, order.id, item.productId, item.productVersion ?? '', item.productVersion ?? '', item.specification ?? '', item.specification ?? '', item.name, item.name, item.name, order.id);
+    return {
+      productId: item.productId,
+      productName: item.name,
+      sku: item.sku,
+      productVersion: item.productVersion ?? '',
+      quantity: item.quantity,
+      serials
+    };
+  }));
+  return c.json({ groups });
 });
 
 app.post('/orders/:id/submit', requireAuth, async (c) => {
@@ -467,13 +1514,13 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   if (!order.screenshotDataUrl || order.salePriceCents === null || order.salePriceCents <= 0 || !order.shippingAddress || !order.customerProfile) {
     throw badRequest('提交审核前请补充订单截图、售卖价格、收货地址和用户画像');
   }
-  if (!canTransitionOrder(user, order.status, 'submitted') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
+  if ((!canTransitionOrder(user, order.status, 'submitted') && order.status !== 'rejected') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
   const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
     JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
   if ((unavailable?.count ?? 0) > 0) throw conflict('订单中有产品库存不足，请修改后再提交');
   await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'draft'`).bind(user.id, order.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'order.submit', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'draft' }, after: { status: 'submitted' } })
+    c.env.DB.prepare(`UPDATE orders SET status = 'submitted', submitted_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('draft','rejected')`).bind(user.id, order.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'order.submit', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'submitted' } })
   ]);
   return c.json({ id: order.id, status: 'submitted' });
 });
@@ -510,6 +1557,34 @@ app.post('/orders/:id/review', requireAuth, async (c) => {
     throw error;
   }
   return c.json({ id: order.id, status: targetStatus });
+});
+
+app.post('/orders/:id/fulfillment', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:review');
+  const input = await parseBody(c.req.raw, orderFulfillmentSchema);
+  const order = await getOrder(c.env.DB, c.req.param('id'));
+  if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('该订单尚未审核通过，不能安排发货');
+  const packageMaterials = input.packageMaterials ?? [];
+  const trackingNumber = (input.trackingNumber ?? '').trim();
+  const serialNumbers = input.allocationMode === 'random' ? await randomAvailableSerials(c.env.DB, order.id) : input.serialNumbers ?? [];
+  const allocation = input.allocationMode === 'none'
+    ? { statements: [] as D1PreparedStatement[], serials: await allocatedSerialsForOrder(c.env.DB, order.id) }
+    : await allocationStatementsForSerials(c.env.DB, { orderId: order.id, serialNumbers, actorId: user.id });
+  await c.env.DB.batch([
+    ...allocation.statements,
+    c.env.DB.prepare(`UPDATE orders SET package_materials = ?, fulfillment_carrier = ?, fulfillment_tracking_number = ?, fulfillment_updated_at = CURRENT_TIMESTAMP, fulfillment_updated_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`)
+      .bind(packageMaterials.join('、'), input.carrier, trackingNumber, user.id, user.id, order.id),
+    dbAudit(c.env.DB, {
+      actorId: user.id,
+      action: 'order.fulfillment_plan',
+      entityType: 'order',
+      entityId: order.id,
+      requestId: c.get('requestId'),
+      after: { packageMaterials, carrier: input.carrier, trackingNumber, allocationMode: input.allocationMode, serialCount: allocation.serials.length }
+    })
+  ]);
+  return c.json({ id: order.id, status: order.status, serialNumbers: allocation.serials.map((serial) => serial.serialNumber), trackingNumber });
 });
 
 app.post('/orders/:id/cancel', requireAuth, async (c) => {
@@ -599,22 +1674,25 @@ app.post('/orders/:id/pack', requireAuth, async (c) => {
 
 app.post('/orders/:id/ship', requireAuth, async (c) => {
   const user = c.get('user');
-  assertPermission(user, 'order:fulfill');
+  if (!can(user, 'order:fulfill') && !can(user, 'order:review')) throw forbidden();
   const input = await parseBody(c.req.raw, shipmentSchema);
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  if (!canTransitionOrder(user, order.status, 'shipped')) throw conflict('该订单暂时不能发货');
+  if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('该订单暂时不能发货');
   const shipmentId = id();
-  const existingTracking = await one<{ id: string }>(c.env.DB, 'SELECT id FROM shipments WHERE tracking_number = ?', input.trackingNumber);
+  const trackingNumber = (input.trackingNumber ?? '').trim();
+  const storedTrackingNumber = trackingNumber || `NO-TRACKING-${order.id}`;
+  const existingTracking = trackingNumber ? await one<{ id: string }>(c.env.DB, 'SELECT id FROM shipments WHERE tracking_number = ?', trackingNumber) : null;
   if (existingTracking) throw conflict('该运单号已被使用');
-  const items = await all<{ productId: string; quantity: number; inventoryId: string }>(c.env.DB, `SELECT order_items.product_id AS productId, order_items.quantity, inventory.id AS inventoryId FROM order_items JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ?`, order.id);
-  const serials = await all<{ serialNumber: string; productId: string; sku: string; productName: string; productVersion: string }>(c.env.DB,
-    `SELECT serial_numbers.serial_number AS serialNumber, serial_numbers.product_id AS productId, order_items.sku_snapshot AS sku,
-      order_items.product_name_snapshot AS productName, products.product_version AS productVersion
-     FROM serial_numbers JOIN order_items ON order_items.id = serial_numbers.order_item_id
-     LEFT JOIN products ON products.id = serial_numbers.product_id
-     WHERE serial_numbers.state = 'allocated' AND order_items.order_id = ?`, order.id);
-  if (!serials.length) throw conflict('请先录入订单产品的 SN');
+  const items = await orderItemsForFulfillment(c.env.DB, order.id);
+  const preallocated = await allocatedSerialsForOrder(c.env.DB, order.id);
+  const allocation = await allocationStatementsForSerials(c.env.DB, { orderId: order.id, serialNumbers: input.serialNumbers, actorId: user.id, allowExistingOnly: preallocated.length > 0 });
+  const itemById = new Map(items.map((item) => [item.id, item]));
+  const serials = allocation.serials.map((serial) => {
+    const item = itemById.get(serial.orderItemId);
+    if (!item) throw conflict(`该 SN 不属于本订单产品：${serial.serialNumber}`);
+    return { serialNumber: serial.serialNumber, productId: item.productId, sku: item.sku, productName: item.name, productVersion: item.productVersion ?? '' };
+  });
   const shippedAt = new Date();
   const assetStatements: D1PreparedStatement[] = [];
   let createdAssets = 0;
@@ -642,7 +1720,7 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     }
     assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
       operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '订单已发货', ?, ?, ?, 'dealer', '订单履约')`)
-      .bind(id(), assetId, `${input.carrier}：${input.trackingNumber}`, order.id, user.id));
+      .bind(id(), assetId, trackingNumber ? `${input.carrier}：${trackingNumber}` : `${input.carrier}：未填写运单号`, order.id, user.id));
     if (rule && dates) {
       assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
         operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', CURRENT_TIMESTAMP, ?, ?, ?, ?, 'dealer', '订单履约')`)
@@ -654,19 +1732,20 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     }
   }
   await c.env.DB.batch([
+    ...allocation.statements,
     c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(shipmentId, order.id, input.carrier, input.trackingNumber, user.id, user.id),
+      .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
     c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
       WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
       .bind(shipmentId, user.id, order.id),
-    c.env.DB.prepare(`UPDATE orders SET status = 'shipped', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'packed'`).bind(user.id, order.id),
+    c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`).bind(input.carrier, trackingNumber, user.id, order.id),
     ...items.map((item) => c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by) VALUES (?, ?, ?, ?, 'order_shipped', 0, ?, ?, ?)`).bind(id(), item.inventoryId, item.productId, order.id, -item.quantity, `订单 ${order.orderNo} 已发货，预留库存正式出库`, user.id)),
     c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', `${input.carrier}运单号：${input.trackingNumber}`, `/system/orders/${order.id}`),
+      .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
     ...assetStatements,
-    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: 'packed' }, after: { status: 'shipped', trackingNumber: input.trackingNumber, createdAssets } })
+    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), createdAssets } })
   ]);
-  return c.json({ id: order.id, status: 'shipped', trackingNumber: input.trackingNumber });
+  return c.json({ id: order.id, status: 'shipped', trackingNumber });
 });
 
 app.get('/notifications', requireAuth, async (c) => {
@@ -702,31 +1781,116 @@ app.post('/notifications/read-all', requireAuth, async (c) => {
   return c.json({ read: true });
 });
 
+app.get('/after-sales/assets/search', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:create');
+  const query = normalizeLookup(new URL(c.req.url).searchParams.get('q') ?? '');
+  if (query.length < 4) throw badRequest('请输入至少 4 位 SN 或资产标识');
+  const scope = afterSalesAssetScope(user);
+  const exact = query;
+  const prefix = likePattern(query, 'prefix');
+  const contains = likePattern(query, 'contains');
+  const rows = await all<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string; sku: string | null; materialCode: string | null; assetStatus: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; updatedAt: string; rank: number }>(c.env.DB,
+    `SELECT DISTINCT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
+      products.sku, products.sku AS materialCode, assets.asset_status AS assetStatus, assets.warranty_start_at AS warrantyStartAt, assets.warranty_end_at AS warrantyEndAt,
+      assets.warranty_override_status AS warrantyOverrideStatus, assets.updated_at AS updatedAt,
+      CASE
+        WHEN assets.current_sn = ? COLLATE NOCASE THEN 1
+        WHEN assets.original_sn = ? COLLATE NOCASE THEN 2
+        WHEN asset_identifiers.identifier_value = ? COLLATE NOCASE THEN 3
+        WHEN assets.current_sn LIKE ? ESCAPE '\\' THEN 4
+        WHEN assets.original_sn LIKE ? ESCAPE '\\' THEN 5
+        WHEN asset_identifiers.identifier_value LIKE ? ESCAPE '\\' THEN 6
+        WHEN assets.current_sn LIKE ? ESCAPE '\\' THEN 7
+        WHEN assets.original_sn LIKE ? ESCAPE '\\' THEN 8
+        ELSE 9
+      END AS rank
+     FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id LEFT JOIN products ON products.id = assets.product_id
+     WHERE ${scope.sql} AND (
+      assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
+      OR assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\'
+      OR assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\'
+     )
+     ORDER BY rank ASC, assets.updated_at DESC, assets.current_sn ASC LIMIT 20`,
+    exact, exact, exact, prefix, prefix, prefix, contains, contains,
+    ...scope.params,
+    exact, exact, exact, prefix, prefix, prefix, contains, contains, contains);
+  const uniqueRows = Array.from(rows.reduce<Map<string, typeof rows[number]>>((map, row) => {
+    const existing = map.get(row.id);
+    if (!existing || row.rank < existing.rank) map.set(row.id, row);
+    return map;
+  }, new Map()).values()).sort((left, right) => left.rank - right.rank || right.updatedAt.localeCompare(left.updatedAt) || (left.currentSn ?? '').localeCompare(right.currentSn ?? ''));
+  return c.json({ items: uniqueRows.slice(0, 20) });
+});
+
+app.get('/after-sales/assets/:id/context', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:create');
+  const scope = afterSalesAssetScope(user);
+  const asset = await one(c.env.DB,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName,
+      assets.version_snapshot AS version, products.sku, products.sku AS materialCode, assets.asset_status AS assetStatus, assets.warranty_start_at AS warrantyStartAt,
+      assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.warranty_override_reason AS warrantyOverrideReason,
+      assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, assets.dealer_id AS dealerId, dealers.name AS dealerName,
+      assets.store_id AS storeId, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo, orders.sale_price_cents AS salePriceCents,
+      orders.screenshot_data_url AS screenshotDataUrl, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, shipments.carrier AS carrier,
+      shipments.tracking_number AS trackingNumber, shipments.shipped_at AS shippedAt
+     FROM assets LEFT JOIN products ON products.id = assets.product_id LEFT JOIN dealers ON dealers.id = assets.dealer_id LEFT JOIN stores ON stores.id = assets.store_id
+     LEFT JOIN orders ON orders.id = assets.latest_order_id LEFT JOIN shipments ON shipments.order_id = orders.id
+     WHERE assets.id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
+  if (!asset) throw notFound('未找到该资产');
+  const [identifiers, history, openCase] = await Promise.all([
+    all(c.env.DB, 'SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent FROM asset_identifiers WHERE asset_id = ? ORDER BY created_at DESC', c.req.param('id')),
+    all(c.env.DB, 'SELECT id, case_no AS caseNo, service_stage AS serviceStage, status, created_at AS createdAt FROM after_sales_cases WHERE asset_id = ? ORDER BY created_at DESC LIMIT 20', c.req.param('id')),
+    one(c.env.DB, "SELECT id, case_no AS caseNo FROM after_sales_cases WHERE asset_id = ? AND service_stage NOT IN ('CLOSED','WAITING_CUSTOMER_CONFIRMATION') AND status <> 'closed' ORDER BY created_at DESC LIMIT 1", c.req.param('id'))
+  ]);
+  return c.json({ asset: { ...(asset as object), warrantyStatus: warrantyDisplayStatus(asset as { warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null }) }, identifiers, history, openCase });
+});
+
 app.post('/after-sales', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:create');
   const input = await parseBody(c.req.raw, createAfterSalesSchema);
-  assertStoreAccess(user, input.storeId);
-  const store = await one<{ id: string; dealerId: string }>(c.env.DB, 'SELECT id, dealer_id AS dealerId FROM stores WHERE id = ? AND status = \'active\'', input.storeId);
-  if (!store) throw forbidden('该店铺不可用');
-  if (input.orderId) {
-    const order = await getOrder(c.env.DB, input.orderId);
-    assertOrderAccess(user, order);
-    if (order.storeId !== input.storeId) throw badRequest('关联订单必须属于所选店铺');
-    if (input.productId) {
-      const item = await one<{ id: string }>(c.env.DB, 'SELECT id FROM order_items WHERE order_id = ? AND product_id = ?', order.id, input.productId);
-      if (!item) throw badRequest('所选产品不在关联订单中');
-    }
+  const scope = afterSalesAssetScope(user);
+  const asset = await one<{ id: string; dealerId: string | null; storeId: string | null; productId: string | null; currentSn: string | null; latestOrderId: string | null }>(c.env.DB,
+    `SELECT id, dealer_id AS dealerId, store_id AS storeId, product_id AS productId, current_sn AS currentSn, latest_order_id AS latestOrderId FROM assets WHERE id = ? AND ${scope.sql}`, input.assetId, ...scope.params);
+  if (!asset) throw forbidden('你无权基于该 SN 创建售后工单');
+  const storeId = input.storeId ?? asset.storeId;
+  let dealerId = input.dealerId ?? asset.dealerId;
+  if (storeId) {
+    if (!can(user, 'data:read:all') && !user.roles.includes('authorized_service_center')) assertStoreAccess(user, storeId);
+    const store = await one<{ id: string; dealerId: string }>(c.env.DB, "SELECT id, dealer_id AS dealerId FROM stores WHERE id = ? AND status = 'active'", storeId);
+    if (!store) throw forbidden('该店铺不可用');
+    dealerId = store.dealerId;
   }
+  if (!dealerId) {
+    const official = await one<{ dealerId: string; storeId: string | null }>(c.env.DB, "SELECT dealers.id AS dealerId, stores.id AS storeId FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id AND stores.status = 'active' WHERE dealers.status = 'active' ORDER BY CASE WHEN dealers.name LIKE '%官方%' THEN 0 ELSE 1 END, dealers.created_at LIMIT 1");
+    if (!official) throw badRequest('缺少可用于官方受理的经销商资料');
+    dealerId = official.dealerId;
+  }
+  const effectiveOrderId = input.orderId ?? asset.latestOrderId;
+  const effectiveProductId = input.productId ?? asset.productId;
+  const existing = await one<{ id: string; caseNo: string }>(c.env.DB, `SELECT id, case_no AS caseNo FROM after_sales_cases WHERE asset_id = ? AND service_stage NOT IN ('CLOSED','WAITING_CUSTOMER_CONFIRMATION') AND status <> 'closed' ORDER BY created_at DESC LIMIT 1`, asset.id);
+  if (existing) throw conflict(`该 SN 已有未关闭工单：${existing.caseNo}`);
   const caseId = id();
   const reference = caseNo();
+  const sourceServiceCenterId = input.serviceCenterId ?? user.serviceCenterIds[0] ?? null;
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO after_sales_cases (id, case_no, dealer_id, store_id, order_id, product_id, serial_number, case_type, subject, description, contact_name, contact_phone, created_by, updated_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .bind(caseId, reference, store.dealerId, input.storeId, input.orderId ?? null, input.productId ?? null, input.serialNumber ?? null, input.caseType, input.subject, input.description, input.contactName, input.contactPhone, user.id, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.create', entityType: 'after_sales_case', entityId: caseId, requestId: c.get('requestId') })
+    c.env.DB.prepare(`INSERT INTO after_sales_cases (id, case_no, dealer_id, store_id, order_id, product_id, serial_number, asset_id, case_type, subject, description, contact_name, contact_phone,
+      customer_email, customer_address, customer_note, internal_note, service_stage, source_role, source_service_center_id, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'PENDING_ADMIN_REVIEW', ?, ?, ?, ?)`)
+      .bind(caseId, reference, dealerId, storeId ?? null, effectiveOrderId ?? null, effectiveProductId ?? null, input.serialNumber ?? asset.currentSn ?? null, asset.id, input.caseType, input.subject || (afterSalesCaseTypeLabel[input.caseType] ?? '售后申请'), input.description, input.contactName, input.contactPhone, input.contactEmail, input.contactAddress, input.customerNote, input.internalNote, user.roles.join(','), sourceServiceCenterId, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'submitted', '提交售后工单', ?, ?)`).bind(id(), caseId, input.description, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'service_received', CURRENT_TIMESTAMP, '创建售后工单', ?, ?, ?, 'dealer', '售后闭环')`).bind(id(), asset.id, input.subject, caseId, user.id),
+    c.env.DB.prepare(`INSERT INTO notifications (id, type, title, body, link, user_id)
+      SELECT ?, ?, ?, ?, ?, users.id
+      FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN role_permissions ON role_permissions.role_id = user_roles.role_id
+      WHERE users.is_active = 1 AND role_permissions.permission_code = 'after-sales:assign' LIMIT 20`)
+      .bind(id(), 'after_sales_submitted', '新的售后工单待审核', `${reference} 等待管理员审核。`, `/system/admin/after-sales?caseId=${caseId}`),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.create', entityType: 'after_sales_case', entityId: caseId, requestId: c.get('requestId'), after: { caseNo: reference, assetId: asset.id } })
   ]);
-  return c.json({ id: caseId, caseNo: reference, status: 'open' }, 201);
+  return c.json({ id: caseId, caseNo: reference, serviceStage: 'PENDING_ADMIN_REVIEW' }, 201);
 });
 
 app.get('/after-sales', requireAuth, async (c) => {
@@ -735,7 +1899,7 @@ app.get('/after-sales', requireAuth, async (c) => {
   const page = pageValue(new URL(c.req.url).searchParams.get('page') ?? undefined);
   const limit = limitValue(new URL(c.req.url).searchParams.get('limit') ?? undefined);
   const scope = afterSalesScope(user);
-  const cases = await all(c.env.DB, `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, status, workflow_stage AS workflowStage, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
+  const cases = await all(c.env.DB, `SELECT after_sales_cases.id, case_no AS caseNo, dealer_id AS dealerId, order_id AS orderId, products.name AS productName, serial_number AS serialNumber, case_type AS caseType, subject, status, workflow_stage AS workflowStage, service_stage AS serviceStage, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
     FROM after_sales_cases LEFT JOIN products ON products.id = after_sales_cases.product_id WHERE ${scope.sql}
     ORDER BY after_sales_cases.created_at DESC LIMIT ? OFFSET ?`, ...scope.params, limit, (page - 1) * limit);
   return c.json({ cases });
@@ -744,19 +1908,517 @@ app.get('/after-sales', requireAuth, async (c) => {
 app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
-  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; productId: string | null; productName: string | null; serialNumber: string | null; caseType: string; subject: string; description: string; contactName: string | null; contactPhone: string | null; status: string; workflowStage: string; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, after_sales_cases.store_id AS storeId, stores.name AS storeName, after_sales_cases.order_id AS orderId, after_sales_cases.product_id AS productId, products.name AS productName, after_sales_cases.serial_number AS serialNumber, after_sales_cases.case_type AS caseType, after_sales_cases.subject AS subject, after_sales_cases.description AS description, after_sales_cases.contact_name AS contactName, after_sales_cases.contact_phone AS contactPhone, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
-     FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id LEFT JOIN after_sales_assignments AS asa ON asa.case_id = after_sales_cases.id LEFT JOIN service_centers ON service_centers.id = asa.service_center_id WHERE after_sales_cases.id = ?`, c.req.param('id'));
+  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; orderNo: string | null; productId: string | null; productName: string | null; productVersion: string | null; materialCode: string | null; serialNumber: string | null; assetId: string | null; caseType: string; subject: string; description: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; inboundRecordedAt: string | null; status: string; workflowStage: string; serviceStage: string; sourceRole: string; sourceServiceCenterId: string | null; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, after_sales_cases.store_id AS storeId, stores.name AS storeName,
+      after_sales_cases.order_id AS orderId, orders.order_no AS orderNo, after_sales_cases.product_id AS productId, products.name AS productName, products.product_version AS productVersion, products.sku AS materialCode,
+      after_sales_cases.serial_number AS serialNumber, after_sales_cases.asset_id AS assetId, after_sales_cases.case_type AS caseType, after_sales_cases.subject AS subject, after_sales_cases.description AS description,
+      after_sales_cases.customer_note AS customerNote, after_sales_cases.internal_note AS internalNote, after_sales_cases.contact_name AS contactName, after_sales_cases.contact_phone AS contactPhone, after_sales_cases.customer_email AS contactEmail,
+      after_sales_cases.customer_address AS contactAddress, after_sales_cases.inbound_carrier AS inboundCarrier, after_sales_cases.inbound_tracking_number AS inboundTrackingNumber, after_sales_cases.inbound_note AS inboundNote,
+      after_sales_cases.inbound_recorded_at AS inboundRecordedAt, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.service_stage AS serviceStage,
+      after_sales_cases.source_role AS sourceRole, after_sales_cases.source_service_center_id AS sourceServiceCenterId, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt,
+      after_sales_cases.admin_review_note AS adminReviewNote, after_sales_cases.final_decision AS finalDecision, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
+     FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id
+     LEFT JOIN orders ON orders.id = after_sales_cases.order_id LEFT JOIN after_sales_assignments AS asa ON asa.case_id = after_sales_cases.id LEFT JOIN service_centers ON service_centers.id = asa.service_center_id WHERE after_sales_cases.id = ?`, c.req.param('id'));
   if (!serviceCase) throw notFound('未找到该售后工单');
   const scope = afterSalesScope(user);
   const allowed = await one<{ id: string }>(c.env.DB, `SELECT id FROM after_sales_cases WHERE id = ? AND ${scope.sql}`, serviceCase.id, ...scope.params);
   if (!allowed) throw forbidden('你无权查看该售后工单');
-  const [assessments, recommendations, approvals] = await Promise.all([
+  const [assessments, recommendations, approvals, attachments, timeline, receipts, inspections, faultChains, inspectionMaterials, adminDamageReviews, quotes] = await Promise.all([
     all(c.env.DB, 'SELECT result, details, assessed_at AS assessedAt, users.name AS actorName FROM after_sales_assessments JOIN users ON users.id = after_sales_assessments.assessed_by WHERE case_id = ? ORDER BY assessed_at DESC', serviceCase.id),
     all(c.env.DB, 'SELECT recommendation, details, recommended_at AS recommendedAt, users.name AS actorName FROM after_sales_recommendations JOIN users ON users.id = after_sales_recommendations.recommended_by WHERE case_id = ? ORDER BY recommended_at DESC', serviceCase.id),
-    all(c.env.DB, 'SELECT outcome, resolution, note, approved_at AS approvedAt, users.name AS actorName FROM after_sales_approvals JOIN users ON users.id = after_sales_approvals.approved_by WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id)
+    all(c.env.DB, 'SELECT outcome, resolution, note, approved_at AS approvedAt, users.name AS actorName FROM after_sales_approvals JOIN users ON users.id = after_sales_approvals.approved_by WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT event_type AS eventType, title, description, metadata_json AS metadataJson, users.name AS actorName, after_sales_timeline.created_at AS createdAt FROM after_sales_timeline LEFT JOIN users ON users.id = after_sales_timeline.actor_id WHERE case_id = ? ORDER BY after_sales_timeline.created_at ASC`, serviceCase.id),
+    all(c.env.DB, `SELECT received_items_json AS receivedItemsJson, packaging_intact AS packagingIntact, packaging_note AS packagingNote, items_match AS itemsMatch, missing_items_note AS missingItemsNote, receipt_note AS receiptNote, users.name AS receivedByName, received_at AS receivedAt FROM after_sales_receipts JOIN users ON users.id = after_sales_receipts.received_by WHERE case_id = ? ORDER BY received_at DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
+      reproduction_process AS reproductionProcess, test_result AS testResult, fault_parts_json AS faultPartsJson, damage_types_json AS damageTypesJson, derived_symptoms_json AS derivedSymptomsJson,
+      conclusion, fault_cause AS faultCause, affected_parts AS affectedParts, suggested_action AS suggestedAction, suggested_parts AS suggestedParts,
+      recommend_warranty AS recommendWarranty, recommend_charge AS recommendCharge, engineer_note AS engineerNote, difficulty, estimated_days AS estimatedDays,
+      accidental_damage AS accidentalDamage, accidental_damage_type AS accidentalDamageType, accidental_damage_note AS accidentalDamageNote, material_suggested_total_cents AS materialSuggestedTotalCents,
+      status, users.name AS submittedByName, submitted_at AS submittedAt, review_note AS reviewNote
+      FROM after_sales_inspections_v2 JOIN users ON users.id = after_sales_inspections_v2.submitted_by WHERE case_id = ? ORDER BY version DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_fault_chains.id, inspection_id AS inspectionId, chain_index AS chainIndex, fault_part AS faultPart, damage_type AS damageType, cause_type AS causeType,
+      derived_symptoms_json AS derivedSymptomsJson, evidence, related_photo_ids_json AS relatedPhotoIdsJson, severity, repairability, recommended_action AS recommendedAction, engineer_note AS engineerNote
+      FROM after_sales_fault_chains WHERE case_id = ? ORDER BY inspection_id, chain_index`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_inspection_materials.id, inspection_id AS inspectionId, material_id AS materialId, material_code_snapshot AS materialCode, material_name_snapshot AS materialName,
+      quantity, handling_method AS handlingMethod, use_new AS useNew, reuse_existing AS reuseExisting, repair_only AS repairOnly, recommend_charge AS recommendCharge,
+      unit_price_cents AS unitPriceCents, service_fee_cents AS serviceFeeCents, material_subtotal_cents AS materialSubtotalCents, service_fee_subtotal_cents AS serviceFeeSubtotalCents,
+      suggested_total_cents AS suggestedTotalCents, price_status AS priceStatus, service_fee_status AS serviceFeeStatus, compatibility_status AS compatibilityStatus,
+      compatibility_warning AS compatibilityWarning, compatibility_override_reason AS compatibilityOverrideReason, engineer_note AS engineerNote
+      FROM after_sales_inspection_materials WHERE case_id = ? ORDER BY created_at, material_code_snapshot`, serviceCase.id),
+    all(c.env.DB, `SELECT id, inspection_id AS inspectionId, source_fault_chains_json AS sourceFaultChainsJson, final_fault_chains_json AS finalFaultChainsJson,
+      source_materials_json AS sourceMaterialsJson, final_materials_json AS finalMaterialsJson, final_decision AS finalDecision, customer_visible_conclusion AS customerVisibleConclusion,
+      internal_note AS internalNote, final_total_cents AS finalTotalCents, created_at AS createdAt FROM after_sales_admin_damage_reviews WHERE case_id = ? ORDER BY created_at DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_quotes.id, quote_no AS quoteNo, version, final_decision AS finalDecision, total_cents AS totalCents, currency, status,
+      workflow_status AS workflowStatus, customer_name AS customerName, customer_email AS customerEmail, from_email AS fromEmail, reply_to_email AS replyToEmail,
+      valid_until AS validUntil, created_at AS createdAt, confirmed_at AS confirmedAt, sent_at AS sentAt,
+      (SELECT status FROM after_sales_quote_emails WHERE quote_id = after_sales_quotes.id ORDER BY created_at DESC LIMIT 1) AS emailStatus,
+      (SELECT failure_reason FROM after_sales_quote_emails WHERE quote_id = after_sales_quotes.id ORDER BY created_at DESC LIMIT 1) AS emailFailureReason
+      FROM after_sales_quotes WHERE case_id = ? ORDER BY version DESC`, serviceCase.id)
   ]);
-  return c.json({ case: serviceCase, assessments, recommendations, approvals });
+  return c.json({ case: serviceCase, assessments, recommendations, approvals, attachments, timeline, receipts, inspections, faultChains, inspectionMaterials, adminDamageReviews, quotes });
+});
+
+app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const form = await c.req.raw.formData();
+  const category = String(form.get('category') ?? '');
+  const photoSlot = String(form.get('photoSlot') ?? '');
+  const file = form.get('file');
+  const validCategories = new Set(['customer_problem_photo', 'package_label', 'received_items_front', 'received_items_back', 'product_front', 'product_back', 'product_left', 'product_right', 'product_top', 'product_bottom', 'accidental_damage', 'inspection_other']);
+  if (!validCategories.has(category)) throw badRequest('图片类别不正确');
+  if (!(file instanceof File)) throw badRequest('请选择要上传的图片');
+  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest('图片仅支持 JPG、PNG 或 WEBP');
+  if (file.size > 8 * 1024 * 1024) throw badRequest('单张图片不能超过 8MB');
+  if (category === 'customer_problem_photo' && await countAttachments(c.env.DB, serviceCase.id, category) >= 5) throw conflict('问题照片最多上传 5 张');
+  if (category === 'accidental_damage' && await countAttachments(c.env.DB, serviceCase.id, category) >= 10) throw conflict('意外损坏照片最多上传 10 张');
+  if (category !== 'customer_problem_photo' && category !== 'accidental_damage' && !canOperateAssignedCase(user, serviceCase.serviceCenterId) && !can(user, 'data:read:all')) throw forbidden('只有管理员或被分配服务中心可以上传该阶段照片');
+  const key = attachmentObjectKey(serviceCase.id, category, file.name || 'photo');
+  await c.env.ASSETS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+  const attachmentId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, original_filename, content_type, file_size, uploaded_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(attachmentId, serviceCase.id, category, photoSlot, key, file.name || 'photo', file.type, file.size, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_uploaded', '上传售后图片', ?, ?)`).bind(id(), serviceCase.id, `${category}${photoSlot ? ` / ${photoSlot}` : ''}`, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_upload', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { category, photoSlot, key } })
+  ]);
+  return c.json({ id: attachmentId, objectKey: key, category, photoSlot }, 201);
+});
+
+app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:assign');
+  const input = await parseBody(c.req.raw, adminReviewAfterSalesSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能进行初审');
+  const statements: D1PreparedStatement[] = [];
+  if (!input.accepted) {
+    statements.push(
+      c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.reason, user.id, user.id, serviceCase.id),
+      c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_rejected', '管理员退回售后工单', ?, ?)`).bind(id(), serviceCase.id, input.reason, user.id)
+    );
+  } else {
+    const nextStage = input.requiresShipment ? 'WAITING_CUSTOMER_SHIPMENT' : 'PENDING_QUOTE';
+    if (input.serviceCenterId) {
+      const center = await one<{ id: string }>(c.env.DB, `SELECT id FROM service_centers WHERE id = ? AND status = 'active'`, input.serviceCenterId);
+      if (!center) throw badRequest('所选授权服务中心不可用');
+      statements.push(c.env.DB.prepare(`INSERT INTO after_sales_assignments (id, case_id, service_center_id, assigned_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
+    }
+    statements.push(
+      c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, internal_note = CASE WHEN ? <> '' THEN ? ELSE internal_note END, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(nextStage, Number(input.requiresShipment), input.internalNote, user.id, input.internalNote, input.internalNote, user.id, serviceCase.id),
+      c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_accepted', '管理员受理售后工单', ?, ?)`).bind(id(), serviceCase.id, input.requiresShipment ? '等待客户寄修' : '无需寄修，进入报价流程', user.id)
+    );
+  }
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.admin_review', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input }));
+  await c.env.DB.batch(statements);
+  return c.json({ id: serviceCase.id, accepted: input.accepted });
+});
+
+app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {
+  const user = c.get('user');
+  const input = await parseBody(c.req.raw, inboundShipmentSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const canRecord = can(user, 'data:read:all') || can(user, 'after-sales:assign') || canOperateAssignedCase(user, serviceCase.serviceCenterId) || Boolean(serviceCase.storeId && user.storeIds.includes(serviceCase.storeId));
+  if (!canRecord) throw forbidden('你无权录入该工单的寄修单号');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET inbound_carrier = ?, inbound_tracking_number = ?, inbound_note = ?, inbound_recorded_at = CURRENT_TIMESTAMP, inbound_recorded_by = ?, service_stage = 'WAITING_SERVICE_CENTER_RECEIPT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.carrier, input.trackingNumber, input.note, user.id, user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inbound_tracking_recorded', '录入寄修单号', ?, ?)`).bind(id(), serviceCase.id, `${input.carrier} ${input.trackingNumber}`, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inbound_tracking', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'WAITING_SERVICE_CENTER_RECEIPT' });
+});
+
+app.post('/after-sales/:id/receipt', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:receive');
+  const input = await parseBody(c.req.raw, receiptSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
+  if (!['WAITING_SERVICE_CENTER_RECEIPT', 'IN_TRANSIT', 'WAITING_CUSTOMER_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能确认收货');
+  await requireAttachments(c.env.DB, serviceCase.id, [
+    { category: 'package_label', label: '外包装及面单照片' },
+    { category: 'received_items_front', label: '全部物品正面照片' },
+    { category: 'received_items_back', label: '全部物品反面照片' }
+  ]);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_receipts (id, case_id, received_items_json, packaging_intact, packaging_note, items_match, missing_items_note, receipt_note, received_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id(), serviceCase.id, JSON.stringify(input.receivedItems), Number(input.packagingIntact), input.packagingNote, Number(input.itemsMatch), input.missingItemsNote, input.receiptNote, user.id),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'received', service_stage = 'WAITING_INSPECTION', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'received', '服务中心确认收货', ?, ?)`).bind(id(), serviceCase.id, input.receiptNote || '已完成固定三项收货照片和物品核对', user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.receipt_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'WAITING_INSPECTION' });
+});
+
+app.post('/after-sales/:id/inspection/start', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:damage-assess');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
+  if (!['WAITING_INSPECTION', 'INSPECTION_RETURNED', 'INSPECTION_IN_PROGRESS'].includes(serviceCase.serviceStage)) throw conflict('请先确认收货后再开始检测');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'INSPECTION_IN_PROGRESS', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_started', '开始检测', '工程师已开始检测', ?)`).bind(id(), serviceCase.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inspection_start', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId') })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'INSPECTION_IN_PROGRESS' });
+});
+
+app.post('/after-sales/:id/inspections', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:damage-assess');
+  const input = await parseBody(c.req.raw, inspectionSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
+  if (!['INSPECTION_IN_PROGRESS', 'INSPECTION_RETURNED', 'WAITING_INSPECTION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能提交检测结果');
+  await requireAttachments(c.env.DB, serviceCase.id, [
+    { category: 'package_label', label: '外包装及面单照片' },
+    { category: 'received_items_front', label: '全部物品正面照片' },
+    { category: 'received_items_back', label: '全部物品反面照片' },
+    { category: 'product_front', label: '产品正面照片' },
+    { category: 'product_back', label: '产品背面照片' },
+    { category: 'product_left', label: '产品左侧照片' },
+    { category: 'product_right', label: '产品右侧照片' },
+    { category: 'product_top', label: '产品顶部照片' },
+    { category: 'product_bottom', label: '产品底部照片' }
+  ]);
+  if (input.accidentalDamage && await countAttachments(c.env.DB, serviceCase.id, 'accidental_damage') < 1) throw conflict('存在意外损坏时，请至少上传 1 张损坏照片');
+  const latest = await one<{ version: number }>(c.env.DB, 'SELECT COALESCE(MAX(version), 0) AS version FROM after_sales_inspections_v2 WHERE case_id = ?', serviceCase.id);
+  const version = (latest?.version ?? 0) + 1;
+  const inspectionId = id();
+  const context = await repairMaterialContext(c.env.DB, serviceCase.assetId, serviceCase.id);
+  const repairMaterials = input.repairMaterials ?? [];
+  const faultChains = input.faultChains ?? [];
+  const materialIds = [...new Set(repairMaterials.map((item) => item.materialId))];
+  const materialRows = materialIds.length ? await all<RepairMaterialRow>(c.env.DB, `SELECT id, material_code AS materialCode, material_name AS materialName, applicable_models AS applicableModels, description,
+      out_of_warranty_price_cents AS outOfWarrantyPriceCents, price_status AS priceStatus, out_of_warranty_service_fee_cents AS outOfWarrantyServiceFeeCents,
+      service_fee_status AS serviceFeeStatus, service_fee_rule_json AS serviceFeeRuleJson, retail_category AS retailCategory, can_replace_as_whole_set AS canReplaceAsWholeSet,
+      warranty_policy AS warrantyPolicy, warranty_days AS warrantyDays, warranty_rule_json AS warrantyRuleJson, active, source_note AS sourceNote,
+      data_quality_status AS dataQualityStatus, issues_json AS issuesJson, updated_at AS updatedAt
+    FROM repair_materials WHERE id IN (${placeholders(materialIds)}) AND active = 1`, ...materialIds) : [];
+  const materialMap = new Map(materialRows.map((row) => [row.id, row]));
+  if (materialRows.length !== materialIds.length) throw badRequest('所选维修物料不存在或已停用，请重新选择');
+  let totalKnown = true;
+  let totalCents = 0;
+  const materialStatements: D1PreparedStatement[] = [];
+  for (const item of repairMaterials) {
+    const material = materialMap.get(item.materialId);
+    if (!material) throw badRequest('所选维修物料不存在或已停用，请重新选择');
+    const compatibility = materialCompatibility(material.applicableModels, context);
+    const overrideReason = item.compatibilityOverrideReason ?? '';
+    if (compatibility.status === 'not_applicable' && !overrideReason.trim()) throw badRequest(`${material.materialCode ?? material.materialName} 未标记为适用于当前产品，请填写选择原因`);
+    const fee = calculatedServiceFee(material, context);
+    const unitPrice = ['available', 'zero'].includes(material.priceStatus) ? material.outOfWarrantyPriceCents ?? 0 : null;
+    const materialSubtotal = unitPrice === null ? null : unitPrice * item.quantity;
+    const serviceSubtotal = fee.cents === null ? null : fee.cents;
+    const suggestedTotal = materialSubtotal === null || serviceSubtotal === null ? null : materialSubtotal + serviceSubtotal;
+    if (suggestedTotal === null) totalKnown = false;
+    else totalCents += suggestedTotal;
+    materialStatements.push(c.env.DB.prepare(`INSERT INTO after_sales_inspection_materials (id, inspection_id, case_id, material_id, material_code_snapshot, material_name_snapshot, quantity,
+      handling_method, use_new, reuse_existing, repair_only, recommend_charge, unit_price_cents, service_fee_cents, material_subtotal_cents, service_fee_subtotal_cents,
+      suggested_total_cents, price_status, service_fee_status, compatibility_status, compatibility_warning, compatibility_override_reason, engineer_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id(), inspectionId, serviceCase.id, material.id, material.materialCode ?? '', material.materialName, item.quantity, item.handlingMethod, Number(item.useNew), Number(item.reuseExisting),
+        Number(item.repairOnly), Number(item.recommendCharge), unitPrice, fee.cents, materialSubtotal, serviceSubtotal, suggestedTotal, material.priceStatus, fee.status,
+        compatibility.status, compatibility.warning, overrideReason, item.engineerNote));
+  }
+  const materialSuggestedTotal = repairMaterials.length && totalKnown ? totalCents : null;
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_inspections_v2 (id, case_id, version, fault_reproduced, reproduction_status, reproduction_condition, reproduction_process, test_result,
+      fault_parts_json, damage_types_json, derived_symptoms_json, conclusion, fault_cause, affected_parts, suggested_action, suggested_parts, recommend_warranty, recommend_charge,
+      engineer_note, difficulty, estimated_days, accidental_damage, accidental_damage_type, accidental_damage_note, material_suggested_total_cents, status, submitted_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'submitted', ?)`)
+      .bind(inspectionId, serviceCase.id, version, input.faultReproduced, input.reproductionStatus, input.reproductionCondition, input.reproductionProcess, input.testResult,
+        JSON.stringify(input.faultParts), JSON.stringify(input.damageTypes), JSON.stringify(input.derivedSymptoms), input.conclusion, input.faultCause, input.affectedParts,
+        input.suggestedAction, input.suggestedParts, Number(input.recommendWarranty), Number(input.recommendCharge), input.engineerNote, input.difficulty, input.estimatedDays,
+        Number(input.accidentalDamage), input.accidentalDamageType ?? '', input.accidentalDamageNote, materialSuggestedTotal, user.id),
+    ...faultChains.map((chain, index) => c.env.DB.prepare(`INSERT INTO after_sales_fault_chains (id, inspection_id, case_id, chain_index, fault_part, damage_type, cause_type,
+      derived_symptoms_json, evidence, related_photo_ids_json, severity, repairability, recommended_action, engineer_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id(), inspectionId, serviceCase.id, index, chain.faultPart, chain.damageType, chain.causeType, JSON.stringify(chain.derivedSymptoms), chain.evidence,
+        JSON.stringify(chain.relatedPhotoIds), chain.severity, chain.repairability, chain.recommendedAction, chain.engineerNote)),
+    ...materialStatements,
+    c.env.DB.prepare('INSERT INTO after_sales_assessments (id, case_id, result, details, assessed_by) VALUES (?, ?, ?, ?, ?)').bind(id(), serviceCase.id, input.conclusion, input.engineerNote || input.faultCause || input.suggestedAction, user.id),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'assessed', service_stage = 'PENDING_ADMIN_INSPECTION_REVIEW', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_submitted', '提交检测结果', ?, ?)`).bind(id(), serviceCase.id, `检测版本 ${version}：${input.conclusion}`, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inspection_submit', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { ...input, version, materialSuggestedTotal } })
+  ]);
+  return c.json({ id: serviceCase.id, version, serviceStage: 'PENDING_ADMIN_INSPECTION_REVIEW' }, 201);
+});
+
+app.post('/after-sales/:id/inspection-review', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, inspectionReviewSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const latest = await one<{ id: string; version: number }>(c.env.DB, `SELECT id, version FROM after_sales_inspections_v2 WHERE case_id = ? ORDER BY version DESC LIMIT 1`, serviceCase.id);
+  if (!latest) throw conflict('服务中心尚未提交检测结果');
+  const statements: D1PreparedStatement[] = [];
+  if (input.approved) {
+    statements.push(
+      c.env.DB.prepare(`UPDATE after_sales_inspections_v2 SET status = 'approved', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(input.note, user.id, latest.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'PENDING_QUOTE', final_decision = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.finalDecision, user.id, serviceCase.id),
+      c.env.DB.prepare('INSERT INTO after_sales_approvals (id, case_id, outcome, resolution, note, approved_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id(), serviceCase.id, 'approved', input.finalDecision, input.note, user.id),
+      c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_approved', '管理员审核通过检测结果', ?, ?)`).bind(id(), serviceCase.id, input.finalDecision, user.id)
+    );
+  } else {
+    statements.push(
+      c.env.DB.prepare(`UPDATE after_sales_inspections_v2 SET status = 'returned', review_note = ?, reviewed_by = ?, reviewed_at = CURRENT_TIMESTAMP WHERE id = ?`).bind(input.note, user.id, latest.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'INSPECTION_RETURNED', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+      c.env.DB.prepare('INSERT INTO after_sales_approvals (id, case_id, outcome, resolution, note, approved_by) VALUES (?, ?, ?, ?, ?, ?)').bind(id(), serviceCase.id, 'rejected', '退回补充检测资料', input.note, user.id),
+      c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_returned', '管理员退回检测结果', ?, ?)`).bind(id(), serviceCase.id, input.note, user.id)
+    );
+  }
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inspection_review', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input }));
+  await c.env.DB.batch(statements);
+  return c.json({ id: serviceCase.id, approved: input.approved, serviceStage: input.approved ? 'PENDING_QUOTE' : 'INSPECTION_RETURNED' });
+});
+
+app.post('/after-sales/:id/admin-damage-review', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, adminDamageReviewSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const inspection = await one<{ id: string }>(c.env.DB, 'SELECT id FROM after_sales_inspections_v2 WHERE id = ? AND case_id = ?', input.inspectionId, serviceCase.id);
+  if (!inspection) throw badRequest('所选检测版本不属于该工单');
+  const [sourceChains, sourceMaterials] = await Promise.all([
+    all(c.env.DB, `SELECT fault_part AS faultPart, damage_type AS damageType, cause_type AS causeType, derived_symptoms_json AS derivedSymptomsJson, evidence, severity, repairability, recommended_action AS recommendedAction, engineer_note AS engineerNote FROM after_sales_fault_chains WHERE inspection_id = ? ORDER BY chain_index`, inspection.id),
+    all(c.env.DB, `SELECT material_id AS materialId, material_code_snapshot AS materialCode, material_name_snapshot AS materialName, quantity, handling_method AS handlingMethod, unit_price_cents AS unitPriceCents, service_fee_cents AS serviceFeeCents, suggested_total_cents AS suggestedTotalCents, engineer_note AS engineerNote FROM after_sales_inspection_materials WHERE inspection_id = ? ORDER BY created_at`, inspection.id)
+  ]);
+  const finalMaterials = input.finalMaterials ?? [];
+  const finalFaultChains = input.finalFaultChains ?? [];
+  const finalTotal = finalMaterials.reduce((sum, item) => {
+    if (item.unitPriceCents === null || item.serviceFeeCents === null) return sum;
+    return sum + item.quantity * item.unitPriceCents + item.serviceFeeCents - (item.discountCents ?? 0);
+  }, 0);
+  const reviewId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_admin_damage_reviews (id, case_id, inspection_id, source_fault_chains_json, final_fault_chains_json, source_materials_json,
+      final_materials_json, final_decision, customer_visible_conclusion, internal_note, final_total_cents, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(reviewId, serviceCase.id, inspection.id, JSON.stringify(sourceChains), JSON.stringify(finalFaultChains), JSON.stringify(sourceMaterials), JSON.stringify(finalMaterials),
+        input.finalDecision, input.customerVisibleConclusion, input.internalNote, finalTotal, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_damage_review', '管理员确认定损建议', ?, ?)`)
+      .bind(id(), serviceCase.id, input.customerVisibleConclusion, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.admin_damage_review', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { reviewId, finalDecision: input.finalDecision, finalTotal } })
+  ]);
+  return c.json({ id: reviewId, finalTotalCents: finalTotal }, 201);
+});
+
+app.post('/after-sales/:id/quotes', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, quoteDraftSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const workflowStatus = input.workflowStatus ?? 'READY_FOR_REVIEW';
+  const context = await quoteCaseContext(c.env.DB, serviceCase.id);
+  const quoteItems: QuoteSnapshotItem[] = input.items.map((item) => {
+    const serviceFeeCents = item.serviceFeeCents ?? 0;
+    const discountCents = item.discountCents ?? 0;
+    return { materialId: item.materialId, materialCode: item.materialCode ?? '', itemName: item.itemName, itemType: item.itemType, quantity: item.quantity, unitPriceCents: item.unitPriceCents, serviceFeeCents, discountCents, subtotalCents: item.quantity * item.unitPriceCents + serviceFeeCents - discountCents, customerNote: item.customerNote ?? '' };
+  });
+  const latest = await one<{ version: number }>(c.env.DB, 'SELECT COALESCE(MAX(version), 0) AS version FROM after_sales_quotes WHERE case_id = ?', serviceCase.id);
+  const version = (latest?.version ?? 0) + 1;
+  const quoteId = id();
+  const reference = quoteNo();
+  const sender = notificationSender(c.env);
+  const snapshot = quoteSnapshotFor({
+    quoteNumber: reference,
+    quoteVersion: version,
+    context,
+    inspectionSummary: input.inspectionSummary,
+    finalDecision: input.finalDecision,
+    items: quoteItems,
+    currency: input.currency ?? 'CNY',
+    validUntil: input.validUntil,
+    estimatedCycle: input.estimatedCycle ?? '',
+    paymentInstructions: input.paymentInstructions ?? '',
+    customerNote: input.note ?? '',
+    sender
+  });
+  if (snapshot.grandTotalCents < 0) throw badRequest('报价总金额不能小于 0');
+  const html = quoteHtml(snapshot);
+  const text = quoteText(snapshot);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_quotes (id, quote_no, case_id, version, customer_name, customer_email, product_name, product_version, serial_number, case_type,
+      inspection_summary, final_decision, currency, valid_until, estimated_cycle, payment_instructions, note, total_cents, html_content, status, created_by, workflow_status,
+      case_number, customer_phone, customer_address, report_date, warranty_status, service_center, engineer, customer_description, liability_result, subtotal_cents,
+      discount_total_cents, shipping_fee_cents, snapshot_json, email_text, from_email, reply_to_email)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(quoteId, reference, serviceCase.id, version, snapshot.customerName, snapshot.customerEmail, snapshot.productName, snapshot.productVersion, snapshot.serialNumber, context.caseType,
+        snapshot.diagnosisSummary, snapshot.finalSolution, snapshot.currency, snapshot.validUntil, snapshot.estimatedCycle, snapshot.paymentInstructions, snapshot.customerNote,
+        snapshot.grandTotalCents, html, user.id, workflowStatus, snapshot.caseNumber, snapshot.customerPhone, snapshot.customerAddress, snapshot.reportDate,
+        snapshot.warrantyStatus, snapshot.serviceCenter, snapshot.engineer, snapshot.customerDescription, snapshot.liabilityResult, snapshot.subtotalCents,
+        snapshot.discountCents, snapshot.shippingFeeCents, JSON.stringify(snapshot), text, snapshot.fromEmail, snapshot.replyToEmail),
+    ...quoteItems.map((item) => c.env.DB.prepare(`INSERT INTO after_sales_quote_items (id, quote_id, item_name, item_type, quantity, unit_price_cents, subtotal_cents, note, material_id, material_code, service_fee_cents, discount_cents, customer_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`).bind(id(), quoteId, item.itemName, item.itemType, item.quantity, item.unitPriceCents, item.subtotalCents, item.materialId ?? null, item.materialCode, item.serviceFeeCents, item.discountCents, item.customerNote)),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET final_decision = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.finalDecision, user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'quote_draft_created', '生成报价草稿', ?, ?)`).bind(id(), serviceCase.id, `${reference} · 等待管理员预览确认`, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.quote_draft_create', entityType: 'after_sales_quote', entityId: quoteId, requestId: c.get('requestId'), after: { quoteNo: reference, version, totalCents: snapshot.grandTotalCents, workflowStatus } })
+  ]);
+  return c.json({ id: quoteId, quoteNo: reference, version, totalCents: snapshot.grandTotalCents, workflowStatus }, 201);
+});
+
+app.get('/after-sales-quotes/:quoteId', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const scope = afterSalesScope(user);
+  const quote = await one<Record<string, unknown>>(c.env.DB, `SELECT after_sales_quotes.id, after_sales_quotes.quote_no AS quoteNo, after_sales_quotes.case_id AS caseId,
+    after_sales_quotes.version, after_sales_quotes.workflow_status AS workflowStatus, after_sales_quotes.customer_name AS customerName,
+    after_sales_quotes.customer_email AS customerEmail, after_sales_quotes.total_cents AS totalCents, after_sales_quotes.currency,
+    after_sales_quotes.valid_until AS validUntil, after_sales_quotes.created_at AS createdAt, after_sales_quotes.updated_at AS updatedAt,
+    after_sales_quotes.confirmed_at AS confirmedAt, after_sales_quotes.sent_at AS sentAt, after_sales_quotes.from_email AS fromEmail,
+    after_sales_quotes.reply_to_email AS replyToEmail, after_sales_quotes.html_content AS htmlContent, after_sales_quotes.email_text AS emailText,
+    after_sales_quotes.pdf_object_key AS pdfObjectKey, after_sales_quotes.snapshot_json AS snapshotJson, after_sales_cases.case_no AS caseNo
+    FROM after_sales_quotes JOIN after_sales_cases ON after_sales_cases.id = after_sales_quotes.case_id
+    WHERE after_sales_quotes.id = ? AND ${scope.sql}`, c.req.param('quoteId'), ...scope.params);
+  if (!quote) throw notFound('未找到该报价或你无权查看');
+  const [items, emails] = await Promise.all([
+    all(c.env.DB, `SELECT id, item_name AS itemName, item_type AS itemType, quantity, unit_price_cents AS unitPriceCents, service_fee_cents AS serviceFeeCents,
+      discount_cents AS discountCents, subtotal_cents AS subtotalCents, material_id AS materialId, material_code AS materialCode, customer_note AS customerNote
+      FROM after_sales_quote_items WHERE quote_id = ? ORDER BY rowid`, c.req.param('quoteId')),
+    all(c.env.DB, `SELECT id, to_email AS toEmail, from_email AS fromEmail, reply_to_email AS replyToEmail, subject, status, failure_reason AS failureReason,
+      provider, provider_message_id AS providerMessageId, attempt_no AS attemptNo, sent_at AS sentAt, created_at AS createdAt
+      FROM after_sales_quote_emails WHERE quote_id = ? ORDER BY attempt_no DESC, created_at DESC`, c.req.param('quoteId'))
+  ]);
+  const storedSnapshot = JSON.parse(String(quote.snapshotJson || '{}')) as QuoteSnapshot;
+  const previewSnapshot = { ...storedSnapshot, caseNumber: String(quote.caseNo || storedSnapshot.caseNumber) };
+  const isEditablePreview = ['DRAFT', 'READY_FOR_REVIEW'].includes(String(quote.workflowStatus));
+  return c.json({
+    quote: {
+      ...quote,
+      htmlContent: isEditablePreview ? quoteHtml(previewSnapshot) : quote.htmlContent,
+      emailText: isEditablePreview ? quoteText(previewSnapshot) : quote.emailText,
+      snapshot: isEditablePreview ? previewSnapshot : storedSnapshot
+    },
+    items,
+    emails
+  });
+});
+
+app.patch('/after-sales-quotes/:quoteId', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, quoteDraftSchema);
+  const quote = await one<{ id: string; quoteNo: string; caseId: string; version: number; workflowStatus: string }>(c.env.DB,
+    `SELECT id, quote_no AS quoteNo, case_id AS caseId, version, workflow_status AS workflowStatus FROM after_sales_quotes WHERE id = ?`, c.req.param('quoteId'));
+  if (!quote) throw notFound('未找到该报价');
+  if (!['DRAFT', 'READY_FOR_REVIEW'].includes(quote.workflowStatus)) throw conflict('该报价版本已锁定，修改时请创建新版本');
+  const workflowStatus = input.workflowStatus ?? 'READY_FOR_REVIEW';
+  await getCaseForAccess(c.env.DB, user, quote.caseId);
+  const context = await quoteCaseContext(c.env.DB, quote.caseId);
+  const quoteItems: QuoteSnapshotItem[] = input.items.map((item) => {
+    const serviceFeeCents = item.serviceFeeCents ?? 0;
+    const discountCents = item.discountCents ?? 0;
+    return { materialId: item.materialId, materialCode: item.materialCode ?? '', itemName: item.itemName, itemType: item.itemType, quantity: item.quantity, unitPriceCents: item.unitPriceCents, serviceFeeCents, discountCents, subtotalCents: item.quantity * item.unitPriceCents + serviceFeeCents - discountCents, customerNote: item.customerNote ?? '' };
+  });
+  const snapshot = quoteSnapshotFor({ quoteNumber: quote.quoteNo, quoteVersion: quote.version, context, inspectionSummary: input.inspectionSummary, finalDecision: input.finalDecision, items: quoteItems, currency: input.currency ?? 'CNY', validUntil: input.validUntil, estimatedCycle: input.estimatedCycle ?? '', paymentInstructions: input.paymentInstructions ?? '', customerNote: input.note ?? '', sender: notificationSender(c.env) });
+  if (snapshot.grandTotalCents < 0) throw badRequest('报价总金额不能小于 0');
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`UPDATE after_sales_quotes SET customer_name = ?, customer_email = ?, product_name = ?, product_version = ?, serial_number = ?, case_type = ?,
+      inspection_summary = ?, final_decision = ?, currency = ?, valid_until = ?, estimated_cycle = ?, payment_instructions = ?, note = ?, total_cents = ?,
+      html_content = ?, workflow_status = ?, case_number = ?, customer_phone = ?, customer_address = ?, report_date = ?, warranty_status = ?, service_center = ?,
+      engineer = ?, customer_description = ?, liability_result = ?, subtotal_cents = ?, discount_total_cents = ?, shipping_fee_cents = ?, snapshot_json = ?,
+      email_text = ?, from_email = ?, reply_to_email = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(snapshot.customerName, snapshot.customerEmail, snapshot.productName, snapshot.productVersion, snapshot.serialNumber, context.caseType, snapshot.diagnosisSummary,
+        snapshot.finalSolution, snapshot.currency, snapshot.validUntil, snapshot.estimatedCycle, snapshot.paymentInstructions, snapshot.customerNote, snapshot.grandTotalCents,
+        quoteHtml(snapshot), workflowStatus, snapshot.caseNumber, snapshot.customerPhone, snapshot.customerAddress, snapshot.reportDate, snapshot.warrantyStatus,
+        snapshot.serviceCenter, snapshot.engineer, snapshot.customerDescription, snapshot.liabilityResult, snapshot.subtotalCents, snapshot.discountCents,
+        snapshot.shippingFeeCents, JSON.stringify(snapshot), quoteText(snapshot), snapshot.fromEmail, snapshot.replyToEmail, quote.id),
+    c.env.DB.prepare('DELETE FROM after_sales_quote_items WHERE quote_id = ?').bind(quote.id),
+    ...quoteItems.map((item) => c.env.DB.prepare(`INSERT INTO after_sales_quote_items (id, quote_id, item_name, item_type, quantity, unit_price_cents, subtotal_cents, note, material_id, material_code, service_fee_cents, discount_cents, customer_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`).bind(id(), quote.id, item.itemName, item.itemType, item.quantity, item.unitPriceCents, item.subtotalCents, item.materialId ?? null, item.materialCode, item.serviceFeeCents, item.discountCents, item.customerNote)),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.quote_draft_update', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus, totalCents: snapshot.grandTotalCents } })
+  ];
+  await c.env.DB.batch(statements);
+  return c.json({ id: quote.id, quoteNo: quote.quoteNo, version: quote.version, totalCents: snapshot.grandTotalCents, workflowStatus });
+});
+
+app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, confirmQuoteSendSchema);
+  const previousAttempt = await one<{ status: string; providerMessageId: string; failureReason: string }>(c.env.DB,
+    `SELECT status, provider_message_id AS providerMessageId, failure_reason AS failureReason FROM after_sales_quote_emails WHERE idempotency_key = ?`, input.idempotencyKey);
+  if (previousAttempt) return c.json({ workflowStatus: previousAttempt.status === 'sent' ? 'SENT' : 'SEND_FAILED', emailStatus: previousAttempt.status, providerMessageId: previousAttempt.providerMessageId, failureReason: previousAttempt.failureReason, idempotentReplay: true });
+  const quote = await one<{ id: string; quoteNo: string; caseId: string; version: number; workflowStatus: string; customerName: string; customerEmail: string; totalCents: number; htmlContent: string; emailText: string; fromEmail: string; replyToEmail: string; snapshotJson: string; supersedesQuoteId: string | null }>(c.env.DB,
+    `SELECT id, quote_no AS quoteNo, case_id AS caseId, version, workflow_status AS workflowStatus, customer_name AS customerName, customer_email AS customerEmail,
+      total_cents AS totalCents, html_content AS htmlContent, email_text AS emailText, from_email AS fromEmail, reply_to_email AS replyToEmail,
+      snapshot_json AS snapshotJson, supersedes_quote_id AS supersedesQuoteId FROM after_sales_quotes WHERE id = ?`, c.req.param('quoteId'));
+  if (!quote) throw notFound('未找到该报价');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, quote.caseId);
+  if (!['READY_FOR_REVIEW', 'SEND_FAILED'].includes(quote.workflowStatus)) throw conflict(quote.workflowStatus === 'SENT' || quote.workflowStatus === 'SUPERSEDED' ? '该报价版本已发送并锁定' : '该报价当前不能发送');
+  if (!quote.customerEmail) throw conflict('该工单缺少客户邮箱，不能发送报价');
+  const locked = await c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SENDING', status = 'created', confirmed_by = COALESCE(confirmed_by, ?),
+    confirmed_at = COALESCE(confirmed_at, CURRENT_TIMESTAMP), locked_at = COALESCE(locked_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
+    WHERE id = ? AND workflow_status IN ('READY_FOR_REVIEW','SEND_FAILED')`).bind(user.id, quote.id).run();
+  if ((locked.meta.changes ?? 0) !== 1) throw conflict('报价正在发送，请勿重复提交');
+  const sender = notificationSender(c.env);
+  const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo };
+  const deliveryHtml = quoteHtml(deliverySnapshot);
+  const deliveryText = quoteText(deliverySnapshot);
+  const subject = `【请勿回复】MaxCINE产品服务报告书 ${serviceCase.caseNo}`;
+  const delivery = await sendEmail(c.env, { from: sender.address, fromName: sender.name, replyTo: sender.replyTo, replyToName: sender.replyToName, to: quote.customerEmail, subject, html: deliveryHtml, text: deliveryText }, input.idempotencyKey);
+  const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
+  const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
+  const emailId = id();
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`INSERT INTO after_sales_quote_emails (id, quote_id, to_email, from_email, reply_to_email, subject, status, failure_reason, provider,
+      provider_message_id, attempt_no, idempotency_key, email_html, email_text, sent_by, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
+      .bind(emailId, quote.id, quote.customerEmail, sender.address, sender.replyTo, subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
+        delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, deliveryHtml, deliveryText, user.id, delivery.sent ? 'sent' : 'failed'),
+    c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = ?, status = ?, sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END,
+      html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, deliveryHtml, deliveryText, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(delivery.sent ? 'WAITING_CUSTOMER_CONFIRMATION' : 'PENDING_QUOTE', user.id, quote.caseId),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, ?, ?, ?, ?)`)
+      .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? `${serviceCase.caseNo} 产品服务报告书已发送至客户邮箱` : delivery.failureReason, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1 } })
+  ];
+  if (delivery.sent && quote.supersedesQuoteId) statements.push(c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SUPERSEDED', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_status = 'SENT'`).bind(quote.supersedesQuoteId));
+  await c.env.DB.batch(statements);
+  return c.json({ id: quote.id, quoteNo: quote.quoteNo, version: quote.version, workflowStatus: nextWorkflowStatus, emailStatus: delivery.sent ? 'sent' : 'failed', providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason });
+});
+
+app.post('/after-sales-quotes/:quoteId/new-version', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const source = await one<{ id: string; caseId: string; workflowStatus: string; snapshotJson: string }>(c.env.DB,
+    `SELECT id, case_id AS caseId, workflow_status AS workflowStatus, snapshot_json AS snapshotJson FROM after_sales_quotes WHERE id = ?`, c.req.param('quoteId'));
+  if (!source) throw notFound('未找到该报价');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, source.caseId);
+  if (!['SENT', 'SEND_FAILED', 'SUPERSEDED'].includes(source.workflowStatus)) throw conflict('当前报价仍可直接修改，无需创建新版本');
+  const sourceSnapshot = JSON.parse(source.snapshotJson) as QuoteSnapshot;
+  const latest = await one<{ version: number }>(c.env.DB, 'SELECT COALESCE(MAX(version), 0) AS version FROM after_sales_quotes WHERE case_id = ?', source.caseId);
+  const version = (latest?.version ?? 0) + 1;
+  const quoteId = id();
+  const reference = quoteNo();
+  const snapshot: QuoteSnapshot = { ...sourceSnapshot, quoteNumber: reference, quoteVersion: version, caseNumber: serviceCase.caseNo, reportDate: new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date()), pdfObjectKey: null };
+  const html = quoteHtml(snapshot);
+  const text = quoteText(snapshot);
+  const sourceItems = await all<QuoteSnapshotItem>(c.env.DB, `SELECT material_id AS materialId, material_code AS materialCode, item_name AS itemName, item_type AS itemType,
+    quantity, unit_price_cents AS unitPriceCents, service_fee_cents AS serviceFeeCents, discount_cents AS discountCents, subtotal_cents AS subtotalCents,
+    customer_note AS customerNote FROM after_sales_quote_items WHERE quote_id = ? ORDER BY rowid`, source.id);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO after_sales_quotes (id, quote_no, case_id, version, customer_name, customer_email, product_name, product_version, serial_number, case_type,
+      inspection_summary, final_decision, currency, valid_until, estimated_cycle, payment_instructions, note, total_cents, html_content, status, created_by, workflow_status,
+      case_number, customer_phone, customer_address, report_date, warranty_status, service_center, engineer, customer_description, liability_result, subtotal_cents,
+      discount_total_cents, shipping_fee_cents, snapshot_json, email_text, from_email, reply_to_email, supersedes_quote_id)
+      SELECT ?, ?, case_id, ?, customer_name, customer_email, product_name, product_version, serial_number, case_type, inspection_summary, final_decision, currency,
+        valid_until, estimated_cycle, payment_instructions, note, total_cents, ?, 'created', ?, 'DRAFT', case_number, customer_phone, customer_address, ?, warranty_status,
+        service_center, engineer, customer_description, liability_result, subtotal_cents, discount_total_cents, shipping_fee_cents, ?, ?, from_email, reply_to_email, id
+      FROM after_sales_quotes WHERE id = ?`).bind(quoteId, reference, version, html, user.id, snapshot.reportDate, JSON.stringify(snapshot), text, source.id),
+    ...sourceItems.map((item) => c.env.DB.prepare(`INSERT INTO after_sales_quote_items (id, quote_id, item_name, item_type, quantity, unit_price_cents, subtotal_cents, note, material_id, material_code, service_fee_cents, discount_cents, customer_note)
+      VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?)`).bind(id(), quoteId, item.itemName, item.itemType, item.quantity, item.unitPriceCents, item.subtotalCents, item.materialId ?? null, item.materialCode, item.serviceFeeCents, item.discountCents, item.customerNote)),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.quote_new_version', entityType: 'after_sales_quote', entityId: quoteId, requestId: c.get('requestId'), after: { sourceQuoteId: source.id, quoteNo: reference, version } })
+  ]);
+  return c.json({ id: quoteId, quoteNo: reference, version, workflowStatus: 'DRAFT' }, 201);
 });
 
 app.post('/after-sales/:id/assign', requireAuth, async (c) => {
@@ -958,17 +2620,36 @@ app.post('/admin/gsx/imports/:id/confirm', requireAuth, async (c) => {
 app.get('/gsx/search', requireAuth, async (c) => {
   const user = c.get('user');
   assertAssetReadAccess(user);
-  const query = (c.req.query('q') ?? '').trim();
-  if (query.length < 2) throw badRequest('请输入至少两个字符进行查询');
+  const query = normalizeLookup(c.req.query('q') ?? '');
+  if (query.length < 4) throw badRequest('请输入至少 4 位 SN 或资产标识');
   const scope = assetScope(user);
-  const like = `%${query.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`;
-  const items = await all<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string; sourceChannel: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string }>(c.env.DB,
-    `SELECT DISTINCT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
+  const prefix = likePattern(query, 'prefix');
+  const contains = likePattern(query, 'contains');
+  const rankParams = [query, query, query, prefix, prefix, prefix, contains, contains, contains];
+  const matchParams = [query, query, query, prefix, prefix, prefix, contains, contains, contains];
+  const items = await all<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string; sourceChannel: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string; rank: number }>(c.env.DB,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
       assets.source_channel AS sourceChannel, assets.warranty_end_at AS warrantyEndAt, assets.warranty_start_at AS warrantyStartAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus
+      , MIN(CASE
+        WHEN assets.current_sn = ? COLLATE NOCASE THEN 1
+        WHEN assets.original_sn = ? COLLATE NOCASE THEN 2
+        WHEN asset_identifiers.identifier_value = ? COLLATE NOCASE THEN 3
+        WHEN assets.current_sn LIKE ? ESCAPE '\\' THEN 4
+        WHEN assets.original_sn LIKE ? ESCAPE '\\' THEN 5
+        WHEN asset_identifiers.identifier_value LIKE ? ESCAPE '\\' THEN 6
+        WHEN assets.current_sn LIKE ? ESCAPE '\\' THEN 7
+        WHEN assets.original_sn LIKE ? ESCAPE '\\' THEN 8
+        WHEN asset_identifiers.identifier_value LIKE ? ESCAPE '\\' THEN 9
+        ELSE 99 END) AS rank
      FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id LEFT JOIN asset_sales ON asset_sales.id IN (SELECT sale_id FROM asset_sale_assets WHERE asset_id = assets.id)
      LEFT JOIN orders ON orders.id = assets.latest_order_id LEFT JOIN after_sales_cases ON after_sales_cases.asset_id = assets.id
-     WHERE ${scope.sql} AND (assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\' OR asset_sales.tracking_number LIKE ? ESCAPE '\\' OR orders.order_no LIKE ? ESCAPE '\\' OR after_sales_cases.case_no LIKE ? ESCAPE '\\')
-     ORDER BY assets.updated_at DESC LIMIT 50`, ...scope.params, like, like, like, like, like, like);
+     WHERE ${scope.sql} AND (
+      assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
+      OR assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\'
+      OR assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR asset_identifiers.identifier_value LIKE ? ESCAPE '\\'
+      OR asset_sales.tracking_number = ? COLLATE NOCASE OR orders.order_no = ? COLLATE NOCASE OR after_sales_cases.case_no = ? COLLATE NOCASE)
+     GROUP BY assets.id
+     ORDER BY rank ASC, assets.updated_at DESC, COALESCE(assets.current_sn, assets.original_sn, '') ASC LIMIT 20`, ...rankParams, ...scope.params, ...matchParams, query, query, query);
   return c.json({ items: items.map((item) => ({ ...item, warrantyStatus: warrantyDisplayStatus(item) })) });
 });
 
@@ -985,7 +2666,7 @@ app.get('/assets', requireAuth, async (c) => {
   const warehouse = (c.req.query('warehouse') ?? '').trim();
   const quality = (c.req.query('quality') ?? '').trim();
   const warrantyStatus = (c.req.query('warrantyStatus') ?? '').trim();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   if (search) { const like = `%${search.replaceAll('%', '\\%').replaceAll('_', '\\_')}%`; filters.push(`(assets.current_sn LIKE ? ESCAPE '\\' OR assets.original_sn LIKE ? ESCAPE '\\' OR EXISTS (SELECT 1 FROM asset_identifiers WHERE asset_id = assets.id AND identifier_value LIKE ? ESCAPE '\\'))`); params.push(like, like, like); }
   if (version) { filters.push('assets.version_snapshot = ?'); params.push(version); }
   if (assetStatus) { filters.push('assets.asset_status = ?'); params.push(assetStatus); }
@@ -993,7 +2674,8 @@ app.get('/assets', requireAuth, async (c) => {
   if (warehouse) { filters.push('assets.shipping_warehouse = ?'); params.push(warehouse); }
   if (quality === 'exception') filters.push(`(assets.data_quality_status <> 'normal' OR assets.warranty_override_status IN ('exception','denied','cancelled','scrapped'))`);
   else if (quality) { filters.push('assets.data_quality_status = ?'); params.push(quality); }
-  if (warrantyStatus === '在保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_start_at <= ? AND assets.warranty_end_at >= ?`); params.push(today, today); }
+  if (warrantyStatus === '保修中' || warrantyStatus === '在保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_start_at <= ? AND assets.warranty_end_at >= ?`); params.push(today, today); }
+  if (warrantyStatus === '待生效') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_start_at > ?`); params.push(today); }
   if (warrantyStatus === '已过保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_end_at < ?`); params.push(today); }
   if (warrantyStatus === '无有效日期') filters.push(`assets.warranty_override_status IS NULL AND (assets.warranty_start_at IS NULL OR assets.warranty_end_at IS NULL)`);
   const overrideMap: Record<string, string> = { '无保修': 'no_warranty', '拒保': 'denied', '异常': 'exception', '注销': 'cancelled', '报废': 'scrapped' };
@@ -1003,8 +2685,8 @@ app.get('/assets', requireAuth, async (c) => {
   const limit = limitValue(c.req.query('limit'), 30);
   const [count, items, versions, channels, warehouses] = await Promise.all([
     one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM assets WHERE ${where}`, ...params),
-    all<{ id: string; currentSn: string | null; productName: string; version: string; sourceChannel: string; shippingWarehouse: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string; latestEvent: string | null; updatedAt: string }>(c.env.DB,
-      `SELECT assets.id, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse,
+    all<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string; sourceChannel: string; shippingWarehouse: string; warrantyEndAt: string | null; warrantyStartAt: string | null; warrantyOverrideStatus: string | null; assetStatus: string; dataQualityStatus: string; latestEvent: string | null; updatedAt: string }>(c.env.DB,
+      `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse,
        assets.warranty_end_at AS warrantyEndAt, assets.warranty_start_at AS warrantyStartAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus,
        (SELECT title FROM asset_events WHERE asset_id = assets.id ORDER BY COALESCE(occurred_at, created_at) DESC, created_at DESC LIMIT 1) AS latestEvent, assets.updated_at AS updatedAt
        FROM assets WHERE ${where} ORDER BY assets.updated_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit),
@@ -1019,12 +2701,13 @@ app.get('/assets/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertAssetReadAccess(user);
   const scope = assetScope(user);
-  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerName: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; dataQualityStatus: string; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
+  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; sku: string | null; materialCode: string | null; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerId: string | null; dealerName: string | null; storeId: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; orderStatus: string | null; salePriceCents: number | null; shippingAddress: string | null; customerProfile: string | null; screenshotDataUrl: string | null; dataQualityStatus: string; updatedByName: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, products.sku, products.sku AS materialCode, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
       assets.warranty_start_at AS warrantyStartAt, assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.warranty_override_reason AS warrantyOverrideReason,
-      assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, dealers.name AS dealerName, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo,
-      assets.data_quality_status AS dataQualityStatus, assets.created_at AS createdAt, assets.updated_at AS updatedAt
-      FROM assets LEFT JOIN dealers ON dealers.id = assets.dealer_id LEFT JOIN stores ON stores.id = assets.store_id LEFT JOIN orders ON orders.id = assets.latest_order_id WHERE assets.id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
+      assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, assets.dealer_id AS dealerId, dealers.name AS dealerName, assets.store_id AS storeId, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo,
+      orders.status AS orderStatus, orders.sale_price_cents AS salePriceCents, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, orders.screenshot_data_url AS screenshotDataUrl,
+      assets.data_quality_status AS dataQualityStatus, updater.name AS updatedByName, assets.created_at AS createdAt, assets.updated_at AS updatedAt
+      FROM assets LEFT JOIN products ON products.id = assets.product_id LEFT JOIN dealers ON dealers.id = assets.dealer_id LEFT JOIN stores ON stores.id = assets.store_id LEFT JOIN orders ON orders.id = assets.latest_order_id LEFT JOIN users AS updater ON updater.id = assets.updated_by WHERE assets.id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
   if (!asset) {
     if (hasGlobalAssetAccess(user)) throw notFound('未找到该资产');
     throw forbidden('未找到该资产或你无权查看');
@@ -1033,12 +2716,18 @@ app.get('/assets/:id', requireAuth, async (c) => {
   const [identifiers, events, serviceCases, notes, sales, audit] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
-    all(c.env.DB, `SELECT id, case_no AS caseNo, status, workflow_stage AS workflowStage, subject, created_at AS createdAt, updated_at AS updatedAt FROM after_sales_cases WHERE asset_id = ? ORDER BY updated_at DESC`, asset.id),
-    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt FROM asset_notes WHERE asset_id = ? AND visibility = 'admin_private' ORDER BY created_at DESC`, asset.id) : Promise.resolve([]),
+    all(c.env.DB, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.subject, after_sales_cases.description, service_centers.name AS serviceCenterName, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt,
+      (SELECT details FROM after_sales_assessments WHERE case_id = after_sales_cases.id ORDER BY assessed_at DESC LIMIT 1) AS inspectionResult,
+      (SELECT details FROM after_sales_recommendations WHERE case_id = after_sales_cases.id ORDER BY recommended_at DESC LIMIT 1) AS recommendation,
+      (SELECT note FROM after_sales_approvals WHERE case_id = after_sales_cases.id ORDER BY approved_at DESC LIMIT 1) AS finalResult
+      FROM after_sales_cases LEFT JOIN after_sales_assignments ON after_sales_assignments.case_id = after_sales_cases.id
+      LEFT JOIN service_centers ON service_centers.id = after_sales_assignments.service_center_id
+      WHERE after_sales_cases.asset_id = ? ORDER BY after_sales_cases.updated_at DESC`, asset.id),
+    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? ORDER BY created_at DESC`, asset.id) : all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? AND visibility <> 'admin_private' ORDER BY created_at DESC`, asset.id),
     hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
-    hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
+    hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
   ]);
-  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), ...(hasGlobalAssetAccess(user) ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
+  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
 });
 
 app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
@@ -1055,6 +2744,92 @@ app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'asset.warranty_override', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before: asset, after: input })
   ]);
   return c.json({ id: asset.id });
+});
+
+app.patch('/admin/assets/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  const input = await parseBody(c.req.raw, updateAssetSchema);
+  const assetId = c.req.param('id');
+  const asset = await one<Record<string, unknown> & { id: string; currentSn: string | null; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideReason: string }>(c.env.DB,
+    `SELECT id, current_sn AS currentSn, original_sn AS originalSn, product_id AS productId, product_name_snapshot AS productName, version_snapshot AS version,
+      asset_status AS assetStatus, warranty_policy AS warrantyPolicy, warranty_start_at AS warrantyStartAt, warranty_end_at AS warrantyEndAt,
+      warranty_override_status AS warrantyOverrideStatus, warranty_override_reason AS warrantyOverrideReason, source_channel AS sourceChannel,
+      shipping_warehouse AS shippingWarehouse, dealer_id AS dealerId, store_id AS storeId, latest_order_id AS latestOrderId FROM assets WHERE id = ?`, assetId);
+  if (!asset) throw notFound('未找到该资产');
+  if (input.currentSn && input.currentSn !== asset.currentSn) {
+    const duplicate = await one<{ id: string }>(c.env.DB, `SELECT id FROM assets WHERE current_sn = ? COLLATE NOCASE AND id <> ? LIMIT 1`, input.currentSn, assetId);
+    if (duplicate) throw conflict('当前 SN 已被其他资产使用');
+  }
+  if (input.productId) {
+    const product = await one<{ id: string }>(c.env.DB, 'SELECT id FROM products WHERE id = ?', input.productId);
+    if (!product) throw badRequest('所选产品不存在');
+  }
+  if (input.dealerId) {
+    const dealer = await one<{ id: string }>(c.env.DB, 'SELECT id FROM dealers WHERE id = ?', input.dealerId);
+    if (!dealer) throw badRequest('所选经销商不存在');
+  }
+  if (input.storeId) {
+    const store = await one<{ id: string; dealerId: string }>(c.env.DB, 'SELECT id, dealer_id AS dealerId FROM stores WHERE id = ?', input.storeId);
+    if (!store) throw badRequest('所选店铺不存在');
+    if (input.dealerId && store.dealerId !== input.dealerId) throw badRequest('店铺不属于所选经销商');
+  }
+  if (input.latestOrderId) {
+    const order = await one<{ id: string }>(c.env.DB, 'SELECT id FROM orders WHERE id = ?', input.latestOrderId);
+    if (!order) throw badRequest('所选订单不存在');
+  }
+  const columnMap: Record<string, string> = {
+    currentSn: 'current_sn',
+    originalSn: 'original_sn',
+    productId: 'product_id',
+    productName: 'product_name_snapshot',
+    version: 'version_snapshot',
+    assetStatus: 'asset_status',
+    warrantyPolicy: 'warranty_policy',
+    warrantyStartAt: 'warranty_start_at',
+    warrantyEndAt: 'warranty_end_at',
+    warrantyOverrideStatus: 'warranty_override_status',
+    warrantyOverrideReason: 'warranty_override_reason',
+    sourceChannel: 'source_channel',
+    shippingWarehouse: 'shipping_warehouse',
+    dealerId: 'dealer_id',
+    storeId: 'store_id',
+    latestOrderId: 'latest_order_id'
+  };
+  const changes: Record<string, { before: unknown; after: unknown }> = {};
+  const sets: string[] = [];
+  const values: unknown[] = [];
+  for (const [key, column] of Object.entries(columnMap)) {
+    if (!Object.prototype.hasOwnProperty.call(input, key)) continue;
+    const next = (input as Record<string, unknown>)[key];
+    if (next === asset[key]) continue;
+    changes[key] = { before: asset[key], after: next };
+    sets.push(`${column} = ?`);
+    values.push(next);
+  }
+  if (!sets.length && !input.noteContent) return c.json({ id: assetId, changedFields: [] });
+  const statements: D1PreparedStatement[] = [];
+  if (sets.length) statements.push(c.env.DB.prepare(`UPDATE assets SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...values, user.id, assetId));
+  if (changes.currentSn) {
+    if (asset.currentSn) statements.push(c.env.DB.prepare(`UPDATE asset_identifiers SET is_current = 0, valid_to = CURRENT_TIMESTAMP WHERE asset_id = ? AND identifier_value = ? COLLATE NOCASE AND is_current = 1`).bind(assetId, asset.currentSn));
+    if (asset.currentSn) statements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_to, reason, source, created_by)
+      VALUES (?, ?, 'legacy_sn', ?, 0, CURRENT_TIMESTAMP, '管理员修改当前 SN 后自动保留', 'GSX 编辑', ?)`).bind(id(), assetId, asset.currentSn, user.id));
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_from, reason, source, created_by)
+      VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '管理员修改当前 SN', 'GSX 编辑', ?)`).bind(id(), assetId, input.currentSn, user.id));
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, old_value_json, new_value_json, operator_user_id, visibility, source)
+      VALUES (?, ?, 'sn_changed', CURRENT_TIMESTAMP, '修改当前 SN', ?, ?, ?, ?, 'admin_private', 'GSX 编辑')`)
+      .bind(id(), assetId, `${asset.currentSn || '空'} → ${input.currentSn}`, JSON.stringify({ currentSn: asset.currentSn }), JSON.stringify({ currentSn: input.currentSn }), user.id));
+  }
+  if (changes.warrantyStartAt || changes.warrantyEndAt || changes.warrantyOverrideStatus || changes.warrantyOverrideReason) {
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, old_value_json, new_value_json, operator_user_id, visibility, source)
+      VALUES (?, ?, 'warranty_extended', CURRENT_TIMESTAMP, '修改保修信息', ?, ?, ?, ?, 'admin_private', 'GSX 编辑')`)
+      .bind(id(), assetId, input.warrantyOverrideReason || '管理员调整保修信息', JSON.stringify(asset), JSON.stringify(input), user.id));
+  }
+  if (input.noteContent) statements.push(c.env.DB.prepare(`INSERT INTO asset_notes (id, asset_id, category, content, visibility, source, created_by)
+    VALUES (?, ?, 'private_admin', ?, 'admin_private', 'GSX 编辑', ?)`).bind(id(), assetId, input.noteContent, user.id));
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'asset.update', entityType: 'asset', entityId: assetId, requestId: c.get('requestId'), before: Object.fromEntries(Object.entries(changes).map(([key, change]) => [key, change.before])), after: Object.fromEntries(Object.entries(changes).map(([key, change]) => [key, change.after])) }));
+  await c.env.DB.batch(statements);
+  return c.json({ id: assetId, changedFields: Object.keys(changes) });
 });
 
 app.post('/assets/:id/after-sales', requireAuth, async (c) => {
@@ -1178,7 +2953,7 @@ app.post('/admin/users', requireAuth, async (c) => {
 
 app.get('/admin/users', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'user:manage');
-  return c.json({ users: await all(c.env.DB, `SELECT users.id, users.email, users.name, users.is_active AS isActive, users.created_at AS createdAt,
+  return c.json({ users: await all(c.env.DB, `SELECT users.id, users.email, users.name, users.is_active AS isActive, users.watermark_enabled AS watermarkEnabled, users.created_at AS createdAt,
     COALESCE(GROUP_CONCAT(roles.code, ','), '') AS roles FROM users
     LEFT JOIN user_roles ON user_roles.user_id = users.id LEFT JOIN roles ON roles.id = user_roles.role_id
     GROUP BY users.id ORDER BY users.created_at DESC`) });
@@ -1186,7 +2961,7 @@ app.get('/admin/users', requireAuth, async (c) => {
 
 app.get('/admin/users/:id', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'user:manage');
-  const account = await one(c.env.DB, 'SELECT id, email, name, is_active AS isActive, created_at AS createdAt, updated_at AS updatedAt FROM users WHERE id = ?', c.req.param('id'));
+  const account = await one(c.env.DB, 'SELECT id, email, name, is_active AS isActive, watermark_enabled AS watermarkEnabled, created_at AS createdAt, updated_at AS updatedAt FROM users WHERE id = ?', c.req.param('id'));
   if (!account) throw notFound('未找到该用户');
   const [roles, dealers, serviceCenters, stores] = await Promise.all([
     all(c.env.DB, 'SELECT roles.id, roles.code, roles.name FROM user_roles JOIN roles ON roles.id = user_roles.role_id WHERE user_id = ?', c.req.param('id')),
@@ -1322,26 +3097,64 @@ app.patch('/admin/stores/:id', requireAuth, async (c) => {
 
 app.patch('/admin/users/:id', requireAuth, async (c) => {
   const user = c.get('user'); assertPermission(user, 'user:manage'); const input = await parseBody(c.req.raw, updateUserSchema); const targetId = c.req.param('id');
-  const dealerIds = input.dealerIds ?? []; const serviceCenterIds = input.serviceCenterIds ?? []; const storeIds = input.storeIds ?? [];
   const [target, requestedRoles, superAdminCount] = await Promise.all([
     one<{ id: string }>(c.env.DB, 'SELECT id FROM users WHERE id = ?', targetId),
     all<{ id: string; code: string }>(c.env.DB, `SELECT id, code FROM roles WHERE is_active = 1 AND id IN (${placeholders(input.roleIds)})`, ...input.roleIds),
     one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN roles ON roles.id = user_roles.role_id WHERE users.is_active = 1 AND roles.code = 'super_admin'`)
   ]);
   if (!target || requestedRoles.length !== new Set(input.roleIds).size) throw badRequest('角色包含不可用的记录');
+  const dealerIds = input.dealerIds ?? [];
+  const serviceCenterIds = input.serviceCenterIds ?? [];
+  const storeIds = input.storeIds ?? [];
+  const [dealerCount, centerCount, storeCount] = await Promise.all([
+    input.dealerIds !== undefined && dealerIds.length ? one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM dealers WHERE status = 'active' AND id IN (${placeholders(dealerIds)})`, ...dealerIds) : Promise.resolve({ count: 0 }),
+    input.serviceCenterIds !== undefined && serviceCenterIds.length ? one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM service_centers WHERE status = 'active' AND id IN (${placeholders(serviceCenterIds)})`, ...serviceCenterIds) : Promise.resolve({ count: 0 }),
+    input.storeIds !== undefined && storeIds.length ? one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM stores WHERE status = 'active' AND id IN (${placeholders(storeIds)})`, ...storeIds) : Promise.resolve({ count: 0 })
+  ]);
+  if (input.dealerIds !== undefined && dealerCount?.count !== new Set(dealerIds).size) throw badRequest('经销商授权包含不可用的记录');
+  if (input.serviceCenterIds !== undefined && centerCount?.count !== new Set(serviceCenterIds).size) throw badRequest('服务中心授权包含不可用的记录');
+  if (input.storeIds !== undefined && storeCount?.count !== new Set(storeIds).size) throw badRequest('店铺授权包含不可用的记录');
+  if (requestedRoles.some((role) => role.code === 'dealer') && input.dealerIds !== undefined && !dealerIds.length) throw badRequest('经销商角色必须同时记录经销商资格');
+  if (requestedRoles.some((role) => role.code === 'authorized_service_center') && input.serviceCenterIds !== undefined && !serviceCenterIds.length) throw badRequest('授权服务中心角色必须同时记录服务中心资格');
   const keepsSuperAdmin = requestedRoles.some((role) => role.code === 'super_admin') && input.isActive;
   const currentlySuperAdmin = await one<{ id: string }>(c.env.DB, `SELECT users.id FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN roles ON roles.id = user_roles.role_id WHERE users.id = ? AND roles.code = 'super_admin'`, targetId);
-  if (currentlySuperAdmin && !keepsSuperAdmin && (superAdminCount?.count ?? 0) <= 1) throw conflict('至少需要保留一名启用的超级管理员');
+  if (currentlySuperAdmin && !keepsSuperAdmin && (superAdminCount?.count ?? 0) <= 1) throw conflict('至少需要保留一名启用的管理员');
+  const scopeStatements: D1PreparedStatement[] = [];
+  if (input.dealerIds !== undefined) scopeStatements.push(c.env.DB.prepare('DELETE FROM dealer_user_assignments WHERE user_id = ?').bind(targetId), ...Array.from(new Set(dealerIds)).map((dealerId) => c.env.DB.prepare('INSERT INTO dealer_user_assignments (user_id, dealer_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, dealerId, user.id)));
+  if (input.serviceCenterIds !== undefined) scopeStatements.push(c.env.DB.prepare('DELETE FROM service_center_user_assignments WHERE user_id = ?').bind(targetId), ...Array.from(new Set(serviceCenterIds)).map((centerId) => c.env.DB.prepare('INSERT INTO service_center_user_assignments (user_id, service_center_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, centerId, user.id)));
+  if (input.storeIds !== undefined) scopeStatements.push(c.env.DB.prepare('DELETE FROM store_user_assignments WHERE user_id = ?').bind(targetId), ...Array.from(new Set(storeIds)).map((storeId) => c.env.DB.prepare('INSERT INTO store_user_assignments (user_id, store_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, storeId, user.id)));
   await c.env.DB.batch([
-    c.env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM dealer_user_assignments WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM service_center_user_assignments WHERE user_id = ?').bind(targetId), c.env.DB.prepare('DELETE FROM store_user_assignments WHERE user_id = ?').bind(targetId),
+    c.env.DB.prepare('DELETE FROM user_roles WHERE user_id = ?').bind(targetId),
     c.env.DB.prepare('UPDATE users SET name = ?, is_active = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.name, Number(input.isActive), user.id, targetId),
     ...input.roleIds.map((roleId) => c.env.DB.prepare('INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, roleId, user.id)),
-    ...dealerIds.map((dealerId) => c.env.DB.prepare('INSERT INTO dealer_user_assignments (user_id, dealer_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, dealerId, user.id)),
-    ...serviceCenterIds.map((centerId) => c.env.DB.prepare('INSERT INTO service_center_user_assignments (user_id, service_center_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, centerId, user.id)),
-    ...storeIds.map((storeId) => c.env.DB.prepare('INSERT INTO store_user_assignments (user_id, store_id, assigned_by) VALUES (?, ?, ?)').bind(targetId, storeId, user.id)),
+    ...scopeStatements,
     dbAudit(c.env.DB, { actorId: user.id, action: 'user.update', entityType: 'user', entityId: targetId, requestId: c.get('requestId') })
   ]);
   return c.json({ id: targetId });
+});
+
+app.patch('/admin/users/:id/watermark', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'user:manage');
+  const input = await parseBody(c.req.raw, updateWatermarkPreferenceSchema);
+  const targetId = c.req.param('id');
+  const before = await one<{ id: string; watermarkEnabled: number }>(c.env.DB,
+    'SELECT id, watermark_enabled AS watermarkEnabled FROM users WHERE id = ?', targetId);
+  if (!before) throw notFound('未找到该用户');
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET watermark_enabled = ?, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?')
+      .bind(Number(input.enabled), user.id, targetId),
+    dbAudit(c.env.DB, {
+      actorId: user.id,
+      action: 'user.watermark.update',
+      entityType: 'user',
+      entityId: targetId,
+      requestId: c.get('requestId'),
+      before: { enabled: Boolean(before.watermarkEnabled) },
+      after: input
+    })
+  ]);
+  return c.json({ id: targetId, watermarkEnabled: input.enabled });
 });
 
 app.post('/admin/users/:id/reset-password', requireAuth, async (c) => {

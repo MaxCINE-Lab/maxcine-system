@@ -1,2 +1,7 @@
 # Copy to .dev.vars for local development. Do not commit the real value.
 SESSION_SECRET=replace-with-a-random-development-secret-at-least-32-characters
+RESEND_API_KEY=replace-only-when-testing-real-email-delivery
+NOTIFICATION_EMAIL_FROM=notification@maxcine.cn
+NOTIFICATION_EMAIL_NAME=MaxCINE 通知中心
+SUPPORT_EMAIL_REPLY_TO=support@maxcine.cn
+SUPPORT_EMAIL_REPLY_TO_NAME=MaxCINE 客户支持

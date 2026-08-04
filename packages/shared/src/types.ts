@@ -7,7 +7,8 @@ export const PERMISSIONS = [
   'order:review', 'order:warehouse-read', 'order:fulfill', 'inventory:read', 'inventory:manage',
   'inventory:warehouse-manage', 'audit:read', 'notifications:read', 'after-sales:create', 'after-sales:read',
   'after-sales:assign', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend', 'after-sales:approve',
-  'asset:read', 'asset:manage', 'asset:import', 'asset:warehouse-read'
+  'asset:read', 'asset:manage', 'asset:import', 'asset:warehouse-read',
+  'customer-risk:read', 'customer-risk:create', 'customer-risk:update-own', 'customer-risk:manage'
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -28,6 +29,7 @@ export type SessionUser = {
   serviceCenterIds: string[];
   storeIds: string[];
   sessionVersion: number;
+  watermarkEnabled: boolean;
 };
 
 export type ApiErrorBody = {

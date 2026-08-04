@@ -75,8 +75,8 @@ export async function hashIdentifier(value: string): Promise<string> {
 }
 
 export async function loadSessionUser(db: D1Database, userId: string): Promise<SessionUser | null> {
-  const account = await one<{ id: string; email: string; name: string; isActive: number; sessionVersion: number }>(db,
-    'SELECT id, email, name, is_active AS isActive, session_version AS sessionVersion FROM users WHERE id = ?', userId);
+  const account = await one<{ id: string; email: string; name: string; isActive: number; sessionVersion: number; watermarkEnabled: number }>(db,
+    'SELECT id, email, name, is_active AS isActive, session_version AS sessionVersion, watermark_enabled AS watermarkEnabled FROM users WHERE id = ?', userId);
   if (!account?.isActive) return null;
   const [roleRows, permissionRows, dealerRows, serviceCenterRows, storeRows] = await Promise.all([
     all<{ code: string }>(db, `SELECT roles.code FROM user_roles JOIN roles ON roles.id = user_roles.role_id
@@ -106,7 +106,8 @@ export async function loadSessionUser(db: D1Database, userId: string): Promise<S
     dealerIds,
     serviceCenterIds: serviceCenterRows.map((row) => row.serviceCenterId),
     storeIds: storeRows.map((row) => row.storeId),
-    sessionVersion: account.sessionVersion
+    sessionVersion: account.sessionVersion,
+    watermarkEnabled: Boolean(account.watermarkEnabled)
   };
 }
 
