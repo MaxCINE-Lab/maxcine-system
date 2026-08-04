@@ -113,15 +113,48 @@ function AssetList({ user, route, logout, mode = 'all' }: Props & { mode?: 'all'
 
 function ImportPage({ user, route, logout }: Props) {
   const [preview, setPreview] = useState<ImportPreview | null>(null); const [notice, setNotice] = useState<Notice>(null); const [busy, setBusy] = useState(false);
+  const [importSearch, setImportSearch] = useState('');
+  const [onlyIssues, setOnlyIssues] = useState(false);
+  const mappingRows = [
+    ['序号', '导入源序号 / 原始行快照'],
+    ['销售渠道', '销售来源与资产来源渠道'],
+    ['版本', '产品版本快照'],
+    ['购买日期、购买价格、到账状态', '销售记录快照，金额异常保留原文'],
+    ['SN、发出单号', '资产当前标识、历史标识与物流单号'],
+    ['保修状态、保修开始、保修结束', '保修策略、人工覆盖与日期字段'],
+    ['维修记录1～4', '资产生命周期事件'],
+    ['备注1～5、用户画像', '内部备注；敏感内容仅管理员可见']
+  ];
+  const visibleRows = preview ? preview.rows.filter((row) => {
+    const queryText = importSearch.trim().toLowerCase();
+    const haystack = [row.rowNumber, row.sequence, row.currentSn, row.originalSn, row.version, row.sourceChannel, row.issues.map((issue) => issue.message).join(' '), row.disposition].filter(Boolean).join(' ').toLowerCase();
+    return (!onlyIssues || row.issues.length > 0) && (!queryText || haystack.includes(queryText));
+  }) : [];
+  const previewRows = visibleRows.slice(0, 20);
   const selectFile = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0]; if (!file) return;
     setBusy(true); setNotice(null); setPreview(null);
-    try { const source = await readHistoricalWarranty(file); const result = await api<ImportPreview>('/admin/gsx/imports/precheck', { method: 'POST', body: JSON.stringify({ sourceFilename: file.name, ...source }) }); setPreview(result); setNotice({ tone: 'success', text: result.alreadyPrepared ? '该文件已有预检查记录，可继续确认导入。' : '预检查完成，请查看警告和错误后确认导入。' }); }
+    try { const source = await readHistoricalWarranty(file); const result = await api<ImportPreview>('/admin/gsx/imports/precheck', { method: 'POST', body: JSON.stringify({ sourceFilename: file.name, ...source }) }); setPreview(result); setImportSearch(''); setOnlyIssues(false); setNotice({ tone: 'success', text: result.alreadyPrepared ? '该文件已有预检查记录，可继续确认导入。' : '预检查完成，请查看警告和错误后确认导入。' }); }
     catch (error) { setNotice({ tone: 'error', text: error instanceof Error && !(error instanceof ApiClientError) ? error.message : errorText(error) }); }
     finally { setBusy(false); event.target.value = ''; }
   };
   const confirm = async () => { if (!preview || !window.confirm('确认导入可处理的历史保修记录吗？导入后会生成资产、销售记录和生命周期事件。')) return; setBusy(true); setNotice(null); try { const skipRowNumbers = preview.rows.filter((row) => row.issues.some((issue) => issue.severity === 'error')).map((row) => row.rowNumber); const result = await api<ImportPreview>(`/admin/gsx/imports/${preview.batch.id}/confirm`, { method: 'POST', body: JSON.stringify({ skipRowNumbers }) }); setPreview(result); setNotice({ tone: 'success', text: result.alreadyCompleted ? '该文件此前已完成导入，未重复创建记录。' : `导入完成：已导入 ${result.importedRows ?? 0} 条，跳过 ${result.skippedRows ?? 0} 条。` }); } catch (error) { setNotice({ tone: 'error', text: errorText(error) }); } finally { setBusy(false); } };
-  return <Shell user={user} route={route} title="历史数据导入" subtitle="先预检查，再确认写入；异常行不会阻断整批处理。" logout={logout}><GsxTabs route={route} active={`${assetBase(route)}/import`} canImport /><Notice notice={notice} /><section className="panel"><h2>选择历史保修表</h2><p>仅支持当前结构的 .xlsx 文件。预检查不会立即生成资产或保修记录。</p><label className="button button--secondary">{busy ? '正在处理…' : '选择 .xlsx 文件'}<input type="file" accept=".xlsx" hidden disabled={busy} onChange={(event) => void selectFile(event)} /></label></section>{preview && <section className="panel"><div className="panel-title"><h2>预检查结果</h2><span>{preview.batch.status === 'prepared' ? '等待确认' : '已完成'}</span></div><div className="stats gsx-import-stats"><article className="stat"><p>记录总数</p><strong>{preview.batch.totalRows}</strong></article><article className="stat"><p>正常记录</p><strong>{preview.batch.normalRows}</strong></article><article className="stat"><p>警告记录</p><strong>{preview.batch.warningRows}</strong></article><article className="stat"><p>错误记录</p><strong>{preview.batch.errorRows}</strong></article></div><div className="table-wrap"><table><thead><tr><th>原表行号</th><th>序号</th><th>当前 SN</th><th>版本</th><th>检查结果</th><th>处理方式</th></tr></thead><tbody>{preview.rows.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.sequence || '—'}</td><td>{row.currentSn || row.originalSn || '缺少 SN'}</td><td>{row.version || '—'}</td><td>{row.issues.length ? row.issues.map((issue) => <p className={issue.severity === 'error' ? 'text-danger' : ''} key={`${issue.code}-${issue.message}`}>{issue.message}</p>) : '正常'}</td><td>{row.disposition === 'imported' ? '已导入' : row.disposition === 'skipped' ? '已跳过' : row.issues.some((issue) => issue.severity === 'error') ? '确认时跳过' : '确认后导入'}</td></tr>)}</tbody></table></div>{preview.batch.status === 'prepared' && <div className="action-list"><button className="button" onClick={() => void confirm()} disabled={busy}>确认导入</button></div>}</section>}</Shell>;
+  const cancelPreview = () => { setPreview(null); setImportSearch(''); setOnlyIssues(false); setNotice({ tone: 'success', text: '已取消本次预检查，未写入正式资产数据。' }); };
+  const downloadIssueRows = () => {
+    if (!preview) return;
+    const issueRows = preview.rows.filter((row) => row.issues.length > 0);
+    if (!issueRows.length) { setNotice({ tone: 'success', text: '当前没有异常行需要下载。' }); return; }
+    const encode = (value: unknown) => `"${String(value ?? '').replaceAll('"', '""')}"`;
+    const csv = [['原表行号', '序号', 'SN', '版本', '问题', '处理方式'].map(encode).join(','), ...issueRows.map((row) => [row.rowNumber, row.sequence, row.currentSn || row.originalSn, row.version, row.issues.map((issue) => issue.message).join('；'), row.disposition].map(encode).join(','))].join('\n');
+    const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `maxcine-import-issues-${preview.batch.id}.csv`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+  return <Shell user={user} route={route} title="历史数据导入" subtitle="先预检查，再确认写入；异常行不会阻断整批处理。" logout={logout}><GsxTabs route={route} active={`${assetBase(route)}/import`} canImport /><Notice notice={notice} /><section className="panel"><h2>选择历史保修表</h2><p>仅支持当前结构的 .xlsx 文件。预检查只写入导入暂存记录，不会立即生成资产或保修记录。</p><label className="button button--secondary">{busy ? '正在处理…' : '选择 .xlsx 文件'}<input type="file" accept=".xlsx" hidden disabled={busy} onChange={(event) => void selectFile(event)} /></label></section>{preview && <section className="panel"><div className="panel-title"><h2>预检查结果</h2><span>{preview.batch.status === 'prepared' ? '等待确认' : '已完成'}</span></div><div className="stats gsx-import-stats"><article className="stat"><p>记录总数</p><strong>{preview.batch.totalRows}</strong></article><article className="stat"><p>正常记录</p><strong>{preview.batch.normalRows}</strong></article><article className="stat"><p>警告记录</p><strong>{preview.batch.warningRows}</strong></article><article className="stat"><p>错误记录</p><strong>{preview.batch.errorRows}</strong></article></div><div className="form-section"><h3>字段映射</h3><div className="table-wrap compact-table"><table><thead><tr><th>Excel 字段</th><th>建议映射</th></tr></thead><tbody>{mappingRows.map(([source, target]) => <tr key={source}><td>{source}</td><td>{target}</td></tr>)}</tbody></table></div></div><div className="filter-row"><input value={importSearch} onChange={(event) => setImportSearch(event.target.value)} placeholder="搜索 SN、序号、版本或检查结果" /><label className="checkbox-field"><input type="checkbox" checked={onlyIssues} onChange={(event) => setOnlyIssues(event.target.checked)} />仅显示异常行</label><button type="button" className="button button--secondary" onClick={downloadIssueRows}>下载异常行</button><button type="button" className="button button--secondary" onClick={cancelPreview}>取消本次预检查</button></div><p className="muted">当前显示 {previewRows.length} / {visibleRows.length} 条，预览最多显示前 20 行。</p><div className="table-wrap"><table><thead><tr><th>原表行号</th><th>序号</th><th>当前 SN</th><th>版本</th><th>检查结果</th><th>处理方式</th></tr></thead><tbody>{previewRows.map((row) => <tr key={row.rowNumber}><td>{row.rowNumber}</td><td>{row.sequence || '—'}</td><td>{row.currentSn || row.originalSn || '缺少 SN'}</td><td>{row.version || '—'}</td><td>{row.issues.length ? row.issues.map((issue) => <p className={issue.severity === 'error' ? 'text-danger' : ''} key={`${issue.code}-${issue.message}`}>{issue.message}</p>) : '正常'}</td><td>{row.disposition === 'imported' ? '已导入' : row.disposition === 'skipped' ? '已跳过' : row.issues.some((issue) => issue.severity === 'error') ? '确认时跳过' : '确认后导入'}</td></tr>)}{!previewRows.length && <tr><td colSpan={6}>没有符合条件的预检查记录。</td></tr>}</tbody></table></div>{preview.batch.status === 'prepared' && <div className="action-list"><button className="button" onClick={() => void confirm()} disabled={busy}>确认导入</button></div>}</section>}</Shell>;
 }
 
 function AssetEditModal({ data, onClose, onSaved }: { data: AssetDetail; onClose: () => void; onSaved: () => void }) {
