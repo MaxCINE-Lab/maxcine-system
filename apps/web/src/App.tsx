@@ -1,10 +1,11 @@
 import { FormEvent, ReactNode, useEffect, useMemo, useState } from 'react';
-import type { Role, SessionUser } from '@maxcine/shared';
+import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
 import { OperationsPortal } from './OperationsPortal';
 import { ServiceCenterPortal } from './ServiceCenterPortal';
+import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -13,7 +14,13 @@ const nav = [
   ['产品', '#/products'], ['下载', '#/downloads'], ['服务', '#/service'], ['联系', '#/contact']
 ] as const;
 
-const roleLabels: Record<Role, string> = { super_admin: '超级管理员', warehouse_manager: '仓库管理员', dealer: '经销商', authorized_service_center: '授权服务中心', online_product_consultant: '线上产品顾问' };
+function defaultSystemRoute(user: SessionUser): string {
+  if (hasAdminAccess(user)) return '/system/admin';
+  if (hasWarehouseAccess(user)) return '/system/warehouse';
+  if (hasDealerAccess(user)) return '/system/dashboard';
+  if (hasServiceCenterAccess(user)) return '/system/service-center';
+  return '/system/dashboard';
+}
 
 function useRoute(): Route {
   const [route, setRoute] = useState(() => location.hash.slice(1) || '/');
@@ -79,25 +86,10 @@ function Legal({ type }: { type: 'privacy' | 'terms' }) {
 
 function PageHero({ eyebrow, title, text }: { eyebrow: string; title: string; text: string }) { return <section className="page-hero"><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{text}</p></section>; }
 
-const mainMenu: Array<{ label: string; route: string; roles: Role[] }> = [
-  { label: '仪表盘', route: '/system/dashboard', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
-  { label: '共享库存', route: '/system/inventory', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
-  { label: '新建订单', route: '/system/new-order', roles: ['dealer'] },
-  { label: '订单', route: '/system/orders', roles: ['dealer', 'super_admin'] },
-  { label: '仓库待处理', route: '/system/warehouse', roles: ['warehouse_manager', 'super_admin'] },
-  { label: '站内通知', route: '/system/notifications', roles: ['dealer', 'super_admin', 'warehouse_manager'] },
-  { label: '售后工单', route: '/system/after-sales', roles: ['dealer', 'super_admin', 'authorized_service_center'] },
-  { label: '用户与角色', route: '/system/admin/users', roles: ['super_admin'] },
-  { label: '经销商与店铺', route: '/system/admin/dealers', roles: ['super_admin'] },
-  { label: '产品与库存', route: '/system/admin/products', roles: ['super_admin'] },
-  { label: '订单审核', route: '/system/admin/reviews', roles: ['super_admin'] },
-  { label: '审计记录', route: '/system/admin/audit', roles: ['super_admin'] }
-];
-
 function SystemShell({ user, children, title, subtitle }: { user: SessionUser; children: ReactNode; title: string; subtitle?: string }) {
   const [open, setOpen] = useState(false);
-  const items = mainMenu.filter((item) => item.roles.some((role) => user.roles.includes(role)));
-  return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><div className="user-chip"><span>{user.name}</span><small>{roleLabels[user.role]}</small></div></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><p className="nav-label">业务系统</p>{items.map((item) => <a href={`#${item.route}`} key={item.route} onClick={() => setOpen(false)}>{item.label}</a>)}<a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {roleLabels[user.role]}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
+  const signOut = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { location.hash = '#/login'; } };
+  return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><AccountMenu user={user} logout={() => void signOut()} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><SystemNavigation user={user} route={location.hash.slice(1) || '/system/dashboard'} onNavigate={() => setOpen(false)} /><a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
 }
 
 function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
@@ -107,11 +99,11 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
   const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setMessage(null);
-    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = result.user.roles.includes('super_admin') ? '#/system/admin' : result.user.roles.includes('warehouse_manager') ? '#/system/warehouse?status=approved' : '#/system/dashboard'; }
+    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = `#${defaultSystemRoute(result.user)}`; }
     catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
-  return <div className="login-page"><a href="#/"><Logo /></a><form className="login-card" onSubmit={submit}><span className="eyebrow">业务系统</span><h1>登录</h1><p>请输入已授权的 MaxCINE 账户信息。</p><label>邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
+  return <div className="login-page"><Logo /><form className="login-card" onSubmit={submit}><span className="eyebrow">业务系统</span><h1>登录</h1><p>请输入已授权的 MaxCINE 账户信息。</p><label>邮箱<input type="email" autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
 }
 
 function Dashboard({ user }: { user: SessionUser }) {
@@ -176,6 +168,18 @@ function AfterSales({ user }: { user: SessionUser }) { return <SystemShell user=
 function DataTable({ headings, rows }: { headings: string[]; rows: ReactNode[][] }) { return <div className="table-wrap"><table><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((value, index) => <td key={index}>{value}</td>)}</tr>)}</tbody></table></div>; }
 function Status({ value }: { value: string }) { return <span className="status">{value}</span>; }
 
+function isDealerRoute(path: string): boolean {
+  return path === '/system/dashboard'
+    || path === '/system/inventory'
+    || path === '/system/customer-risk'
+    || path === '/system/new-order'
+    || path === '/system/orders'
+    || path.startsWith('/system/orders/')
+    || path === '/system/notifications'
+    || path === '/system/after-sales'
+    || path.startsWith('/system/after-sales/');
+}
+
 function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void; onLogout: () => void }) {
   if (route === '/') return <Home />;
   if (route === '/products') return <Products />;
@@ -186,9 +190,16 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (route === '/terms') return <Legal type="terms" />;
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
-  if ((user.roles.includes('authorized_service_center') || user.roles.includes('super_admin')) && route.startsWith('/system/service-center')) return <ServiceCenterPortal user={user} route={route} />;
-  if (user.roles.includes('dealer') && !user.roles.includes('super_admin') && !user.roles.includes('warehouse_manager') && route.startsWith('/system')) return <DealerPortal user={user} route={route} />;
-  if ((user.roles.includes('super_admin') || user.roles.includes('warehouse_manager')) && route.startsWith('/system')) return <OperationsPortal user={user} route={route} logout={onLogout} />;
+  const path = route.split('?')[0];
+  if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} />;
+  if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
+  if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
+  if (path.startsWith('/system/admin') && hasAdminAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
+  if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} />;
+  if (route.startsWith('/system')) {
+    location.hash = `#${defaultSystemRoute(user)}`;
+    return null;
+  }
   if (route === '/system/dashboard') return <Dashboard user={user} />;
   if (route === '/system/inventory') return <Inventory user={user} />;
   if (route === '/system/new-order') return <NewOrder user={user} />;
@@ -216,5 +227,5 @@ export function App() {
     if (route.startsWith('/system')) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [route]);
   const logout = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); location.hash = '#/login'; } };
-  return <AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />;
+  return <><AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />{user && route.startsWith('/system') && <EmployeeWatermark user={user} />}</>;
 }
