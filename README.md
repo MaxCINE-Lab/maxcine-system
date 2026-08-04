@@ -46,13 +46,18 @@ Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔�
 
 ## 环境变量
 
-仅将本地值写入 `apps/api/.dev.vars`，不要提交该文件。本轮邮件投递被禁用：不得配置真实邮件 provider、不得发送邮件。
+仅将本地值写入 `apps/api/.dev.vars`，不要提交该文件。本地默认使用 `mock` 邮件模式，报价发送会明确记录为失败，不会伪装投递成功。只有人工把 provider 改为 `resend` 并通过 secret 配置密钥后，系统才会尝试真实投递。
 
 | 变量 | 用途 | 必需 |
 | --- | --- | --- |
 | `SESSION_SECRET` | 会话 HMAC 密钥；使用长度至少 32 的随机值 | 是 |
 | `APP_ORIGIN` | 允许的前端来源，开发时为 `http://localhost:5173` | 是 |
-| `EMAIL_PROVIDER` | 保留的兼容变量；本地构建不连接 provider，也不发送邮件 | 否 |
+| `EMAIL_PROVIDER` | `mock`（不发送）或 `resend`（调用真实 provider） | 否 |
+| `RESEND_API_KEY` | Resend 密钥；仅在 `EMAIL_PROVIDER=resend` 时需要，必须使用 secret | 条件必需 |
+| `NOTIFICATION_EMAIL_FROM` | 报价自动邮件发件地址，默认 `notification@maxcine.cn` | 否 |
+| `NOTIFICATION_EMAIL_NAME` | 报价自动邮件发件名称，默认 `MaxCINE 通知中心` | 否 |
+| `SUPPORT_EMAIL_REPLY_TO` | 客户回复地址，默认 `support@maxcine.cn` | 否 |
+| `SUPPORT_EMAIL_REPLY_TO_NAME` | 客户回复名称，默认 `MaxCINE 客户支持` | 否 |
 | `VITE_API_BASE_URL` | 可选 API 基础地址；同源路由时留空 | 否 |
 
 Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret put` 为**测试环境**配置；不得写入仓库。
@@ -67,7 +72,7 @@ Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret p
 
 已接入本地 D1 的经销商页面包括：仪表盘、共享库存、库存详情、授权店铺、新建订单、草稿编辑、订单筛选/分页/详情、站内通知及已读状态、售后工单列表/详情/新建申请。后端根据用户 ID 的角色、权限、店铺授权及服务中心授权强制数据隔离；不以姓名或邮箱判断权限。
 
-本地种子数据包括 3 个功能邮箱（`support@maxcine.cn`、`notifications@maxcine.cn`、`noreply@maxcine.cn`）、六个指定演示账户、经销商、授权服务中心和店铺归属。所有邮箱均以小写保存和显示；种子不含真实密码、手机号、身份证号、地址或客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
+本地种子数据包括功能邮箱、六个指定演示账户、经销商、授权服务中心和店铺归属。报价自动邮件固定使用 `notification@maxcine.cn`，客户回复进入 `support@maxcine.cn`。所有邮箱均以小写保存和显示；种子不含真实密码、手机号、身份证号、地址或客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
 
 ## GSX 资产与保修中心（本地第一版）
 

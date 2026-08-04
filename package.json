@@ -19,8 +19,8 @@
     "test": "npm run build -w @maxcine/shared && node --test tests/security.test.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api",
-    "db:apply:local": "wrangler d1 migrations apply maxcine-db --local --config apps/api/wrangler.toml",
-    "db:seed:local": "wrangler d1 execute maxcine-db --local --file apps/api/seed/0001_demo.sql --config apps/api/wrangler.toml"
+    "db:apply:local": "wrangler d1 migrations apply maxcine-db --local --persist-to work/gsx-d1 --config apps/api/wrangler.toml",
+    "db:seed:local": "wrangler d1 execute maxcine-db --local --persist-to work/gsx-d1 --file apps/api/seed/0001_demo.sql --config apps/api/wrangler.toml"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20260724.1",
