@@ -91,13 +91,12 @@ test('超级管理员通过全局权限读取未关联的历史 GSX 资产', asy
     expect(result.unauthenticated).toBe(401);
 
     await page.goto('/#/system/admin/assets');
-    await page.getByLabel('统一查询').fill('6900000000101');
+    await page.getByLabel('SN 或资产标识').fill('6900000000101');
     await page.getByRole('button', { name: '查询' }).click();
-    await page.getByRole('link', { name: /6900000000101/ }).click();
     await expect(page.getByRole('heading', { name: '资产详情' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '6900000000101' })).toBeVisible();
-    await expect(page.getByText('MaxCINE MAVIC 4 Pro 增广镜')).toBeVisible();
-    await expect(page.getByRole('button', { name: '生命周期' })).toBeVisible();
+    await expect(page.getByText('当前 SN：6900000000101')).toBeVisible();
+    await expect(page.getByRole('heading', { name: /MaxCINE MAVIC 4 Pro 增广镜/ })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '生命周期' })).toBeVisible();
     await expect(page.getByText('你没有权限查看该资产。')).toHaveCount(0);
 
     await page.goto('/#/system/admin/assets/00000000-0000-4000-8000-000000000099');

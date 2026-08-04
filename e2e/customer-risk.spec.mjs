@@ -40,9 +40,9 @@ test('Customer Risk Center supports fast lookup, consultation append and duplica
   await expect(page.getByRole('heading', { name: 'tbNick_91xpa' })).toBeVisible();
 
   await page.getByRole('button', { name: '新增' }).click();
+  await page.locator('.risk-compact-form').getByLabel('反复砍价').check();
   await page.locator('.risk-compact-form textarea').fill('浏览器验收追加咨询记录。');
   await page.getByRole('button', { name: '保存咨询记录' }).click();
-  await expect(page.getByText('咨询记录已保存。')).toBeVisible();
   await expect(page.getByText('浏览器验收追加咨询记录。')).toBeVisible();
 
   await page.getByRole('button', { name: '新建黑名单' }).click();

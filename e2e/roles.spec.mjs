@@ -18,12 +18,12 @@ test('各角色登录后进入正确工作台，刷新后会话仍有效', async
   await expect(page.getByRole('heading', { name: '工作台' })).toBeVisible();
   await page.goto('/#/login');
   await login(page, 'warehouse@maxcine.cn');
-  await expect(page.getByRole('heading', { name: '仓库订单' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '发货' })).toBeVisible();
   await page.goto('/#/login');
   await login(page, 'ziyuesun@maxcine.cn');
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
   await page.getByRole('link', { name: '服务中心工单' }).click();
-  await expect(page.getByText('仅显示已分配给本服务中心的工单。')).toBeVisible();
+  await expect(page.getByText('只显示分配给本服务中心或由你提交的售后工单。')).toBeVisible();
 });
 
 test('前端路由不替代后端权限控制', async ({ page }) => {
@@ -31,15 +31,15 @@ test('前端路由不替代后端权限控制', async ({ page }) => {
   const result = await page.evaluate(async () => (await fetch('http://127.0.0.1:8791/admin/users', { credentials: 'include' })).status);
   expect([401, 403]).toContain(result);
   await page.goto('/#/system/admin/users');
-  await expect(page.getByRole('heading', { name: '仓库订单' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '发货' })).toBeVisible();
 });
 
 test('管理员可以切换仓库、服务中心视图，并打开售后工单详情', async ({ page }) => {
   await login(page, 'yukyinchew@maxcine.cn');
   await page.goto('/#/system/warehouse');
-  await expect(page.getByRole('heading', { name: '仓库订单' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '发货' })).toBeVisible();
   await page.goto('/#/system/service-center');
-  await expect(page.getByText('仅显示已分配给本服务中心的工单。')).toBeVisible();
+  await expect(page.getByText('只显示分配给本服务中心或由你提交的售后工单。')).toBeVisible();
   await page.goto('/#/system/admin/after-sales');
   await page.getByRole('button', { name: '查看处理' }).first().click();
   await expect(page.getByText('系统繁忙，请稍后再试')).toHaveCount(0);

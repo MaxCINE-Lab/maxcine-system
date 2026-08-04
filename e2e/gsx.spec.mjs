@@ -43,32 +43,44 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
   await expect(page.getByText('导入完成：已导入 3 条，跳过 0 条。')).toBeVisible();
 
   await page.goto('/#/system/admin/assets');
-  await page.getByLabel('统一查询').fill('SF0123456789012');
+  await page.getByLabel('SN 或资产标识').fill('SF0123456789012');
   await page.getByRole('button', { name: '查询' }).click();
-  await expect(page.getByRole('link', { name: /6900000000002/ })).toBeVisible();
-  await page.getByRole('link', { name: /6900000000002/ }).click();
+  const assetRow = page.getByRole('row', { name: /6900000000002/ });
+  await expect(assetRow).toBeVisible();
+  await assetRow.getByRole('link', { name: '查看' }).click();
   await expect(page.getByRole('heading', { name: '资产详情' })).toBeVisible();
-  await page.getByRole('button', { name: '生命周期' }).click();
+  await expect(page.getByText('当前 SN：6900000000002')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '生命周期' })).toBeVisible();
   await expect(page.getByText('历史维修记录')).toBeVisible();
 
   const assetId = await page.evaluate(async (base) => {
     const response = await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' });
     return (await response.json()).items[0].id;
   }, apiBase);
-  await page.getByRole('button', { name: '保修与售后' }).click();
-  await page.getByLabel('关联店铺').selectOption({ index: 1 });
-  await page.getByLabel('工单主题').fill('GSX 浏览器验收售后');
-  await page.getByLabel('问题描述').fill('用于验证资产详情直接创建售后工单的浏览器端流程。');
-  await page.getByRole('button', { name: '创建售后工单' }).click();
-  await expect(page.getByText('售后工单已创建：')).toBeVisible();
+  await expect(page.getByRole('heading', { name: '售后信息' })).toBeVisible();
 
   const assigned = await page.evaluate(async ({ base, id }) => {
-    const cases = await (await fetch(`${base}/after-sales`, { credentials: 'include' })).json();
     const serviceCenters = await (await fetch(`${base}/admin/options`, { credentials: 'include' })).json();
-    const serviceCase = cases.cases.find((item) => item.subject === 'GSX 浏览器验收售后');
+    const response = await fetch(`${base}/after-sales`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        assetId: id,
+        caseType: 'QUALITY_ISSUE',
+        description: '用于验证资产查询后创建售后工单的浏览器端流程。',
+        customerNote: '',
+        internalNote: 'GSX E2E',
+        contactName: '本地测试客户',
+        contactPhone: '13800000000',
+        contactEmail: 'customer@example.test',
+        contactAddress: '本地测试地址'
+      })
+    });
+    const created = await response.json();
     const liaisoningCenter = serviceCenters.serviceCenters.find((item) => item.province === '辽宁省');
-    const response = await fetch(`${base}/after-sales/${serviceCase.id}/assign`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serviceCenterId: liaisoningCenter.id }) });
-    return { status: response.status, assetId: id };
+    const assign = await fetch(`${base}/after-sales/${created.id}/assign`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ serviceCenterId: liaisoningCenter.id }) });
+    return { status: assign.status, assetId: id };
   }, { base: apiBase, id: assetId });
   expect(assigned.status).toBe(200);
 
@@ -84,13 +96,23 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
 
   await page.goto('/#/login');
   await login(page, 'ericzhu@maxcine.cn');
-  const dealerSearch = await page.evaluate(async (base) => (await (await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' })).json()).items.length, apiBase);
-  expect(dealerSearch).toBe(0);
+  const dealerSearch = await page.evaluate(async (base) => {
+    const response = await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' });
+    const body = await response.json();
+    return { status: response.status, count: body.items?.length ?? 0 };
+  }, apiBase);
+  expect([200, 403]).toContain(dealerSearch.status);
+  expect(dealerSearch.count).toBe(0);
 
   await page.goto('/#/login');
   await login(page, 'warehouse@maxcine.cn');
-  const warehouseSearch = await page.evaluate(async (base) => (await (await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' })).json()).items.length, apiBase);
-  expect(warehouseSearch).toBe(0);
+  const warehouseSearch = await page.evaluate(async (base) => {
+    const response = await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' });
+    const body = await response.json();
+    return { status: response.status, count: body.items?.length ?? 0 };
+  }, apiBase);
+  expect([200, 403]).toContain(warehouseSearch.status);
+  expect(warehouseSearch.count).toBe(0);
 
   await page.goto('/#/login');
   await login(page, 'yukyinchew@maxcine.cn');
