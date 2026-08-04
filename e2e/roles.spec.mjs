@@ -22,7 +22,7 @@ test('各角色登录后进入正确工作台，刷新后会话仍有效', async
   await page.goto('/#/login');
   await login(page, 'ziyuesun@maxcine.cn');
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
-  await page.getByRole('link', { name: '服务中心工作台' }).click();
+  await page.getByRole('link', { name: '服务中心工单' }).click();
   await expect(page.getByText('仅显示已分配给本服务中心的工单。')).toBeVisible();
 });
 
@@ -34,7 +34,7 @@ test('前端路由不替代后端权限控制', async ({ page }) => {
   await expect(page.getByRole('heading', { name: '仓库订单' })).toBeVisible();
 });
 
-test('超级管理员可以切换仓库、服务中心视图，并打开售后工单详情', async ({ page }) => {
+test('管理员可以切换仓库、服务中心视图，并打开售后工单详情', async ({ page }) => {
   await login(page, 'yukyinchew@maxcine.cn');
   await page.goto('/#/system/warehouse');
   await expect(page.getByRole('heading', { name: '仓库订单' })).toBeVisible();

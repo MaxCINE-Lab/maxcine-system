@@ -55,7 +55,7 @@ test('设计系统：经销商、仓库与服务中心使用一致的系统外�
   await expect(page.getByRole('link', { name: '打开订单查询' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('dealer-dashboard-desktop.png'), fullPage: true });
 
-  await page.getByRole('link', { name: '服务中心工作台' }).click();
+  await page.getByRole('link', { name: '服务中心工单' }).click();
   await expect(page.getByText('仅显示已分配给本服务中心的工单。')).toBeVisible();
   await expect(page.getByRole('link', { name: '打开工单查询' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('service-center-desktop.png'), fullPage: true });

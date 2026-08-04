@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
-import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, createAfterSalesSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, shipmentWarrantyDates, shipmentWarrantyRule, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { URL } from 'node:url';
+import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -46,11 +48,87 @@ test('input normalizes account emails to lowercase', () => {
   assert.equal(loginSchema.parse({ email: 'YUKYINCHEW@MAXCINE.CN', password: 'DemoOnly-ChangeMe-2026' }).email, 'yukyinchew@maxcine.cn');
 });
 
-test('order and after-sales schemas allow local demo data without contact details', () => {
+test('watermark preference only accepts an explicit boolean switch', () => {
+  assert.equal(updateWatermarkPreferenceSchema.parse({ enabled: false }).enabled, false);
+  assert.equal(updateWatermarkPreferenceSchema.safeParse({ enabled: 'false' }).success, false);
+});
+
+test('customer risk center keeps dealer flow create-only and accepts IP location', () => {
+  assert.equal(PERMISSIONS.includes('customer-risk:read'), true);
+  assert.equal(PERMISSIONS.includes('customer-risk:manage'), true);
+  const riskDealer = user({ id: 'risk-dealer', roles: ['dealer'], permissions: ['customer-risk:read', 'customer-risk:create'] });
+  assert.equal(can(riskDealer, 'customer-risk:create'), true);
+  assert.equal(can(riskDealer, 'customer-risk:manage'), false);
+  const record = createCustomerRiskRecordSchema.parse({
+    customer: { phone: '18191316611', name: '何满堂', city: '渭南', platformNickname: 'tbNick_91xpa', ipLocation: '陕西省' },
+    status: 'blacklist',
+    riskLevel: 'high',
+    riskReasons: ['反复砍价', '其他'],
+    otherReason: '本地测试补充原因',
+    consultationResult: '未成交',
+    note: '只记录本次咨询，不覆盖其他经销商记录。'
+  });
+  assert.equal(record.productScope, 'MAVIC_4_PRO_ANAMORPHIC');
+  assert.equal(record.customer.ipLocation, '陕西省');
+  assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: { phone: '13800000000' }, riskReasons: ['其他'] }).success, false);
+  assert.equal(updateCustomerRiskEventSchema.safeParse({ status: 'watchlist', riskLevel: 'medium', riskReasons: ['大量询价未购买'], consultationResult: '跟进中', note: '更新本人记录' }).success, true);
+  assert.equal(updateCustomerRiskProfileSchema.parse({ customer: { platformNickname: 'tbNick_91xpa', ipLocation: '陕西省' }, status: 'blacklist' }).customer.ipLocation, '陕西省');
+});
+
+test('quote workflow requires explicit preview state and a unique send idempotency key', () => {
+  const quote = quoteDraftSchema.parse({
+    inspectionSummary: '本地测试检测结论',
+    finalDecision: '保外收费维修',
+    validUntil: '2026-08-05',
+    items: [{ itemName: '本地测试服务费', itemType: '服务费', quantity: 1, unitPriceCents: 8000 }],
+    workflowStatus: 'READY_FOR_REVIEW'
+  });
+  assert.equal(quote.workflowStatus, 'READY_FOR_REVIEW');
+  assert.equal(confirmQuoteSendSchema.safeParse({ idempotencyKey: 'not-a-uuid' }).success, false);
+  assert.equal(confirmQuoteSendSchema.safeParse({ idempotencyKey: 'd83cd945-7474-4fa9-a38b-375c1015e2db' }).success, true);
+});
+
+test('quote delivery uses a locked snapshot, notification sender and support reply address', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const emailSource = readFileSync(new URL('../apps/api/src/email.ts', import.meta.url), 'utf8');
+  const dbSource = readFileSync(new URL('../apps/api/src/db.ts', import.meta.url), 'utf8');
+  const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0012_quote_review_and_delivery.sql', import.meta.url), 'utf8');
+  assert.match(source, /\/after-sales-quotes\/:quoteId\/confirm-send/);
+  assert.match(source, /workflow_status = 'SENDING'/);
+  assert.match(source, /notification@maxcine\.cn/);
+  assert.match(source, /support@maxcine\.cn/);
+  assert.match(source, /function escapeHtml/);
+  assert.match(source, /escapeHtml\(snapshot\.customerDescription/);
+  assert.match(source, /【请勿回复】MaxCINE产品服务报告书/);
+  assert.match(source, /此邮件由 MaxCINE 系统自动发送，请勿回复/);
+  assert.match(dbSource, /CAS-\$\{token\.slice\(0, 5\)\}-\$\{token\.slice\(5, 10\)\}/);
+  assert.doesNotMatch(adminUiSource, /打印 \/ 保存 PDF/);
+  assert.doesNotMatch(adminUiSource, /PDF 附件/);
+  assert.match(emailSource, /Idempotency-Key/);
+  assert.match(emailSource, /reply_to/);
+  assert.match(emailSource, /邮件服务未配置/);
+  assert.match(migration, /READY_FOR_REVIEW/);
+  assert.match(migration, /SEND_FAILED/);
+  assert.match(migration, /idx_after_sales_quote_email_idempotency/);
+});
+
+test('order schema accepts drafts while after-sales requires asset and customer contact snapshot', () => {
   const valid = createOrderSchema.parse({ storeId: '30000000-0000-4000-8000-000000000001', items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }] });
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
-  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, true);
+  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({
+    assetId: '99000000-0000-4000-8000-000000000001',
+    storeId: valid.storeId,
+    caseType: 'QUALITY_ISSUE',
+    subject: '本地演示问题',
+    description: '这是满足最短长度的本地演示问题描述。',
+    contactName: '本地测试客户',
+    contactPhone: '13800000000',
+    contactEmail: 'local-test@example.test',
+    contactAddress: '本地测试地址，不是真实客户资料'
+  }).success, true);
 });
 
 test('submitted-order fields accept bounded image data and reject unsafe screenshot text', () => {
@@ -82,7 +160,7 @@ test('shipment warranty rules use the confirmed SKU durations only', () => {
   assert.equal(shipmentWarrantyRule('W103')?.durationDays, 365);
   assert.equal(shipmentWarrantyRule('W124')?.durationDays, 90);
   assert.equal(shipmentWarrantyRule('W114'), null);
-  assert.deepEqual(shipmentWarrantyDates('2026-07-27 08:00:00', 90), { startAt: '2026-07-27', endAt: '2026-10-24' });
+  assert.deepEqual(shipmentWarrantyDates('2026-07-27 08:00:00', 90), { startAt: '2026-07-30', endAt: '2026-10-27' });
 });
 
 test('historical warranty records preserve warnings without rejecting a whole batch', () => {
