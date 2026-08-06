@@ -45,7 +45,11 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
       <div class="scanner-dialog" role="dialog" aria-modal="true" aria-label="摄像头扫码">
         <video class="scanner-video" autoplay playsinline muted></video>
         <div class="scanner-frame"><span></span></div>
-        <p>请将条码或 SN 放入取景框内</p>
+        <p class="scanner-status">请将条码横向放入取景框内，避免反光。识别较慢时可拍照识别。</p>
+        <label class="scanner-photo">
+          拍照 / 选择图片识别
+          <input type="file" accept="image/png,image/jpeg,image/webp" capture="environment" />
+        </label>
         <button type="button" class="scanner-cancel">取消扫码</button>
       </div>
     `;
@@ -53,7 +57,8 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     this.overlay = overlay;
     const video = overlay.querySelector<HTMLVideoElement>('video');
     const cancel = overlay.querySelector<HTMLButtonElement>('.scanner-cancel');
-    if (!video || !cancel) {
+    const photoInput = overlay.querySelector<HTMLInputElement>('.scanner-photo input');
+    if (!video || !cancel || !photoInput) {
       this.stop();
       throw new Error('摄像头扫码窗口初始化失败。');
     }
@@ -62,7 +67,7 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     await video.play();
 
     if (!window.BarcodeDetector) {
-      await this.startZxing(video, onResult);
+      await this.startZxing(stream, video, photoInput, onResult);
       return;
     }
 
@@ -70,6 +75,15 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     await new Promise<void>((resolve, reject) => {
       let pending = false;
       const startedAt = Date.now();
+      photoInput.addEventListener('change', () => {
+        const file = photoInput.files?.[0];
+        if (!file) return;
+        this.decodeImageFile(file, detector).then((value) => {
+          onResult({ value, source: 'camera' });
+          this.stop();
+          resolve();
+        }).catch(() => this.setStatus('这张照片未识别到条码，请重新拍摄清晰盒面或继续实时扫描。'));
+      });
       const tick = () => {
         if (!this.active) {
           resolve();
@@ -104,18 +118,58 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     });
   }
 
-  private async startZxing(video: HTMLVideoElement, onResult: (result: ScanResult) => void): Promise<void> {
-    const hints = new Map();
+  private createZxingReader(): BrowserMultiFormatReader {
+    const hints = new Map<DecodeHintType, unknown>();
     hints.set(DecodeHintType.POSSIBLE_FORMATS, [
       BarcodeFormat.CODE_128,
       BarcodeFormat.CODE_39,
+      BarcodeFormat.CODE_93,
+      BarcodeFormat.CODABAR,
       BarcodeFormat.EAN_13,
       BarcodeFormat.EAN_8,
+      BarcodeFormat.UPC_A,
+      BarcodeFormat.UPC_E,
       BarcodeFormat.ITF,
       BarcodeFormat.QR_CODE,
-      BarcodeFormat.DATA_MATRIX
+      BarcodeFormat.DATA_MATRIX,
+      BarcodeFormat.PDF_417
     ]);
-    const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    hints.set(DecodeHintType.CHARACTER_SET, 'UTF-8');
+    return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
+  }
+
+  private async decodeImageFile(file: File, detector?: BarcodeDetectorLike): Promise<string> {
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) throw new Error('请选择 PNG、JPG 或 WebP 图片。');
+    const objectUrl = URL.createObjectURL(file);
+    try {
+      const image = new Image();
+      image.src = objectUrl;
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error('图片无法读取。'));
+      });
+      if (detector) {
+        const codes = await detector.detect(image);
+        const value = codes[0]?.rawValue?.trim();
+        if (value) return value;
+      }
+      const result = await this.createZxingReader().decodeFromImageElement(image);
+      const value = result.getText().trim();
+      if (!value) throw new Error('未识别到条码。');
+      return value;
+    } finally {
+      URL.revokeObjectURL(objectUrl);
+    }
+  }
+
+  private setStatus(message: string): void {
+    const status = this.overlay?.querySelector<HTMLElement>('.scanner-status');
+    if (status) status.textContent = message;
+  }
+
+  private async startZxing(stream: MediaStream, video: HTMLVideoElement, photoInput: HTMLInputElement, onResult: (result: ScanResult) => void): Promise<void> {
+    const reader = this.createZxingReader();
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const finish = (error?: Error) => {
@@ -129,7 +183,16 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
         this.stop();
         finish(new Error('未识别到条码，请调整光线或改用手动输入。'));
       }, this.scanTimeoutMs);
-      reader.decodeFromVideoElement(video, (result, error, controls) => {
+      photoInput.addEventListener('change', () => {
+        const file = photoInput.files?.[0];
+        if (!file) return;
+        this.decodeImageFile(file).then((value) => {
+          onResult({ value, source: 'camera' });
+          this.stop();
+          finish();
+        }).catch(() => this.setStatus('这张照片未识别到条码，请重新拍摄清晰盒面或继续实时扫描。'));
+      });
+      reader.decodeFromStream(stream, video, (result, error, controls) => {
         this.zxingControls = controls;
         if (!this.active) {
           finish();
