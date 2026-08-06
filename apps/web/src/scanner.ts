@@ -1,3 +1,6 @@
+import { BrowserMultiFormatReader, type IScannerControls } from '@zxing/browser';
+import { BarcodeFormat, DecodeHintType } from '@zxing/library';
+
 export type ScanResult = { value: string; source: 'camera' | 'manual' };
 
 export interface BarcodeScannerAdapter {
@@ -22,16 +25,15 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
   private stream: MediaStream | null = null;
   private overlay: HTMLDivElement | null = null;
   private active = false;
+  private zxingControls: IScannerControls | null = null;
 
   isSupported(): boolean {
-    return Boolean(navigator.mediaDevices && window.BarcodeDetector);
+    return Boolean(navigator.mediaDevices?.getUserMedia);
   }
 
   async start(onResult: (result: ScanResult) => void): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前设备无法使用摄像头，请改用扫描枪或手动输入。');
-    if (!window.BarcodeDetector) throw new Error('当前浏览器不支持摄像头识别条码，请使用 Chrome 或改用扫描枪。');
     this.stop();
-    const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code', 'data_matrix'] });
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
     this.stream = stream;
     this.active = true;
@@ -58,6 +60,12 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     cancel.addEventListener('click', () => this.stop(), { once: true });
     await video.play();
 
+    if (!window.BarcodeDetector) {
+      await this.startZxing(video, onResult);
+      return;
+    }
+
+    const detector = new window.BarcodeDetector({ formats: ['code_128', 'code_39', 'ean_13', 'ean_8', 'qr_code', 'data_matrix'] });
     await new Promise<void>((resolve, reject) => {
       let pending = false;
       const startedAt = Date.now();
@@ -95,8 +103,53 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     });
   }
 
+  private async startZxing(video: HTMLVideoElement, onResult: (result: ScanResult) => void): Promise<void> {
+    const hints = new Map();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [
+      BarcodeFormat.CODE_128,
+      BarcodeFormat.CODE_39,
+      BarcodeFormat.EAN_13,
+      BarcodeFormat.EAN_8,
+      BarcodeFormat.ITF,
+      BarcodeFormat.QR_CODE,
+      BarcodeFormat.DATA_MATRIX
+    ]);
+    const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
+    await new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => {
+        this.stop();
+        reject(new Error('未识别到条码，请调整光线或改用手动输入。'));
+      }, 45000);
+      reader.decodeFromVideoElement(video, (result, error, controls) => {
+        this.zxingControls = controls;
+        if (!this.active) {
+          window.clearTimeout(timeout);
+          resolve();
+          return;
+        }
+        const value = result?.getText().trim();
+        if (value) {
+          window.clearTimeout(timeout);
+          onResult({ value, source: 'camera' });
+          this.stop();
+          resolve();
+        } else if (error && error.name !== 'NotFoundException') {
+          window.clearTimeout(timeout);
+          this.stop();
+          reject(new Error('摄像头扫码失败，请改用扫描枪或手动输入。'));
+        }
+      }).catch((error: unknown) => {
+        window.clearTimeout(timeout);
+        this.stop();
+        reject(error instanceof Error ? error : new Error('摄像头扫码失败，请改用扫描枪或手动输入。'));
+      });
+    });
+  }
+
   stop(): void {
     this.active = false;
+    this.zxingControls?.stop();
+    this.zxingControls = null;
     this.stream?.getTracks().forEach((track) => track.stop());
     this.stream = null;
     this.overlay?.remove();
