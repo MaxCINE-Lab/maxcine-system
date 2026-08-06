@@ -1680,6 +1680,14 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   const user = c.get('user');
   if (!can(user, 'order:fulfill') && !can(user, 'order:review')) throw forbidden();
   const input = await parseBody(c.req.raw, shipmentSchema);
+  const shipmentPhotos = input.photos ?? [];
+  const requiredPhotoCategories = ['box_sn', 'packed_photo_1', 'packed_photo_2'] as const;
+  const uploadedPhotoCategories = new Set(shipmentPhotos.map((photo) => photo.category));
+  const missingPhotoCategory = requiredPhotoCategories.find((category) => !uploadedPhotoCategories.has(category));
+  if (missingPhotoCategory) {
+    const labels: Record<typeof requiredPhotoCategories[number], string> = { box_sn: '产品盒面 SN 照片', packed_photo_1: '打包完成照片 1', packed_photo_2: '打包完成照片 2' };
+    throw badRequest(`确认发货前请上传${labels[missingPhotoCategory]}`);
+  }
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
   if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('该订单暂时不能发货');
@@ -1739,6 +1747,8 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     ...allocation.statements,
     c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
       .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
+    ...shipmentPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO shipment_photos (id, shipment_id, order_id, category, data_url, original_filename, content_type, uploaded_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), shipmentId, order.id, photo.category, photo.dataUrl, photo.originalFilename, photo.contentType, user.id)),
     c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
       WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
       .bind(shipmentId, user.id, order.id),
@@ -1747,7 +1757,7 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
       .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
     ...assetStatements,
-    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), createdAssets } })
+    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), shipmentPhotoCategories: shipmentPhotos.map((photo) => photo.category), createdAssets } })
   ]);
   return c.json({ id: order.id, status: 'shipped', trackingNumber });
 });
