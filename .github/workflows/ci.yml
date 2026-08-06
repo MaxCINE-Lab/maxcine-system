@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - 'codex/**'
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Lint, test, build and browser regression
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    env:
+      EMAIL_PROVIDER: mock
+      SESSION_SECRET: ci-local-session-secret-for-github-actions-only
+      E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Audit dependencies
+        continue-on-error: true
+        run: |
+          npm audit --audit-level=high > audit-report.txt || true
+          {
+            echo "## npm audit --audit-level=high"
+            echo
+            echo '```'
+            cat audit-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit and security tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Verify empty local D1 migrations and seed
+        run: |
+          D1_DIR="$(mktemp -d)"
+          npx wrangler d1 migrations apply maxcine-db --local --persist-to "$D1_DIR" --config apps/api/wrangler.toml
+          npx wrangler d1 execute maxcine-db --local --persist-to "$D1_DIR" --file apps/api/seed/0001_demo.sql --config apps/api/wrangler.toml
+
+      - name: Check E2E password secret
+        run: |
+          if [ -z "$E2E_PASSWORD" ]; then
+            echo "::error::Missing repository secret E2E_PASSWORD. Set it to the local demo password used by apps/api/seed/0001_demo.sql."
+            exit 1
+          fi
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser E2E tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright failure artifacts
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-failure-artifacts
+          path: |
+            test-results/
+            playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7

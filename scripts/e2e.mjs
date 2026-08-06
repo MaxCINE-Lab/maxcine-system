@@ -7,6 +7,8 @@ import net from 'node:net';
 
 const root = resolve(import.meta.dirname, '..');
 const persistence = mkdtempSync(join(tmpdir(), 'maxcine-e2e-'));
+const sessionSecret = process.env.SESSION_SECRET || 'ci-local-session-secret-for-e2e-only-please-change';
+const emailProvider = process.env.EMAIL_PROVIDER || 'mock';
 if (!process.env.E2E_PASSWORD) { console.error('请通过环境变量 E2E_PASSWORD 提供仅限本机的演示账户密码。'); process.exit(1); }
 function run(command, args, cwd = root, env = process.env) {
   const result = spawnSync(command, args, { cwd, env, stdio: 'inherit' });
@@ -18,7 +20,7 @@ function available(port) { return new Promise((resolveCheck) => { const server =
 if (!await available(5175) || !await available(8791)) { console.error('浏览器验收端口 5175 或 8791 已被占用，请先处理对应测试进程。'); process.exit(1); }
 run('npx', ['wrangler', 'd1', 'migrations', 'apply', 'maxcine-db', '--local', '--persist-to', persistence, '--config', 'apps/api/wrangler.toml']);
 run('npx', ['wrangler', 'd1', 'execute', 'maxcine-db', '--local', '--persist-to', persistence, '--file', 'apps/api/seed/0001_demo.sql', '--config', 'apps/api/wrangler.toml']);
-const api = spawn(process.execPath, [join(root, 'node_modules/wrangler/wrangler-dist/cli.js'), 'dev', '--config', 'wrangler.toml', '--local', '--port', '8791', '--persist-to', persistence, '--var', 'APP_ORIGIN:http://127.0.0.1:5175'], { cwd: join(root, 'apps/api'), stdio: 'inherit' });
+const api = spawn(process.execPath, [join(root, 'node_modules/wrangler/wrangler-dist/cli.js'), 'dev', '--config', 'wrangler.toml', '--local', '--port', '8791', '--persist-to', persistence, '--var', 'APP_ORIGIN:http://127.0.0.1:5175', '--var', `SESSION_SECRET:${sessionSecret}`, '--var', `EMAIL_PROVIDER:${emailProvider}`], { cwd: join(root, 'apps/api'), stdio: 'inherit' });
 const web = spawn(join(root, 'node_modules/.bin/vite'), ['--host', '127.0.0.1', '--port', '5175', '--strictPort'], { cwd: join(root, 'apps/web'), stdio: 'inherit', env: { ...process.env, VITE_API_BASE_URL: 'http://127.0.0.1:8791' } });
 const stopOne = async (child) => {
   if (child.exitCode !== null || child.signalCode !== null) return;
