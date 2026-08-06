@@ -83,13 +83,13 @@ export const createAfterSalesSchema = z.object({
   serialNumber: z.string().trim().max(100).optional().nullable(),
   caseType: afterSalesCaseTypeSchema,
   subject: z.string().trim().min(2).max(160).optional().default('售后申请'),
-  description: z.string().trim().min(10).max(5000),
+  description: z.string().trim().max(5000).default(''),
   customerNote: z.string().trim().max(1000).default(''),
   internalNote: z.string().trim().max(2000).default(''),
-  contactName: z.string().trim().min(2).max(80),
-  contactPhone: z.string().trim().min(6).max(32),
-  contactEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
-  contactAddress: z.string().trim().min(5).max(500),
+  contactName: z.string().trim().max(80).default(''),
+  contactPhone: z.string().trim().max(32).default(''),
+  contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).default(''),
+  contactAddress: z.string().trim().max(500).default(''),
   isProxySubmission: z.boolean().default(false)
 });
 
@@ -275,15 +275,12 @@ export const inboundShipmentSchema = z.object({
 });
 
 export const receiptSchema = z.object({
-  packagingIntact: z.boolean(),
+  packagingIntact: z.boolean().default(true),
   packagingNote: z.string().trim().max(1000).default(''),
-  receivedItems: z.array(z.enum(['产品主体', '安装配件', '包装盒', '保护盒', '配重模块', '其他附件', '其他'])).min(1),
-  itemsMatch: z.boolean(),
+  receivedItems: z.array(z.enum(['产品主体', '安装配件', '包装盒', '保护盒', '配重模块', '其他附件', '其他'])).default([]),
+  itemsMatch: z.boolean().default(true),
   missingItemsNote: z.string().trim().max(1000).default(''),
   receiptNote: z.string().trim().max(1000).default('')
-}).superRefine((value, context) => {
-  if (!value.packagingIntact && !value.packagingNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['packagingNote'], message: '包装异常时必须填写备注' });
-  if (!value.itemsMatch && !value.missingItemsNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['missingItemsNote'], message: '缺件或不一致时必须填写说明' });
 });
 
 export const inspectionSchema = z.object({
@@ -295,7 +292,7 @@ export const inspectionSchema = z.object({
   faultParts: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   damageTypes: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   derivedSymptoms: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
-  conclusion: z.string().trim().min(2).max(1000),
+  conclusion: z.string().trim().max(1000).default(''),
   faultCause: z.string().trim().max(1000).default(''),
   affectedParts: z.string().trim().max(500).default(''),
   suggestedAction: z.enum(['无故障', '使用指导', '重新安装', '清洁处理', '维修', '更换部件', '整机更换建议', '拒绝保修建议', '单独销售部件', '无法维修', '其他']),
@@ -331,10 +328,6 @@ export const inspectionSchema = z.object({
     compatibilityOverrideReason: z.string().trim().max(500).default(''),
     engineerNote: z.string().trim().max(1000).default('')
   })).max(50).default([])
-}).superRefine((value, context) => {
-  if (value.accidentalDamage && !value.accidentalDamageType) context.addIssue({ code: z.ZodIssueCode.custom, path: ['accidentalDamageType'], message: '存在意外损坏时必须选择损坏类型' });
-  if (value.accidentalDamage && !value.accidentalDamageNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['accidentalDamageNote'], message: '存在意外损坏时必须填写说明' });
-  if (!value.faultChains.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['faultChains'], message: '请至少填写一条故障链' });
 });
 
 export const inspectionReviewSchema = z.object({

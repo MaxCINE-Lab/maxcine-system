@@ -512,9 +512,6 @@ function Header({ title, text }: { title: string; text: string }) {
     </header>
   );
 }
-function hasAttachment(data: CaseDetailV2, category: string): boolean {
-  return data.attachments.some((item) => item.category === category);
-}
 function toggleValue(
   values: string[],
   value: string,
@@ -981,15 +978,6 @@ function CasePageV2({
   const saveReceipt = (event: FormEvent) => {
     event.preventDefault();
     if (!data) return;
-    if (
-      !hasAttachment(data, "package_label") ||
-      !hasAttachment(data, "received_items_front") ||
-      !hasAttachment(data, "received_items_back")
-    )
-      return setNotice({
-        tone: "error",
-        text: "确认收货前必须完成三张固定收货照片。",
-      });
     void run(
       `/after-sales/${id}/receipt`,
       {
@@ -1006,21 +994,6 @@ function CasePageV2({
   const submitInspection = (event: FormEvent) => {
     event.preventDefault();
     if (!data) return;
-    const missingFace = facePhotos.find(
-      ([category]) => !hasAttachment(data, category),
-    );
-    if (missingFace)
-      return setNotice({
-        tone: "error",
-        text: `请先上传产品${missingFace[1]}照片。`,
-      });
-    if (accidentalDamage && !hasAttachment(data, "accidental_damage"))
-      return setNotice({
-        tone: "error",
-        text: "存在意外损坏时必须上传损坏照片。",
-      });
-    if (!faultChains.length)
-      return setNotice({ tone: "error", text: "请至少填写一条故障链。" });
     const missingReason = selectedMaterials.find(
       (item) =>
         item.material.compatibilityStatus === "not_applicable" &&
@@ -1147,6 +1120,7 @@ function CasePageV2({
           )}
           <form className="panel" onSubmit={saveReceipt}>
             <h2>收货确认</h2>
+            <p className="hint">收货照片和备注均为可选；如现场方便，建议上传便于后续核对。</p>
             <div className="form-layout">
               <label>
                 外包装及面单照片
@@ -1255,6 +1229,7 @@ function CasePageV2({
           )}
           <form className="panel" onSubmit={submitInspection}>
             <h2>故障诊断与定损</h2>
+            <p className="hint">照片、故障链和说明均可后续补充；工程师可先提交处理建议给管理员审核。</p>
             <section>
               <h3>客户反馈故障</h3>
               <p>{data.case.description}</p>
@@ -1516,7 +1491,6 @@ function CasePageV2({
             <label>
               检测结论
               <textarea
-                required
                 value={conclusion}
                 onChange={(event) => setConclusion(event.target.value)}
               />

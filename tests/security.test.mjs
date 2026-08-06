@@ -113,11 +113,15 @@ test('quote delivery uses a locked snapshot, notification sender and support rep
   assert.match(migration, /idx_after_sales_quote_email_idempotency/);
 });
 
-test('order schema accepts drafts while after-sales requires asset and customer contact snapshot', () => {
+test('order schema accepts drafts while after-sales allows optional notes and contact snapshot', () => {
   const valid = createOrderSchema.parse({ storeId: '30000000-0000-4000-8000-000000000001', items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }] });
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
   assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({
+    assetId: '99000000-0000-4000-8000-000000000001',
+    caseType: 'QUALITY_ISSUE'
+  }).success, true);
   assert.equal(createAfterSalesSchema.safeParse({
     assetId: '99000000-0000-4000-8000-000000000001',
     storeId: valid.storeId,
@@ -144,7 +148,7 @@ test('submitted-order fields accept bounded image data and reject unsafe screens
   assert.equal(createOrderSchema.safeParse({ ...input, screenshotDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }).success, false);
 });
 
-test('shipment confirmation accepts categorized outbound photos and API requires all three photo slots', () => {
+test('shipment confirmation accepts optional categorized outbound photos and still rejects unsafe image data', () => {
   const parsed = shipmentSchema.parse({
     carrier: '顺丰速运',
     trackingNumber: 'SF1234567890',
@@ -157,8 +161,9 @@ test('shipment confirmation accepts categorized outbound photos and API requires
   });
   assert.equal(parsed.photos.length, 3);
   assert.equal(shipmentSchema.safeParse({ ...parsed, photos: [{ ...parsed.photos[0], dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }] }).success, false);
+  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', serialNumbers: ['STAGE-GSX-W101-0102'] }).photos.length, 0);
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
-  assert.match(source, /确认发货前请上传/);
+  assert.doesNotMatch(source, /确认发货前请上传/);
   assert.match(source, /shipment_photos/);
 });
 

@@ -13,6 +13,7 @@ import type { Env, Variables } from './types';
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
 type OrderItemRow = { id: string; productId: string; name: string; sku: string; productVersion?: string; specification?: string; quantity: number; unitPriceCents: number };
+type FulfillmentItemRow = OrderItemRow & { inventoryId: string; availableQuantity: number; reservedQuantity: number };
 type DbUser = { id: string; email: string; passwordHash: string; name: string; isActive: number };
 
 const app = new Hono<App>();
@@ -356,10 +357,11 @@ async function runStatementsInChunks(db: D1Database, statements: D1PreparedState
   for (let offset = 0; offset < statements.length; offset += size) await db.batch(statements.slice(offset, offset + size));
 }
 
-async function orderItemsForFulfillment(db: D1Database, orderId: string): Promise<Array<OrderItemRow & { inventoryId: string }>> {
-  return all<OrderItemRow & { inventoryId: string }>(db,
+async function orderItemsForFulfillment(db: D1Database, orderId: string): Promise<FulfillmentItemRow[]> {
+  return all<FulfillmentItemRow>(db,
     `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
-      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents, inventory.id AS inventoryId
+      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents,
+      inventory.id AS inventoryId, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity
      FROM order_items JOIN inventory ON inventory.product_id = order_items.product_id LEFT JOIN products ON products.id = order_items.product_id
      WHERE order_items.order_id = ?`, orderId);
 }
@@ -371,9 +373,10 @@ async function allocatedSerialsForOrder(db: D1Database, orderId: string): Promis
      WHERE order_items.order_id = ? AND serial_numbers.state IN ('allocated','shipped')`, orderId);
 }
 
-async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string } | null> {
-  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string }>(db,
-    `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus
+async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string } | null> {
+  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string }>(db,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
+      assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus
      FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id
      WHERE assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
      ORDER BY CASE WHEN assets.current_sn = ? COLLATE NOCASE THEN 0 WHEN assets.original_sn = ? COLLATE NOCASE THEN 1 ELSE 2 END, assets.updated_at DESC
@@ -410,6 +413,7 @@ async function allocationStatementsForSerials(db: D1Database, input: { orderId: 
     if (existing?.orderId && existing.orderId !== input.orderId) throw conflict(`该 SN 已绑定其他订单：${serialNumber}`);
     const asset = await findAssetByIdentifier(db, serialNumber);
     if (!asset) throw notFound(`该 SN 不存在：${serialNumber}`);
+    if (asset.dataQualityStatus !== 'normal' || !asset.currentSn) throw conflict(`该 SN 属于待确认异常标签，不能发货：${serialNumber}`);
     const item = asset.productId
       ? items.find((value) => value.productId === asset.productId)
       : items.find((value) => asset.version && [value.productVersion, value.specification].filter(Boolean).includes(asset.version))
@@ -418,8 +422,15 @@ async function allocationStatementsForSerials(db: D1Database, input: { orderId: 
     if (!item) throw conflict(`该 SN 不属于本订单产品：${serialNumber}`);
     if ((counts.get(item.id) ?? 0) >= item.quantity) throw conflict(`产品 ${item.name} 已达到订单数量，不能继续绑定 SN`);
     counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-    statements.push(db.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, order_item_id, bound_at, created_by, updated_by)
-      VALUES (?, ?, ?, 'allocated', ?, CURRENT_TIMESTAMP, ?, ?)`).bind(id(), item.productId, serialNumber, item.id, input.actorId, input.actorId));
+    if (existing?.id) {
+      if (existing.state !== 'available') throw conflict(`该 SN 当前不可发货：${serialNumber}`);
+      statements.push(db.prepare(`UPDATE serial_numbers SET product_id = ?, state = 'allocated', order_item_id = ?, bound_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND state = 'available'`)
+        .bind(item.productId, item.id, input.actorId, existing.id));
+    } else {
+      statements.push(db.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, order_item_id, bound_at, created_by, updated_by)
+        VALUES (?, ?, ?, 'allocated', ?, CURRENT_TIMESTAMP, ?, ?)`).bind(id(), item.productId, serialNumber, item.id, input.actorId, input.actorId));
+    }
     serials.push({ serialNumber, productId: item.productId, orderItemId: item.id });
   }
   for (const item of items) {
@@ -479,13 +490,6 @@ async function getCaseForAccess(db: D1Database, user: SessionUser, caseId: strin
      WHERE after_sales_cases.id = ? AND ${scope.sql}`, caseId, ...scope.params);
   if (!serviceCase) throw forbidden('你无权查看或处理该售后工单');
   return serviceCase;
-}
-
-async function requireAttachments(db: D1Database, caseId: string, requirements: Array<{ category: string; slot?: string; label: string }>): Promise<void> {
-  for (const requirement of requirements) {
-    const attachment = await one<{ id: string }>(db, `SELECT id FROM after_sales_attachments WHERE case_id = ? AND category = ? AND photo_slot = ? ORDER BY created_at DESC LIMIT 1`, caseId, requirement.category, requirement.slot ?? '');
-    if (!attachment) throw conflict(`请先上传${requirement.label}`);
-  }
 }
 
 async function countAttachments(db: D1Database, caseId: string, category: string): Promise<number> {
@@ -1515,9 +1519,6 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   assertOrderAccess(user, order);
   const dealer = await one<{ id: string }>(c.env.DB, "SELECT id FROM dealers WHERE id = ? AND status = 'active'", order.dealerId);
   if (!dealer) throw forbidden('所属经销商已停用，无法提交订单');
-  if (!order.screenshotDataUrl || order.salePriceCents === null || order.salePriceCents <= 0 || !order.shippingAddress || !order.customerProfile) {
-    throw badRequest('提交审核前请补充订单截图、售卖价格、收货地址和用户画像');
-  }
   if ((!canTransitionOrder(user, order.status, 'submitted') && order.status !== 'rejected') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
   const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
     JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
@@ -1681,16 +1682,11 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   if (!can(user, 'order:fulfill') && !can(user, 'order:review')) throw forbidden();
   const input = await parseBody(c.req.raw, shipmentSchema);
   const shipmentPhotos = input.photos ?? [];
-  const requiredPhotoCategories = ['box_sn', 'packed_photo_1', 'packed_photo_2'] as const;
-  const uploadedPhotoCategories = new Set(shipmentPhotos.map((photo) => photo.category));
-  const missingPhotoCategory = requiredPhotoCategories.find((category) => !uploadedPhotoCategories.has(category));
-  if (missingPhotoCategory) {
-    const labels: Record<typeof requiredPhotoCategories[number], string> = { box_sn: '产品盒面 SN 照片', packed_photo_1: '打包完成照片 1', packed_photo_2: '打包完成照片 2' };
-    throw badRequest(`确认发货前请上传${labels[missingPhotoCategory]}`);
-  }
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
   if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('该订单暂时不能发货');
+  const existingShipment = await one<{ id: string }>(c.env.DB, 'SELECT id FROM shipments WHERE order_id = ?', order.id);
+  if (existingShipment) throw conflict('该订单已经确认发货，请刷新页面查看物流信息');
   const shipmentId = id();
   const trackingNumber = (input.trackingNumber ?? '').trim();
   const storedTrackingNumber = trackingNumber || `NO-TRACKING-${order.id}`;
@@ -1743,22 +1739,37 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
         .bind(id(), assetId, order.id, user.id));
     }
   }
-  await c.env.DB.batch([
-    ...allocation.statements,
-    c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
-    ...shipmentPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO shipment_photos (id, shipment_id, order_id, category, data_url, original_filename, content_type, uploaded_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), shipmentId, order.id, photo.category, photo.dataUrl, photo.originalFilename, photo.contentType, user.id)),
-    c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
-      WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
-      .bind(shipmentId, user.id, order.id),
-    c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`).bind(input.carrier, trackingNumber, user.id, order.id),
-    ...items.map((item) => c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by) VALUES (?, ?, ?, ?, 'order_shipped', 0, ?, ?, ?)`).bind(id(), item.inventoryId, item.productId, order.id, -item.quantity, `订单 ${order.orderNo} 已发货，预留库存正式出库`, user.id)),
-    c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
-    ...assetStatements,
-    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), shipmentPhotoCategories: shipmentPhotos.map((photo) => photo.category), createdAssets } })
-  ]);
+  const inventoryShipStatements = items.map((item) => {
+    const reservedToRelease = Math.min(item.reservedQuantity, item.quantity);
+    const quantityDelta = reservedToRelease < item.quantity ? -(item.quantity - reservedToRelease) : 0;
+    const reservedDelta = -reservedToRelease;
+    return c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by)
+      VALUES (?, ?, ?, ?, 'order_shipped', ?, ?, ?, ?)`)
+      .bind(id(), item.inventoryId, item.productId, order.id, quantityDelta, reservedDelta, `订单 ${order.orderNo} 已发货，库存正式出库`, user.id);
+  });
+  try {
+    await c.env.DB.batch([
+      ...allocation.statements,
+      c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
+      ...shipmentPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO shipment_photos (id, shipment_id, order_id, category, data_url, original_filename, content_type, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), shipmentId, order.id, photo.category, photo.dataUrl, photo.originalFilename, photo.contentType, user.id)),
+      c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+        WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
+        .bind(shipmentId, user.id, order.id),
+      c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`).bind(input.carrier, trackingNumber, user.id, order.id),
+      ...inventoryShipStatements,
+      c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
+      ...assetStatements,
+      dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), shipmentPhotoCategories: shipmentPhotos.map((photo) => photo.category), createdAssets } })
+    ]);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Inventory cannot be negative')) throw conflict('库存不足，无法确认发货。请先核对库存或释放异常预留。');
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed: serial_numbers.serial_number')) throw conflict('该 SN 已存在，请刷新页面后重新选择或扫描。');
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed: shipments')) throw conflict('该订单已经存在物流记录，请刷新页面查看最新状态。');
+    throw error;
+  }
   return c.json({ id: order.id, status: 'shipped', trackingNumber });
 });
 
@@ -2052,17 +2063,12 @@ app.post('/after-sales/:id/receipt', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
   if (!['WAITING_SERVICE_CENTER_RECEIPT', 'IN_TRANSIT', 'WAITING_CUSTOMER_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能确认收货');
-  await requireAttachments(c.env.DB, serviceCase.id, [
-    { category: 'package_label', label: '外包装及面单照片' },
-    { category: 'received_items_front', label: '全部物品正面照片' },
-    { category: 'received_items_back', label: '全部物品反面照片' }
-  ]);
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO after_sales_receipts (id, case_id, received_items_json, packaging_intact, packaging_note, items_match, missing_items_note, receipt_note, received_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id(), serviceCase.id, JSON.stringify(input.receivedItems), Number(input.packagingIntact), input.packagingNote, Number(input.itemsMatch), input.missingItemsNote, input.receiptNote, user.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'received', service_stage = 'WAITING_INSPECTION', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'received', '服务中心确认收货', ?, ?)`).bind(id(), serviceCase.id, input.receiptNote || '已完成固定三项收货照片和物品核对', user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'received', '服务中心确认收货', ?, ?)`).bind(id(), serviceCase.id, input.receiptNote || '已确认收货', user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.receipt_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: serviceCase.id, serviceStage: 'WAITING_INSPECTION' });
@@ -2089,18 +2095,6 @@ app.post('/after-sales/:id/inspections', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
   if (!['INSPECTION_IN_PROGRESS', 'INSPECTION_RETURNED', 'WAITING_INSPECTION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能提交检测结果');
-  await requireAttachments(c.env.DB, serviceCase.id, [
-    { category: 'package_label', label: '外包装及面单照片' },
-    { category: 'received_items_front', label: '全部物品正面照片' },
-    { category: 'received_items_back', label: '全部物品反面照片' },
-    { category: 'product_front', label: '产品正面照片' },
-    { category: 'product_back', label: '产品背面照片' },
-    { category: 'product_left', label: '产品左侧照片' },
-    { category: 'product_right', label: '产品右侧照片' },
-    { category: 'product_top', label: '产品顶部照片' },
-    { category: 'product_bottom', label: '产品底部照片' }
-  ]);
-  if (input.accidentalDamage && await countAttachments(c.env.DB, serviceCase.id, 'accidental_damage') < 1) throw conflict('存在意外损坏时，请至少上传 1 张损坏照片');
   const latest = await one<{ version: number }>(c.env.DB, 'SELECT COALESCE(MAX(version), 0) AS version FROM after_sales_inspections_v2 WHERE case_id = ?', serviceCase.id);
   const version = (latest?.version ?? 0) + 1;
   const inspectionId = id();
