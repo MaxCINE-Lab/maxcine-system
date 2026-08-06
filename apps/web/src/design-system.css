@@ -2671,3 +2671,13 @@ body:has(.system) {
   .quote-preview-secondary .button,
   .quote-preview-dialog > footer .button { flex: 1; }
 }
+
+.mail-center-overview .detail-grid {
+  margin-top: 18px;
+}
+
+.mail-center-preview {
+  height: min(720px, 68vh);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-card);
+}

@@ -30,4 +30,4 @@ migrations_dir = "migrations"
 [env.staging.vars]
 APP_ORIGIN = "https://maxcine-web-staging.pages.dev"
 COOKIE_SAMESITE = "None"
-EMAIL_PROVIDER = "mock"
+EMAIL_PROVIDER = "resend"

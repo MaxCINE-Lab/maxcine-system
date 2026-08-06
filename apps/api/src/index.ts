@@ -3,11 +3,11 @@ import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
-  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
-import { sendEmail } from './email';
+import { mailSubject, mailTemplates, renderMailHtml, renderMailText, sendEmail, type MailTemplateData, type MailTemplateKey } from './email';
 import type { Env, Variables } from './types';
 
 type App = { Bindings: Env; Variables: Variables };
@@ -553,11 +553,75 @@ function moneyText(value: number): string {
 function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string; logoUrl: string } {
   return {
     address: env.NOTIFICATION_EMAIL_FROM || 'notification@maxcine.cn',
-    name: env.NOTIFICATION_EMAIL_NAME || 'MaxCINE 通知中心',
+    name: env.NOTIFICATION_EMAIL_NAME || '【请勿回复】MaxCINE 服务中心',
     replyTo: env.SUPPORT_EMAIL_REPLY_TO || 'support@maxcine.cn',
     replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持',
     logoUrl: `${env.APP_ORIGIN || 'https://maxcine-web-staging.pages.dev'}/assets/quote-logo.png`
   };
+}
+
+function mailEnvironment(env: Env): 'local' | 'staging' | 'production' {
+  if (env.APP_ORIGIN?.includes('staging') || env.APP_ORIGIN?.includes('pages.dev')) return 'staging';
+  if (env.APP_ORIGIN?.includes('localhost') || env.APP_ORIGIN?.includes('127.0.0.1')) return 'local';
+  return 'production';
+}
+
+function mailSampleData(env: Env, template: MailTemplateKey): MailTemplateData {
+  const sender = notificationSender(env);
+  const fields: Record<MailTemplateKey, Array<[string, string]>> = {
+    system_test: [['当前 Provider', env.EMAIL_PROVIDER || 'mock'], ['发件人', `${sender.name} <${sender.address}>`], ['Reply-To', `${sender.replyToName} <${sender.replyTo}>`]],
+    after_sales_quote: [['案例号', 'CAS-ABCDE-12345'], ['产品 SN', '6901649533304'], ['报价总额', '¥180.00']],
+    service_report: [['服务单号', 'CAS-ABCDE-12345'], ['SN', '6901649533304'], ['产品', 'MaxCINE Mavic 4 Pro 增广镜'], ['检测日期', '2026-08-06'], ['保修状态', '保修中']],
+    shipment_notice: [['订单号', 'MC-20260806-DEMO'], ['快递公司', '顺丰速运'], ['运单号', 'SF-DEMO-0001']],
+    password_reset: [['账号', 'staff@example.test'], ['有效期', '30 分钟']]
+  };
+  const sections: Record<MailTemplateKey, MailTemplateData['sections']> = {
+    system_test: [{ heading: '测试说明', body: '这是一封 MaxCINE Mail Center 系统测试邮件，用于验证模板、发件人、Reply-To 和邮件服务配置。' }],
+    after_sales_quote: [{ heading: '检测结果', body: '经检测，产品需要更换部件并完成基础排查。' }, { heading: '最终处理方案', body: '管理员确认后按报价明细执行。' }],
+    service_report: [{ heading: '检测结果', body: '外观与功能检测已完成。' }, { heading: '处理方式', body: '按管理员审批结果执行。' }, { heading: '工程师意见', body: '建议按标准流程维修。' }, { heading: '管理员审批', body: '同意按客户确认结果继续处理。' }, { heading: '免责声明', body: '本报告仅用于本次 MaxCINE 售后服务处理，不作为其他用途证明。' }],
+    shipment_notice: [{ heading: '发货说明', body: '订单已完成发货确认，请留意物流状态。' }],
+    password_reset: [{ heading: '密码重置说明', body: '请使用管理员提供的临时信息完成密码重置，并尽快修改为个人密码。' }]
+  };
+  return {
+    title: mailTemplates[template].name,
+    preheader: mailTemplates[template].description,
+    logoUrl: sender.logoUrl,
+    reference: template === 'service_report' ? '服务单号 CAS-ABCDE-12345' : undefined,
+    fields: fields[template],
+    sections: sections[template]
+  };
+}
+
+async function resendDomainStatus(env: Env): Promise<{ status: string; detail: string }> {
+  if (env.EMAIL_PROVIDER !== 'resend') return { status: '未启用', detail: '当前 Provider 不是 Resend。' };
+  if (!env.RESEND_API_KEY) return { status: '未配置', detail: 'Cloudflare Secret 缺少 RESEND_API_KEY。' };
+  try {
+    const response = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } });
+    const payload = await response.json().catch(() => ({})) as { data?: Array<{ name?: string; status?: string }> };
+    const domain = payload.data?.find((item) => item.name?.toLowerCase() === 'maxcine.cn');
+    return domain ? { status: domain.status || '未知', detail: `maxcine.cn：${domain.status || '未知'}` } : { status: '未找到', detail: 'Resend 账号中未找到 maxcine.cn 域名。' };
+  } catch {
+    return { status: '检查失败', detail: '无法连接 Resend 域名接口。' };
+  }
+}
+
+async function sendViaMailCenter(c: Context<App>, input: { template: MailTemplateKey; to: string; subject: string; html: string; text: string; idempotencyKey: string; actorId: string; relatedEntityType?: string; relatedEntityId?: string }): Promise<{ messageId: string; sent: boolean; provider: string; providerMessageId: string; failureReason: string }> {
+  const sender = notificationSender(c.env);
+  const existing = await one<{ id: string; status: string; providerMessageId: string; failureReason: string; provider: string }>(c.env.DB,
+    'SELECT id, status, provider_message_id AS providerMessageId, failure_reason AS failureReason, provider FROM mail_center_messages WHERE idempotency_key = ?', input.idempotencyKey);
+  if (existing) return { messageId: existing.id, sent: existing.status === 'sent', provider: existing.provider, providerMessageId: existing.providerMessageId, failureReason: existing.failureReason };
+  const delivery = await sendEmail(c.env, { from: sender.address, fromName: sender.name, replyTo: sender.replyTo, replyToName: sender.replyToName, to: input.to, subject: input.subject, html: input.html, text: input.text }, input.idempotencyKey);
+  const messageId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO mail_center_messages (id, provider, template_key, subject, to_email, from_email, from_name, reply_to_email, reply_to_name,
+      status, failure_reason, provider_message_id, related_entity_type, related_entity_id, idempotency_key, html_content, text_content, sent_by, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
+      .bind(messageId, delivery.provider, input.template, input.subject, input.to, sender.address, sender.name, sender.replyTo, sender.replyToName,
+        delivery.sent ? 'sent' : 'failed', delivery.failureReason, delivery.providerMessageId, input.relatedEntityType ?? '', input.relatedEntityId ?? '',
+        input.idempotencyKey, input.html, input.text, input.actorId, delivery.sent ? 'sent' : 'failed'),
+    dbAudit(c.env.DB, { actorId: input.actorId, action: delivery.sent ? 'mail.send' : 'mail.send_failed', entityType: 'mail_center_message', entityId: messageId, requestId: c.get('requestId'), after: { template: input.template, provider: delivery.provider, providerMessageId: delivery.providerMessageId, relatedEntityType: input.relatedEntityType, relatedEntityId: input.relatedEntityId } })
+  ]);
+  return { messageId, sent: delivery.sent, provider: delivery.provider, providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason };
 }
 
 function quoteHtml(snapshot: QuoteSnapshot): string {
@@ -2372,8 +2436,8 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
   const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo };
   const deliveryHtml = quoteHtml(deliverySnapshot);
   const deliveryText = quoteText(deliverySnapshot);
-  const subject = `【请勿回复】MaxCINE产品服务报告书 ${serviceCase.caseNo}`;
-  const delivery = await sendEmail(c.env, { from: sender.address, fromName: sender.name, replyTo: sender.replyTo, replyToName: sender.replyToName, to: quote.customerEmail, subject, html: deliveryHtml, text: deliveryText }, input.idempotencyKey);
+  const subject = mailSubject('after_sales_quote', mailEnvironment(c.env), serviceCase.caseNo);
+  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: quote.customerEmail, subject, html: deliveryHtml, text: deliveryText, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
   const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
   const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
   const emailId = id();
@@ -3026,6 +3090,49 @@ app.patch('/admin/dealers/:id', requireAuth, async (c) => {
 app.get('/admin/audit-logs', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'audit:read');
   return c.json({ logs: await all(c.env.DB, `SELECT audit_logs.id, audit_logs.action, audit_logs.entity_type AS entityType, audit_logs.entity_id AS entityId, audit_logs.created_at AS createdAt, users.email AS actorEmail FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id ORDER BY audit_logs.created_at DESC LIMIT 200`) });
+});
+
+app.get('/admin/mail-center/status', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'system:manage');
+  const sender = notificationSender(c.env);
+  const domain = await resendDomainStatus(c.env);
+  const recent = await all(c.env.DB, `SELECT id, provider, template_key AS templateKey, subject, to_email AS toEmail, from_email AS fromEmail,
+    reply_to_email AS replyToEmail, status, failure_reason AS failureReason, provider_message_id AS providerMessageId, created_at AS createdAt, sent_at AS sentAt
+    FROM mail_center_messages ORDER BY created_at DESC LIMIT 20`);
+  return c.json({
+    provider: c.env.EMAIL_PROVIDER || 'mock',
+    environment: mailEnvironment(c.env),
+    resendConfigured: Boolean(c.env.RESEND_API_KEY),
+    from: { name: sender.name, address: sender.address },
+    replyTo: { name: sender.replyToName, address: sender.replyTo },
+    domain,
+    templates: Object.entries(mailTemplates).map(([key, value]) => ({ key, ...value })),
+    recent
+  });
+});
+
+app.post('/admin/mail-center/preview', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'system:manage');
+  const input = await parseBody(c.req.raw, mailPreviewSchema);
+  const template = input.template as MailTemplateKey;
+  const data = mailSampleData(c.env, template);
+  return c.json({ template, subject: mailSubject(template, mailEnvironment(c.env)), html: renderMailHtml(data), text: renderMailText(data) });
+});
+
+app.post('/admin/mail-center/test-send', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const input = await parseBody(c.req.raw, mailTestSchema);
+  const recent = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM mail_center_messages
+    WHERE sent_by = ? AND template_key = 'system_test' AND created_at >= datetime('now', '-60 seconds')`, user.id);
+  if ((recent?.count ?? 0) >= 3) throw conflict('测试邮件发送过于频繁，请一分钟后再试');
+  const template = input.template as MailTemplateKey;
+  const data = mailSampleData(c.env, template);
+  const html = renderMailHtml(data);
+  const text = renderMailText(data);
+  const subject = mailSubject(template, mailEnvironment(c.env));
+  const result = await sendViaMailCenter(c, { template, to: input.recipient, subject, html, text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'mail_center_test', relatedEntityId: user.id });
+  return c.json({ ...result, status: result.sent ? 'sent' : 'failed', subject });
 });
 
 app.get('/admin/dashboard', requireAuth, async (c) => {

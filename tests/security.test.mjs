@@ -100,7 +100,8 @@ test('quote delivery uses a locked snapshot, notification sender and support rep
   assert.match(source, /support@maxcine\.cn/);
   assert.match(source, /function escapeHtml/);
   assert.match(source, /escapeHtml\(snapshot\.customerDescription/);
-  assert.match(source, /【请勿回复】MaxCINE产品服务报告书/);
+  assert.match(source, /sendViaMailCenter/);
+  assert.match(source, /mailSubject\('after_sales_quote'/);
   assert.match(source, /此邮件由 MaxCINE 系统自动发送，请勿回复/);
   assert.match(dbSource, /CAS-\$\{token\.slice\(0, 5\)\}-\$\{token\.slice\(5, 10\)\}/);
   assert.doesNotMatch(adminUiSource, /打印 \/ 保存 PDF/);
@@ -108,6 +109,8 @@ test('quote delivery uses a locked snapshot, notification sender and support rep
   assert.match(emailSource, /Idempotency-Key/);
   assert.match(emailSource, /reply_to/);
   assert.match(emailSource, /邮件服务未配置/);
+  assert.match(emailSource, /【STAGING】/);
+  assert.match(source, /【请勿回复】MaxCINE 服务中心/);
   assert.match(migration, /READY_FOR_REVIEW/);
   assert.match(migration, /SEND_FAILED/);
   assert.match(migration, /idx_after_sales_quote_email_idempotency/);

@@ -369,6 +369,18 @@ export const confirmQuoteSendSchema = z.object({
   idempotencyKey: z.string().uuid()
 });
 
+export const mailTemplateKeySchema = z.enum(['system_test', 'after_sales_quote', 'service_report', 'shipment_notice', 'password_reset']);
+
+export const mailTestSchema = z.object({
+  template: mailTemplateKeySchema.default('system_test'),
+  recipient: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
+  idempotencyKey: z.string().uuid()
+});
+
+export const mailPreviewSchema = z.object({
+  template: mailTemplateKeySchema.default('system_test')
+});
+
 export const adminDamageReviewSchema = z.object({
   inspectionId: z.string().trim().min(1).max(120),
   finalDecision: z.enum(['保修内免费处理', '保外收费维修', '收费更换部件', '单独销售部件', '无故障退回', '拒绝保修', '整机更换', '其他']),

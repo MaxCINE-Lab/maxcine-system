@@ -85,7 +85,8 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
         ['经销商与店铺', '/system/admin/dealers'],
         ['售后管理', '/system/admin/after-sales'],
         ['用户与权限', '/system/admin/users'],
-        ['审计记录', '/system/admin/audit']
+        ['审计记录', '/system/admin/audit'],
+        ['系统设置', '/system/admin/mail-center']
       ]
     });
   }
@@ -119,6 +120,7 @@ export function systemNavActive(path: string, href: string): boolean {
     || (href === '/system/admin/products' && path.startsWith('/system/admin/inventory'))
     || (href === '/system/admin/dealers' && (path.startsWith('/system/admin/dealers') || path.startsWith('/system/admin/stores')))
     || (href === '/system/admin/orders' && path.startsWith('/system/admin/order/'))
+    || (href === '/system/admin/mail-center' && path.startsWith('/system/admin/mail-center'))
     || (href === '/system/warehouse' && path.startsWith('/system/warehouse'))
     || (href === '/system/customer-risk' && path.startsWith('/system/customer-risk'))
     || (href === '/system/orders' && path.startsWith('/system/orders/'))

@@ -250,7 +250,7 @@ export function OperationsPortal({ user, route, logout }: Props) {
     return <Orders user={user} route={warehouseRoute} logout={logout} warehouse />;
   }
   if (path.startsWith('/system/admin/assets')) return <GsxPortal user={user} route={route} logout={logout} />;
-  if (path === '/system/admin/products' || path === '/system/admin/dealers' || path === '/system/admin/stores' || path === '/system/admin/users' || path === '/system/admin/after-sales') return <AdminManagementPortal user={user} route={route} logout={logout} />;
+  if (path === '/system/admin/products' || path === '/system/admin/dealers' || path === '/system/admin/stores' || path === '/system/admin/users' || path === '/system/admin/after-sales' || path === '/system/admin/mail-center') return <AdminManagementPortal user={user} route={route} logout={logout} />;
   if (path === '/system/admin/inventory') return <Inventory user={user} route={route} logout={logout} />;
   if (path === '/system/notifications') return <Notifications user={user} route={route} logout={logout} />;
   if (path === '/system/admin') return <AdminDashboard user={user} route={route} logout={logout} />;
