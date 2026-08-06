@@ -14,5 +14,5 @@ export default defineConfig({
       }
     }
   },
-  build: { sourcemap: true }
+  build: { sourcemap: process.env.VITE_ENABLE_SOURCEMAP === 'true' }
 });

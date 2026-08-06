@@ -5,6 +5,7 @@ export type Env = {
   ASSETS: R2Bucket;
   SESSION_SECRET: string;
   APP_ORIGIN: string;
+  COOKIE_SAMESITE?: 'Lax' | 'None' | 'Strict';
   EMAIL_PROVIDER: 'mock' | 'resend' | 'ses';
   RESEND_API_KEY?: string;
   NOTIFICATION_EMAIL_FROM?: string;

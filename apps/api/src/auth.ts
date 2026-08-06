@@ -54,15 +54,19 @@ export async function verifySessionToken(token: string, secret: string): Promise
 export async function verifyPassword(password: string, storedHash: string): Promise<boolean> {
   const [algorithm, iterationsText, saltText, hashText] = storedHash.split('$');
   const iterations = Number(iterationsText);
-  if (algorithm !== 'pbkdf2' || !Number.isInteger(iterations) || iterations < 210000 || !saltText || !hashText) return false;
+  if (algorithm !== 'pbkdf2' || !Number.isInteger(iterations) || iterations < 100000 || !saltText || !hashText) return false;
   const salt = fromBase64Url(saltText);
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
-  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations }, key, 256);
-  return constantTimeEqual(toBase64Url(new Uint8Array(bits)), hashText);
+  try {
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations }, key, 256);
+    return constantTimeEqual(toBase64Url(new Uint8Array(bits)), hashText);
+  } catch {
+    return false;
+  }
 }
 
 export async function hashPassword(password: string): Promise<string> {
-  const iterations = 210000;
+  const iterations = 100000;
   const salt = crypto.getRandomValues(new Uint8Array(16));
   const key = await crypto.subtle.importKey('raw', encoder.encode(password), 'PBKDF2', false, ['deriveBits']);
   const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt: salt as unknown as BufferSource, iterations }, key, 256);

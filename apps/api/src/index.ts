@@ -902,12 +902,16 @@ app.post('/auth/login', async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'auth.login', entityType: 'user', entityId: user.id, requestId: c.get('requestId') })
   ]);
   const isSecure = new URL(c.req.url).protocol === 'https:';
-  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${isSecure ? '; Secure' : ''}`);
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = isSecure || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
   return c.json({ user: sessionUser });
 });
 
 app.post('/auth/logout', requireAuth, (c) => {
-  c.header('Set-Cookie', 'mc_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = new URL(c.req.url).protocol === 'https:' || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=0${secure ? '; Secure' : ''}`);
   return c.body(null, 204);
 });
 

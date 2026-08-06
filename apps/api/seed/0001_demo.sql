@@ -135,12 +135,12 @@ INSERT INTO dealers (id, code, name, province) VALUES
 
 -- The legacy role/dealer_id values below are non-authoritative compatibility data.
 INSERT INTO users (id, email, password_hash, name, role, dealer_id) VALUES
-  ('20000000-0000-4000-8000-000000000001', 'yukyinchew@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '周旭彦', 'admin', NULL),
-  ('20000000-0000-4000-8000-000000000002', 'warehouse@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '仓库管理员', 'warehouse', NULL),
-  ('20000000-0000-4000-8000-000000000003', 'ziyuesun@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '孙梓越', 'dealer', '10000000-0000-4000-8000-000000000002'),
-  ('20000000-0000-4000-8000-000000000004', 'yuxiangchen@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '陈宇翔', 'dealer', '10000000-0000-4000-8000-000000000003'),
-  ('20000000-0000-4000-8000-000000000005', 'finestormray@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '嵇子睿', 'dealer', '10000000-0000-4000-8000-000000000004'),
-  ('20000000-0000-4000-8000-000000000006', 'ericzhu@maxcine.cn', 'pbkdf2$210000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$xNoUJwieXoerbu4oSePzgxrbxlz4-y0Fvn8IU1q5wuU', '朱宇恒', 'dealer', '10000000-0000-4000-8000-000000000005');
+  ('20000000-0000-4000-8000-000000000001', 'yukyinchew@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '周旭彦', 'admin', NULL),
+  ('20000000-0000-4000-8000-000000000002', 'warehouse@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '仓库管理员', 'warehouse', NULL),
+  ('20000000-0000-4000-8000-000000000003', 'ziyuesun@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '孙梓越', 'dealer', '10000000-0000-4000-8000-000000000002'),
+  ('20000000-0000-4000-8000-000000000004', 'yuxiangchen@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '陈宇翔', 'dealer', '10000000-0000-4000-8000-000000000003'),
+  ('20000000-0000-4000-8000-000000000005', 'finestormray@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '嵇子睿', 'dealer', '10000000-0000-4000-8000-000000000004'),
+  ('20000000-0000-4000-8000-000000000006', 'ericzhu@maxcine.cn', 'pbkdf2$100000$bWF4Y2luZS1kZW1vLXNlZWQtc2FsdC0yMDI2$Zu6hN0ykbulzeEsOohNiW0thgx_RZZqOoiRQABnvjxE', '朱宇恒', 'dealer', '10000000-0000-4000-8000-000000000005');
 
 INSERT INTO user_roles (user_id, role_id, assigned_by) VALUES
   ('20000000-0000-4000-8000-000000000001', '21000000-0000-4000-8000-000000000001', '20000000-0000-4000-8000-000000000001'),
