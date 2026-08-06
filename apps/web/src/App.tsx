@@ -92,6 +92,14 @@ function SystemShell({ user, children, title, subtitle }: { user: SessionUser; c
   return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><AccountMenu user={user} logout={() => void signOut()} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><SystemNavigation user={user} route={location.hash.slice(1) || '/system/dashboard'} onNavigate={() => setOpen(false)} /><a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
 }
 
+function EnvironmentBadge() {
+  const envName = import.meta.env.VITE_APP_ENV;
+  const host = location.hostname;
+  const isStaging = envName === 'staging' || host.includes('maxcine-web-staging') || host.endsWith('.pages.dev');
+  if (!isStaging) return null;
+  return <div className="staging-badge" aria-label="当前为测试环境">测试环境</div>;
+}
+
 function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -227,5 +235,5 @@ export function App() {
     if (route.startsWith('/system')) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [route]);
   const logout = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); location.hash = '#/login'; } };
-  return <><AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />{user && route.startsWith('/system') && <EmployeeWatermark user={user} />}</>;
+  return <><EnvironmentBadge /><AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />{user && route.startsWith('/system') && <EmployeeWatermark user={user} />}</>;
 }
