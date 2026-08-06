@@ -542,6 +542,7 @@ type QuoteSnapshot = {
   paymentInstructions: string;
   fromEmail: string;
   replyToEmail: string;
+  logoUrl?: string;
   pdfObjectKey: string | null;
 };
 
@@ -549,12 +550,13 @@ function moneyText(value: number): string {
   return `¥${(value / 100).toFixed(2)}`;
 }
 
-function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string } {
+function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string; logoUrl: string } {
   return {
     address: env.NOTIFICATION_EMAIL_FROM || 'notification@maxcine.cn',
     name: env.NOTIFICATION_EMAIL_NAME || 'MaxCINE 通知中心',
     replyTo: env.SUPPORT_EMAIL_REPLY_TO || 'support@maxcine.cn',
-    replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持'
+    replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持',
+    logoUrl: `${env.APP_ORIGIN || 'https://maxcine-web-staging.pages.dev'}/assets/quote-logo.png`
   };
 }
 
@@ -573,7 +575,7 @@ function quoteHtml(snapshot: QuoteSnapshot): string {
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>产品服务报告书 ${escapeHtml(snapshot.caseNumber)}</title></head>
   <body style="margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
   <main style="max-width:760px;margin:0 auto;padding:28px 14px"><section style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden">
-  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="https://maxcine.cn/assets/maxcine-logo-on-light.png" alt="MaxCINE" width="168" style="display:block;width:168px;max-width:48%;height:auto;margin-bottom:26px"><h1 style="margin:0 0 8px;font-size:26px;line-height:1.25">产品服务报告书</h1><p style="margin:0;color:#6b7280;font-size:14px">案例号 ${escapeHtml(snapshot.caseNumber)}</p></header>
+  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="${escapeHtml(snapshot.logoUrl || 'https://maxcine-web-staging.pages.dev/assets/quote-logo.png')}" alt="MaxCINE" width="188" style="display:block;width:188px;max-width:54%;height:auto;margin-bottom:26px"><h1 style="margin:0 0 8px;font-size:26px;line-height:1.25">产品服务报告书</h1><p style="margin:0;color:#6b7280;font-size:14px">案例号 ${escapeHtml(snapshot.caseNumber)}</p></header>
   <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 12px;font-size:17px">案例详情</h2><table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px">${detailRow('案例号', snapshot.caseNumber)}${detailRow('报告日期', snapshot.reportDate)}${detailRow('客户', snapshot.customerName)}${detailRow('产品', `${snapshot.productName} ${snapshot.productVersion}`.trim())}${detailRow('产品 SN', snapshot.serialNumber)}${detailRow('检测时间', snapshot.inspectedAt)}${detailRow('保障状态', snapshot.warrantyStatus)}${detailRow('服务站点', snapshot.serviceCenter)}${detailRow('检测工程师', snapshot.engineer)}</table></section>
   <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 10px;font-size:17px">用户问题描述</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.customerDescription || '暂无数据')}</p><h2 style="margin:24px 0 10px;font-size:17px">检测结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.diagnosisSummary)}</p><h2 style="margin:24px 0 10px;font-size:17px">定责结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.liabilityResult || '由 MaxCINE 管理员复核确认')}</p><h2 style="margin:24px 0 10px;font-size:17px">最终处理方案</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.finalSolution)}</p></section>
   <section style="padding:24px 20px 28px"><h2 style="margin:0 14px 14px;font-size:17px">消耗物料和服务明细</h2><div style="overflow-x:auto"><table style="width:100%;min-width:680px;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f9fafb;color:#4b5563"><th style="padding:10px 8px;text-align:left">料号</th><th style="padding:10px 8px;text-align:left">项目</th><th style="padding:10px 8px">数量</th><th style="padding:10px 8px;text-align:right">单价</th><th style="padding:10px 8px;text-align:right">服务费</th><th style="padding:10px 8px;text-align:right">折扣</th><th style="padding:10px 8px;text-align:right">小计</th><th style="padding:10px 8px;text-align:left">说明</th></tr></thead><tbody>${rows}</tbody></table></div>
@@ -731,6 +733,7 @@ function quoteSnapshotFor(input: {
     paymentInstructions: input.paymentInstructions,
     fromEmail: input.sender.address,
     replyToEmail: input.sender.replyTo,
+    logoUrl: input.sender.logoUrl,
     pdfObjectKey: null
   };
 }

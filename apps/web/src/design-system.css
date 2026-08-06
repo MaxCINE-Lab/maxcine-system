@@ -4,6 +4,30 @@
   font-family: var(--mc-font);
 }
 
+.login-page {
+  position: relative;
+  min-height: 100vh;
+  overflow: hidden;
+  background:
+    linear-gradient(180deg, rgba(245,248,252,.18), rgba(15,23,42,.34)),
+    url('/assets/login-fuji-snow.svg') center / cover no-repeat;
+  color: #111827;
+}
+
+.login-page::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(circle at 50% 42%, rgba(255,255,255,.1), transparent 36%),
+    linear-gradient(90deg, rgba(15,23,42,.32), rgba(255,255,255,.04) 48%, rgba(15,23,42,.2));
+  pointer-events: none;
+}
+
+.login-page > .logo {
+  display: none !important;
+}
+
 .system {
   min-height: 100vh;
   padding-left: 264px;
@@ -435,6 +459,30 @@
   border-radius: var(--mc-radius-control);
   background: var(--mc-white);
   color: var(--mc-text);
+}
+
+.login-page .login-card {
+  position: relative;
+  z-index: 1;
+  border-color: rgba(255,255,255,.66);
+  background: rgba(255,255,255,.72);
+  -webkit-backdrop-filter: blur(22px) saturate(150%);
+  backdrop-filter: blur(22px) saturate(150%);
+  box-shadow: 0 24px 70px rgba(31,41,55,.22), inset 0 1px 0 rgba(255,255,255,.82);
+  color: #111827;
+}
+
+.login-page .login-card .eyebrow {
+  color: rgba(17,24,39,.56);
+}
+
+.login-page .login-card > p,
+.login-page .login-card label {
+  color: rgba(17,24,39,.68);
+}
+
+.login-page .login-card .button {
+  width: 100%;
 }
 
 .system :is(input, textarea)::placeholder,
