@@ -26,6 +26,7 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
   private overlay: HTMLDivElement | null = null;
   private active = false;
   private zxingControls: IScannerControls | null = null;
+  private readonly scanTimeoutMs = 90000;
 
   isSupported(): boolean {
     return Boolean(navigator.mediaDevices?.getUserMedia);
@@ -74,7 +75,7 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
           resolve();
           return;
         }
-        if (Date.now() - startedAt > 45000) {
+        if (Date.now() - startedAt > this.scanTimeoutMs) {
           this.stop();
           reject(new Error('未识别到条码，请调整光线或改用手动输入。'));
           return;
@@ -116,32 +117,37 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     ]);
     const reader = new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 120 });
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
+      const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        window.clearTimeout(timeout);
+        if (error) reject(error);
+        else resolve();
+      };
       const timeout = window.setTimeout(() => {
         this.stop();
-        reject(new Error('未识别到条码，请调整光线或改用手动输入。'));
-      }, 45000);
+        finish(new Error('未识别到条码，请调整光线或改用手动输入。'));
+      }, this.scanTimeoutMs);
       reader.decodeFromVideoElement(video, (result, error, controls) => {
         this.zxingControls = controls;
         if (!this.active) {
-          window.clearTimeout(timeout);
-          resolve();
+          finish();
           return;
         }
         const value = result?.getText().trim();
         if (value) {
-          window.clearTimeout(timeout);
           onResult({ value, source: 'camera' });
           this.stop();
-          resolve();
-        } else if (error && error.name !== 'NotFoundException') {
-          window.clearTimeout(timeout);
-          this.stop();
-          reject(new Error('摄像头扫码失败，请改用扫描枪或手动输入。'));
+          finish();
+        } else if (error) {
+          // ZXing emits ordinary per-frame errors while the camera is still
+          // searching (NotFound, Checksum, Format, etc.). They are not fatal:
+          // keep the preview open until a result, cancel, or timeout.
         }
       }).catch((error: unknown) => {
-        window.clearTimeout(timeout);
         this.stop();
-        reject(error instanceof Error ? error : new Error('摄像头扫码失败，请改用扫描枪或手动输入。'));
+        finish(error instanceof Error ? error : new Error('摄像头扫码失败，请改用扫描枪或手动输入。'));
       });
     });
   }
