@@ -10,7 +10,7 @@
   overflow: hidden;
   background:
     linear-gradient(180deg, rgba(245,248,252,.18), rgba(15,23,42,.34)),
-    url('/assets/login-fuji-snow.svg') center / cover no-repeat;
+    url('/assets/login-fuji-snow.png') center / cover no-repeat;
   color: #111827;
 }
 

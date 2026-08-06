@@ -111,7 +111,7 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
     catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
-  return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">STAFF ACCESS</span><h1>登录</h1><p>请输入已授权的 AD 账号和密码。</p><label>AD账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
+  return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">STAFF ACCESS</span><h1>大中枢访问控制器</h1><p>请输入已授权的 AD 账号和密码。</p><label>AD账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
 }
 
 function Dashboard({ user }: { user: SessionUser }) {
