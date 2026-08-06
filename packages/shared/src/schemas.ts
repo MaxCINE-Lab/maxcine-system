@@ -262,7 +262,11 @@ export const adminReviewAfterSalesSchema = z.object({
   reason: z.string().trim().max(1000).default(''),
   serviceCenterId: z.string().uuid().optional().nullable(),
   requiresShipment: z.boolean().default(true),
-  internalNote: z.string().trim().max(2000).default('')
+  internalNote: z.string().trim().max(2000).default(''),
+  contactName: z.string().trim().max(80).optional(),
+  contactPhone: z.string().trim().max(32).optional(),
+  contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).optional(),
+  contactAddress: z.string().trim().max(500).optional()
 }).superRefine((value, context) => {
   if (!value.accepted && !value.reason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: '不受理时必须填写原因' });
   if (value.accepted && value.requiresShipment && !value.serviceCenterId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['serviceCenterId'], message: '需要寄修时必须分配授权服务中心' });

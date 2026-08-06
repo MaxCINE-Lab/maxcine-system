@@ -2107,9 +2107,16 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能进行初审');
   const statements: D1PreparedStatement[] = [];
+  const contactUpdates: string[] = [];
+  const contactParams: unknown[] = [];
+  if (input.contactName !== undefined) { contactUpdates.push('contact_name = ?'); contactParams.push(input.contactName); }
+  if (input.contactPhone !== undefined) { contactUpdates.push('contact_phone = ?'); contactParams.push(input.contactPhone); }
+  if (input.contactEmail !== undefined) { contactUpdates.push('customer_email = ?'); contactParams.push(input.contactEmail); }
+  if (input.contactAddress !== undefined) { contactUpdates.push('customer_address = ?'); contactParams.push(input.contactAddress); }
+  const contactSql = contactUpdates.length ? `${contactUpdates.join(', ')}, ` : '';
   if (!input.accepted) {
     statements.push(
-      c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.reason, user.id, user.id, serviceCase.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, input.reason, user.id, user.id, serviceCase.id),
       c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_rejected', '管理员退回售后工单', ?, ?)`).bind(id(), serviceCase.id, input.reason, user.id)
     );
   } else {
@@ -2121,7 +2128,7 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
         ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
     }
     statements.push(
-      c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(nextStage, Number(input.requiresShipment), input.internalNote, user.id, user.id, serviceCase.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, nextStage, Number(input.requiresShipment), input.internalNote, user.id, user.id, serviceCase.id),
       c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_accepted', '管理员受理售后工单', ?, ?)`).bind(id(), serviceCase.id, input.requiresShipment ? '等待客户寄修' : '无需寄修，进入报价流程', user.id)
     );
   }

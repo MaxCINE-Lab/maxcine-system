@@ -458,6 +458,10 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const [centerId, setCenterId] = useState('');
   const [requiresShipment, setRequiresShipment] = useState(true);
   const [reviewNote, setReviewNote] = useState('');
+  const [reviewContactName, setReviewContactName] = useState('');
+  const [reviewContactPhone, setReviewContactPhone] = useState('');
+  const [reviewContactEmail, setReviewContactEmail] = useState('');
+  const [reviewContactAddress, setReviewContactAddress] = useState('');
   const [inboundCarrier, setInboundCarrier] = useState('顺丰速运');
   const [inboundTracking, setInboundTracking] = useState('');
   const [inspectionNote, setInspectionNote] = useState('');
@@ -482,6 +486,10 @@ function AfterSalesV2({ user, route, logout }: Props) {
       const detail = await api<ServiceDetailV2>(`/after-sales/${caseId}`);
       setSelected(detail);
       setCenterId(detail.case.serviceCenterId || '');
+      setReviewContactName(detail.case.contactName || '');
+      setReviewContactPhone(detail.case.contactPhone || '');
+      setReviewContactEmail(detail.case.contactEmail || '');
+      setReviewContactAddress(detail.case.contactAddress || '');
       setInboundCarrier(detail.case.inboundCarrier || '顺丰速运');
       setInboundTracking(detail.case.inboundTrackingNumber || '');
       setFinalDecision(detail.case.finalDecision || '保外收费维修');
@@ -565,7 +573,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
     if (!accepted && reviewNote.trim().length < 2) return setNotice({ tone: 'error', text: '不受理时必须填写原因。' });
     if (accepted && requiresShipment && !centerId) return setNotice({ tone: 'error', text: '需要寄修时必须选择授权服务中心。' });
     try {
-      await api(`/after-sales/${selected.case.id}/admin-review`, { method: 'POST', body: JSON.stringify({ accepted, reason: reviewNote, serviceCenterId: centerId || null, requiresShipment, internalNote: reviewNote }) });
+      await api(`/after-sales/${selected.case.id}/admin-review`, { method: 'POST', body: JSON.stringify({ accepted, reason: reviewNote, serviceCenterId: centerId || null, requiresShipment, internalNote: reviewNote, contactName: reviewContactName, contactPhone: reviewContactPhone, contactEmail: reviewContactEmail, contactAddress: reviewContactAddress }) });
       setNotice({ tone: 'success', text: accepted ? '工单已受理。' : '工单已退回补充。' });
       await open(selected.case.id);
       void load();
@@ -674,7 +682,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
         <h2>{selected.case.caseNo} · {caseTypeText[selected.case.caseType] ?? selected.case.subject}</h2>
         <dl className="detail-grid"><dt>当前阶段</dt><dd>{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}</dd><dt>经销商</dt><dd>{selected.case.dealerName}</dd><dt>店铺</dt><dd>{selected.case.storeName || '—'}</dd><dt>产品</dt><dd>{selected.case.productName || '—'} {selected.case.productVersion || ''}</dd><dt>SN</dt><dd>{selected.case.serialNumber || '—'}</dd><dt>客户</dt><dd>{selected.case.contactName || '—'} / {selected.case.contactPhone || '—'} / {selected.case.contactEmail || '—'}</dd><dt>客户地址</dt><dd>{selected.case.contactAddress || '—'}</dd><dt>寄修单号</dt><dd>{selected.case.inboundCarrier || '—'} {selected.case.inboundTrackingNumber || ''}</dd></dl>
         <section><h3>问题资料</h3><p>{selected.case.description}</p><p className="hint">用户备注：{selected.case.customerNote || '—'}；内部备注：{selected.case.internalNote || '—'}</p></section>
-        {['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(selected.case.serviceStage) && <section><h3>管理员初审</h3><label>授权服务中心<select value={centerId} onChange={(event) => setCenterId(event.target.value)}><option value="">请选择服务中心</option>{options?.serviceCenters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><input type="checkbox" checked={requiresShipment} onChange={(event) => setRequiresShipment(event.target.checked)} /> 需要客户寄修</label><label>审核说明<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label><div className="action-list"><Button onClick={() => void adminReview(true)}>受理并分配</Button><Button danger onClick={() => void adminReview(false)}>不受理 / 退回补充</Button></div></section>}
+        {['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(selected.case.serviceStage) && <section><h3>管理员初审</h3><div className="form-layout"><label>客户姓名<input value={reviewContactName} onChange={(event) => setReviewContactName(event.target.value)} placeholder="可在审核时修正" /></label><label>客户电话<input value={reviewContactPhone} onChange={(event) => setReviewContactPhone(event.target.value)} placeholder="可在审核时修正" /></label><label>客户邮箱<input type="email" value={reviewContactEmail} onChange={(event) => setReviewContactEmail(event.target.value)} placeholder="用于后续报价邮件" /></label><label>客户地址<textarea value={reviewContactAddress} onChange={(event) => setReviewContactAddress(event.target.value)} placeholder="本次售后联系和寄返地址" /></label></div><label>授权服务中心<select value={centerId} onChange={(event) => setCenterId(event.target.value)}><option value="">请选择服务中心</option>{options?.serviceCenters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><input type="checkbox" checked={requiresShipment} onChange={(event) => setRequiresShipment(event.target.checked)} /> 需要客户寄修</label><label>审核说明<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label><div className="action-list"><Button onClick={() => void adminReview(true)}>受理并分配</Button><Button danger onClick={() => void adminReview(false)}>不受理 / 退回补充</Button></div></section>}
         {selected.case.serviceStage === 'WAITING_CUSTOMER_SHIPMENT' && <section><h3>录入寄修单号</h3><label>快递公司<input value={inboundCarrier} onChange={(event) => setInboundCarrier(event.target.value)} /></label><label>寄修单号<input value={inboundTracking} onChange={(event) => setInboundTracking(event.target.value)} /></label><Button onClick={() => void saveInbound()}>保存寄修单号</Button></section>}
         <section><h3>工程师检测记录</h3>{selected.inspections.map((inspection) => <div key={inspection.id}><p><strong>检测版本 {inspection.version}</strong> · {inspection.submittedByName} · {date(inspection.submittedAt)} · {inspection.status}<br />{inspection.conclusion}；建议：{inspection.suggestedAction}；工程师参考金额：{money(inspection.materialSuggestedTotalCents ?? 0)}</p><dl className="detail-grid"><dt>测试结果</dt><dd>{inspection.testResult || '—'}</dd><dt>影响部件</dt><dd>{inspection.affectedParts || '—'}</dd><dt>工程师备注</dt><dd>{inspection.engineerNote || '—'}</dd><dt>审核退回意见</dt><dd>{inspection.reviewNote || '—'}</dd></dl><div className="table-wrap"><table><thead><tr><th>故障部位</th><th>损坏类型</th><th>原因</th><th>严重程度</th><th>建议处理</th><th>工程师说明</th><th>证据</th></tr></thead><tbody>{selected.faultChains.filter((chain) => chain.inspectionId === inspection.id).map((chain) => <tr key={chain.id}><td>{chain.faultPart}</td><td>{chain.damageType}</td><td>{chain.causeType}</td><td>{chain.severity}</td><td>{chain.recommendedAction}</td><td>{chain.engineerNote || '—'}</td><td>{chain.evidence || '—'}</td></tr>)}</tbody></table></div></div>)}</section>
         {selected.case.serviceStage === 'PENDING_ADMIN_INSPECTION_REVIEW' && <section><h3>审核检测结果</h3><label>最终处理方案<select value={finalDecision} onChange={(event) => setFinalDecision(event.target.value)}>{finalDecisionOptions.map((item) => <option key={item}>{item}</option>)}</select></label><label>审核意见<textarea value={inspectionNote} onChange={(event) => setInspectionNote(event.target.value)} /></label><div className="action-list"><Button onClick={() => void reviewInspection(true)}>审核通过</Button><Button danger onClick={() => void reviewInspection(false)}>退回补充</Button></div></section>}
