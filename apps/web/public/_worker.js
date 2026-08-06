@@ -1,3 +1,5 @@
+/* global URL, Headers, Request, fetch */
+
 const DEFAULT_API_ORIGIN = 'https://maxcine-api-staging.maxcine-lab.workers.dev';
 const DEFAULT_APP_ORIGIN = 'https://maxcine-web-staging.pages.dev';
 
