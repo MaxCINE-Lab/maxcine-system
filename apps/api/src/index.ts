@@ -599,7 +599,7 @@ async function resendDomainStatus(env: Env): Promise<{ status: string; detail: s
     const response = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } });
     const payload = await response.json().catch(() => ({})) as { data?: Array<{ name?: string; status?: string }> };
     const domain = payload.data?.find((item) => item.name?.toLowerCase() === 'maxcine.cn');
-    return domain ? { status: domain.status || '未知', detail: `maxcine.cn：${domain.status || '未知'}` } : { status: '未找到', detail: 'Resend 账号中未找到 maxcine.cn 域名。' };
+    return domain ? { status: domain.status || '未知', detail: `maxcine.cn：${domain.status || '未知'}` } : { status: '需在 Resend 后台确认', detail: '当前 Resend Key 可能仅有发送权限，无法读取域名列表；请以 Resend 后台域名验证状态和测试邮件发送结果为准。' };
   } catch {
     return { status: '检查失败', detail: '无法连接 Resend 域名接口。' };
   }
