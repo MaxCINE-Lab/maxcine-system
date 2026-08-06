@@ -2490,6 +2490,22 @@ body:has(.system) {
   font-size: 12px;
 }
 
+.quote-recipient-field {
+  display: grid;
+  grid-template-columns: auto minmax(180px, 1fr);
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+}
+
+.quote-recipient-field input {
+  min-height: 30px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: var(--mc-radius-sm);
+  font-size: 12px;
+}
+
 .quote-preview-content {
   min-height: 0;
   overflow: hidden;
