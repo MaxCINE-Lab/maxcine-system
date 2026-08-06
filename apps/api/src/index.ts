@@ -519,6 +519,8 @@ type QuoteSnapshot = {
   customerPhone: string;
   customerEmail: string;
   customerAddress: string;
+  caseCustomerNote: string;
+  caseInternalNote: string;
   productName: string;
   productVersion: string;
   serialNumber: string;
@@ -526,6 +528,10 @@ type QuoteSnapshot = {
   serviceCenter: string;
   engineer: string;
   inspectedAt: string;
+  engineerNote: string;
+  testResult: string;
+  faultCause: string;
+  suggestedAction: string;
   customerDescription: string;
   diagnosisSummary: string;
   liabilityResult: string;
@@ -695,6 +701,8 @@ type QuoteCaseContext = {
   customerEmail: string;
   customerAddress: string;
   customerDescription: string;
+  caseCustomerNote: string;
+  caseInternalNote: string;
   productName: string;
   productVersion: string;
   serialNumber: string;
@@ -704,16 +712,23 @@ type QuoteCaseContext = {
   serviceCenter: string;
   engineer: string;
   inspectedAt: string;
+  engineerNote: string;
+  testResult: string;
+  faultCause: string;
+  suggestedAction: string;
 };
 
 async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCaseContext> {
   const value = await one<QuoteCaseContext>(db, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.case_type AS caseType,
     COALESCE(after_sales_cases.contact_name, '') AS customerName, COALESCE(after_sales_cases.contact_phone, '') AS customerPhone,
-    after_sales_cases.customer_email AS customerEmail, after_sales_cases.customer_address AS customerAddress, after_sales_cases.description AS customerDescription,
+    COALESCE(after_sales_cases.customer_email, '') AS customerEmail, COALESCE(after_sales_cases.customer_address, '') AS customerAddress, COALESCE(after_sales_cases.description, '') AS customerDescription,
+    COALESCE(after_sales_cases.customer_note, '') AS caseCustomerNote, COALESCE(after_sales_cases.internal_note, '') AS caseInternalNote,
     COALESCE(products.name, assets.product_name_snapshot, '') AS productName, COALESCE(products.product_version, assets.version_snapshot, '') AS productVersion,
     COALESCE(after_sales_cases.serial_number, assets.current_sn, '') AS serialNumber, assets.warranty_start_at AS warrantyStartAt,
     assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, COALESCE(service_centers.name, '') AS serviceCenter,
-    COALESCE(engineer.name, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt
+    COALESCE(engineer.name, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt,
+    COALESCE(inspection.engineer_note, '') AS engineerNote, COALESCE(inspection.test_result, '') AS testResult,
+    COALESCE(inspection.fault_cause, '') AS faultCause, COALESCE(inspection.suggested_action, '') AS suggestedAction
     FROM after_sales_cases
     LEFT JOIN products ON products.id = after_sales_cases.product_id
     LEFT JOIN assets ON assets.id = after_sales_cases.asset_id
@@ -773,6 +788,8 @@ function quoteSnapshotFor(input: {
     customerPhone: input.context.customerPhone,
     customerEmail: input.context.customerEmail,
     customerAddress: input.context.customerAddress,
+    caseCustomerNote: input.context.caseCustomerNote,
+    caseInternalNote: input.context.caseInternalNote,
     productName: input.context.productName || 'MaxCINE 产品',
     productVersion: input.context.productVersion,
     serialNumber: input.context.serialNumber,
@@ -784,6 +801,10 @@ function quoteSnapshotFor(input: {
     serviceCenter: input.context.serviceCenter,
     engineer: input.context.engineer,
     inspectedAt: input.context.inspectedAt,
+    engineerNote: input.context.engineerNote,
+    testResult: input.context.testResult,
+    faultCause: input.context.faultCause,
+    suggestedAction: input.context.suggestedAction,
     customerDescription: input.context.customerDescription,
     diagnosisSummary: input.inspectionSummary,
     liabilityResult: input.finalDecision,
@@ -2100,7 +2121,7 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
         ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
     }
     statements.push(
-      c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, internal_note = CASE WHEN ? <> '' THEN ? ELSE internal_note END, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(nextStage, Number(input.requiresShipment), input.internalNote, user.id, input.internalNote, input.internalNote, user.id, serviceCase.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(nextStage, Number(input.requiresShipment), input.internalNote, user.id, user.id, serviceCase.id),
       c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_accepted', '管理员受理售后工单', ?, ?)`).bind(id(), serviceCase.id, input.requiresShipment ? '等待客户寄修' : '无需寄修，进入报价流程', user.id)
     );
   }
