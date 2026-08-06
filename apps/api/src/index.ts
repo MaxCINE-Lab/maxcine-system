@@ -2455,17 +2455,18 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
   if (!quote) throw notFound('未找到该报价');
   const serviceCase = await getCaseForAccess(c.env.DB, user, quote.caseId);
   if (!['READY_FOR_REVIEW', 'SEND_FAILED'].includes(quote.workflowStatus)) throw conflict(quote.workflowStatus === 'SENT' || quote.workflowStatus === 'SUPERSEDED' ? '该报价版本已发送并锁定' : '该报价当前不能发送');
-  if (!quote.customerEmail) throw conflict('该工单缺少客户邮箱，不能发送报价');
+  const recipientEmail = input.recipientEmail ?? quote.customerEmail;
+  if (!recipientEmail) throw conflict('请先填写本次收件邮箱，再发送产品服务报告书');
   const locked = await c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SENDING', status = 'created', confirmed_by = COALESCE(confirmed_by, ?),
     confirmed_at = COALESCE(confirmed_at, CURRENT_TIMESTAMP), locked_at = COALESCE(locked_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND workflow_status IN ('READY_FOR_REVIEW','SEND_FAILED')`).bind(user.id, quote.id).run();
   if ((locked.meta.changes ?? 0) !== 1) throw conflict('报价正在发送，请勿重复提交');
   const sender = notificationSender(c.env);
-  const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo };
+  const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo, customerEmail: recipientEmail };
   const deliveryHtml = quoteHtml(deliverySnapshot);
   const deliveryText = quoteText(deliverySnapshot);
   const subject = mailSubject('after_sales_quote', mailEnvironment(c.env), serviceCase.caseNo);
-  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: quote.customerEmail, subject, html: deliveryHtml, text: deliveryText, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
+  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: recipientEmail, subject, html: deliveryHtml, text: deliveryText, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
   const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
   const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
   const emailId = id();
@@ -2473,16 +2474,16 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
     c.env.DB.prepare(`INSERT INTO after_sales_quote_emails (id, quote_id, to_email, from_email, reply_to_email, subject, status, failure_reason, provider,
       provider_message_id, attempt_no, idempotency_key, email_html, email_text, sent_by, sent_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
-      .bind(emailId, quote.id, quote.customerEmail, sender.address, sender.replyTo, subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
+      .bind(emailId, quote.id, recipientEmail, sender.address, sender.replyTo, subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
         delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, deliveryHtml, deliveryText, user.id, delivery.sent ? 'sent' : 'failed'),
     c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = ?, status = ?, sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END,
-      html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, deliveryHtml, deliveryText, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
+      customer_email = ?, html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, recipientEmail, deliveryHtml, deliveryText, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(delivery.sent ? 'WAITING_CUSTOMER_CONFIRMATION' : 'PENDING_QUOTE', user.id, quote.caseId),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, ?, ?, ?, ?)`)
       .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? `${serviceCase.caseNo} 产品服务报告书已发送至客户邮箱` : delivery.failureReason, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1 } })
+    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, recipientEmail, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1 } })
   ];
   if (delivery.sent && quote.supersedesQuoteId) statements.push(c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SUPERSEDED', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_status = 'SENT'`).bind(quote.supersedesQuoteId));
   await c.env.DB.batch(statements);

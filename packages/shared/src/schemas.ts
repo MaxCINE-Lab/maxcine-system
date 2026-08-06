@@ -370,7 +370,8 @@ export const quoteDraftSchema = quoteSchema.extend({
 });
 
 export const confirmQuoteSendSchema = z.object({
-  idempotencyKey: z.string().uuid()
+  idempotencyKey: z.string().uuid(),
+  recipientEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()).optional()
 });
 
 export const mailTemplateKeySchema = z.enum(['system_test', 'after_sales_quote', 'service_report', 'shipment_notice', 'password_reset']);
