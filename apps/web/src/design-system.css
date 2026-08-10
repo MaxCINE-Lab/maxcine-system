@@ -222,6 +222,114 @@
   margin-top: auto;
 }
 
+.photo-upload-field {
+  display: grid;
+  gap: 10px;
+  padding: var(--mc-space-4);
+  border: 1px dashed var(--mc-border-strong);
+  border-radius: var(--mc-radius-md);
+  background: var(--mc-surface-muted);
+}
+
+.photo-upload-field strong {
+  color: var(--mc-text);
+  font-size: 14px;
+}
+
+.photo-upload-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--mc-space-2);
+  flex-wrap: wrap;
+  margin-top: auto;
+}
+
+.photo-upload-actions .button {
+  min-height: 38px;
+  padding: 0 var(--mc-space-4);
+}
+
+.camera-photo-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 120;
+  display: grid;
+  place-items: center;
+  padding: var(--mc-space-5);
+  background: rgb(17 24 39 / 58%);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.camera-photo-dialog {
+  width: min(920px, 100%);
+  max-height: min(90vh, 820px);
+  display: grid;
+  grid-template-rows: auto minmax(260px, 1fr) auto auto;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 64%);
+  border-radius: var(--mc-radius-xl);
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 0 28px 90px rgb(15 23 42 / 28%);
+}
+
+.camera-photo-header,
+.camera-photo-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mc-space-4);
+  padding: var(--mc-space-5);
+  background: rgb(255 255 255 / 78%);
+}
+
+.camera-photo-header h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.camera-photo-header p,
+.camera-photo-controls p {
+  margin: 4px 0 0;
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.camera-photo-header > button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-pill);
+  background: var(--mc-white);
+  color: var(--mc-text);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.camera-photo-video {
+  width: 100%;
+  min-height: 260px;
+  max-height: 56vh;
+  object-fit: contain;
+  background: #0f172a;
+}
+
+.camera-photo-controls {
+  display: grid;
+  gap: var(--mc-space-3);
+  padding: var(--mc-space-4) var(--mc-space-5);
+  border-top: 1px solid var(--mc-border);
+}
+
+.camera-photo-controls label {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: var(--mc-text-secondary);
+  font-size: 13px;
+}
+
 .system-top {
   height: 68px;
   left: 264px;
@@ -2671,6 +2779,14 @@ body:has(.system) {
   .operations-stats { grid-template-columns: 1fr; }
   .scan-field,
   .shipment-photo-grid { grid-template-columns: 1fr; }
+  .camera-photo-backdrop { padding: 0; }
+  .camera-photo-dialog {
+    width: 100%;
+    min-height: 100dvh;
+    max-height: 100dvh;
+    border-radius: 0;
+  }
+  .camera-photo-video { max-height: 52dvh; }
   .quick-fee-grid { grid-template-columns: 1fr 1fr; }
   .quote-selection-bar { align-items: stretch; flex-direction: column; }
   .quote-preview-dialog { width: min(96vw, 1320px); }

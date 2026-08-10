@@ -4,6 +4,7 @@ import type { SessionUser } from "@maxcine/shared";
 import { api, ApiClientError } from "./api";
 import { GsxPortal } from "./GsxPortal";
 import { AccountMenu, SystemNavigation } from "./systemNavigation";
+import { CameraPhotoButton } from "./CameraPhotoButton";
 
 type Notice = { tone: "error" | "success"; text: string } | null;
 type CaseRow = {
@@ -954,6 +955,31 @@ function CasePageV2({
       setNotice({ tone: "error", text: errorText(error) });
     }
   };
+  const photoUpload = (category: string, label: string) => (
+    <div className="photo-upload-field" key={category}>
+      <strong>{label}</strong>
+      <div className="photo-upload-actions">
+        <label className="button button--secondary">
+          选择图片
+          <input
+            hidden
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            onChange={(event) => {
+              void upload(category, event.target.files?.[0]);
+              event.currentTarget.value = "";
+            }}
+          />
+        </label>
+        <CameraPhotoButton
+          label="摄像头拍照"
+          fileNamePrefix={category}
+          onCapture={(file) => upload(category, file)}
+          onError={(text) => setNotice({ tone: "error", text })}
+        />
+      </div>
+    </div>
+  );
   const run = async (path: string, body?: unknown, text = "操作已保存。") => {
     try {
       await api(path, {
@@ -1122,36 +1148,9 @@ function CasePageV2({
             <h2>收货确认</h2>
             <p className="hint">收货照片和备注均为可选；如现场方便，建议上传便于后续核对。</p>
             <div className="form-layout">
-              <label>
-                外包装及面单照片
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) =>
-                    void upload("package_label", event.target.files?.[0])
-                  }
-                />
-              </label>
-              <label>
-                全部物品正面照片
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) =>
-                    void upload("received_items_front", event.target.files?.[0])
-                  }
-                />
-              </label>
-              <label>
-                全部物品反面照片
-                <input
-                  type="file"
-                  accept="image/png,image/jpeg,image/webp"
-                  onChange={(event) =>
-                    void upload("received_items_back", event.target.files?.[0])
-                  }
-                />
-              </label>
+              {photoUpload("package_label", "外包装及面单照片")}
+              {photoUpload("received_items_front", "全部物品正面照片")}
+              {photoUpload("received_items_back", "全部物品反面照片")}
             </div>
             <label>
               <input
@@ -1238,18 +1237,9 @@ function CasePageV2({
               </p>
             </section>
             <div className="form-layout">
-              {facePhotos.map(([category, label]) => (
-                <label key={category}>
-                  产品{label}照片
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    onChange={(event) =>
-                      void upload(category, event.target.files?.[0])
-                    }
-                  />
-                </label>
-              ))}
+              {facePhotos.map(([category, label]) =>
+                photoUpload(category, `产品${label}照片`),
+              )}
             </div>
             <label>
               故障是否复现
@@ -1575,16 +1565,7 @@ function CasePageV2({
                     }
                   />
                 </label>
-                <label>
-                  意外损坏照片
-                  <input
-                    type="file"
-                    accept="image/png,image/jpeg,image/webp"
-                    onChange={(event) =>
-                      void upload("accidental_damage", event.target.files?.[0])
-                    }
-                  />
-                </label>
+                {photoUpload("accidental_damage", "意外损坏照片")}
               </>
             )}
             <Button type="submit">提交检测结果</Button>
