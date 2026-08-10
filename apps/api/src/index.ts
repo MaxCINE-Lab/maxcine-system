@@ -69,6 +69,12 @@ function statusLabel(status: string): string {
   return ({ draft: '草稿', submitted: '待审核', approved: '审核通过', rejected: '审核未通过', picking: '配货中', packed: '已打包', shipped: '已发货', delivered: '已签收', cancelled: '已取消' } as Record<string, string>)[status] ?? status;
 }
 
+const shipmentPhotoRequirements = [
+  { category: 'box_sn', label: '产品盒面 SN 照片', help: '请拍到产品盒子表面和清晰 SN。' },
+  { category: 'packed_photo_1', label: '打包完成照片 1', help: '请拍摄打包完成后的外观。' },
+  { category: 'packed_photo_2', label: '打包完成照片 2', help: '请从另一个角度拍摄打包完成状态。' }
+] as const;
+
 function assertPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, permission)) throw forbidden();
 }
@@ -1539,14 +1545,15 @@ app.get('/orders/:id', requireAuth, async (c) => {
   const user = c.get('user');
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  const [items, shipment, overview] = await Promise.all([
+  const [items, shipment, overview, shipmentPhotos] = await Promise.all([
     all<OrderItemRow>(c.env.DB, `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
       products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents
       FROM order_items LEFT JOIN products ON products.id = order_items.product_id WHERE order_items.order_id = ?`, order.id),
     one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, CASE WHEN tracking_number LIKE 'NO-TRACKING-%' THEN '' ELSE tracking_number END AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id),
     one<{ storeName: string; createdByName: string; reviewedByName: string | null }>(c.env.DB, `SELECT stores.name AS storeName, creator.name AS createdByName, reviewer.name AS reviewedByName
       FROM orders JOIN stores ON stores.id = orders.store_id JOIN users AS creator ON creator.id = orders.created_by
-      LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id)
+      LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id),
+    all<{ category: string; fileName: string; contentType: string; dataUrl: string }>(c.env.DB, `SELECT category, original_filename AS fileName, content_type AS contentType, data_url AS dataUrl FROM shipment_photos WHERE order_id = ? ORDER BY created_at ASC`, order.id)
   ]);
   const serials = await all<{ id: string; productId: string; serialNumber: string; state: string; orderItemId: string }>(c.env.DB,
     `SELECT id, product_id AS productId, serial_number AS serialNumber, state, order_item_id AS orderItemId FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`, order.id);
@@ -1556,7 +1563,24 @@ app.get('/orders/:id', requireAuth, async (c) => {
     ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
     ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
   ];
-  return c.json({ order: { ...orderForViewer(user, order), ...overview }, items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })), serials, shipment, timeline });
+  return c.json({
+    order: { ...orderForViewer(user, order), ...overview },
+    items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })),
+    serials,
+    shipment,
+    shipmentPhotos: shipmentPhotos.map((photo) => {
+      const requirement = shipmentPhotoRequirements.find((item) => item.category === photo.category);
+      return {
+        category: photo.category,
+        label: requirement?.label ?? '出库照片',
+        help: requirement?.help ?? '已提交的出库照片。',
+        fileName: photo.fileName,
+        contentType: photo.contentType,
+        dataUrl: photo.dataUrl
+      };
+    }),
+    timeline
+  });
 });
 
 app.get('/orders/:id/available-serials', requireAuth, async (c) => {
@@ -2113,7 +2137,7 @@ app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_uploaded', '上传售后图片', ?, ?)`).bind(id(), serviceCase.id, `${category}${photoSlot ? ` / ${photoSlot}` : ''}`, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_upload', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { category, photoSlot, key } })
   ]);
-  return c.json({ id: attachmentId, objectKey: key, category, photoSlot }, 201);
+  return c.json({ id: attachmentId, objectKey: key, dataUrl, category, photoSlot }, 201);
 });
 
 app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {

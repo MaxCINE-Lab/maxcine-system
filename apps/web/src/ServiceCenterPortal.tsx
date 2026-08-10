@@ -971,10 +971,19 @@ function CasePageV2({
       const form = new FormData();
       form.append("category", category);
       form.append("file", file);
-      await api(`/after-sales/${id}/attachments`, {
+      const uploaded = await api<{ id: string; dataUrl?: string }>(`/after-sales/${id}/attachments`, {
         method: "POST",
         body: form,
       });
+      setLocalPhotoPreviews((current) => ({
+        ...current,
+        [category]: [{
+          id: uploaded.id || `${category}-${Date.now()}`,
+          fileName: file.name || "拍摄照片",
+          url: uploaded.dataUrl || previewUrl,
+          createdAt: new Date().toISOString(),
+        }],
+      }));
       setNotice({ tone: "success", text: "图片已上传。" });
       void load();
     } catch (error) {
@@ -998,10 +1007,10 @@ function CasePageV2({
             <figcaption>{item.fileName}</figcaption>
             <button
               type="button"
-              className="table-action"
+              className="button button--secondary"
               onClick={() => setPhotoViewer({ url: item.url, title: item.fileName })}
             >
-              查看
+              查看预览
             </button>
           </figure>
         ))}
@@ -1011,10 +1020,10 @@ function CasePageV2({
             <figcaption>{item.originalFilename}</figcaption>
             <button
               type="button"
-              className="table-action"
+              className="button button--secondary"
               onClick={() => setPhotoViewer({ url: item.dataUrl, title: item.originalFilename })}
             >
-              查看
+              查看预览
             </button>
           </figure>
         ) : (

@@ -211,11 +211,27 @@
   color: var(--mc-text-secondary);
 }
 
-.shipment-photo-card img {
+.shipment-photo-preview {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.shipment-photo-card img,
+.shipment-photo-preview img {
   width: 100%;
-  max-height: 120px;
+  max-height: 180px;
   object-fit: cover;
   border-radius: var(--mc-radius-sm);
+  background: var(--mc-surface);
+}
+
+.shipment-photo-preview figcaption {
+  overflow: hidden;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .shipment-photo-card input[type="file"] {
