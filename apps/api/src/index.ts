@@ -723,6 +723,72 @@ ${snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客
 此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。`;
 }
 
+function quoteTemplateValues(snapshot: QuoteSnapshot): Record<string, string> {
+  const quoteItemsText = snapshot.quoteItems.map((item) => `${item.materialCode || '—'} ${item.itemName} × ${item.quantity}：${moneyText(item.subtotalCents)}${item.customerNote ? `（${item.customerNote}）` : ''}`).join('\n');
+  const quoteItemsHtml = snapshot.quoteItems.map((item) => `<tr>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.materialCode || '—')}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.itemName)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:center">${item.quantity}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.unitPriceCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.serviceFeeCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${item.discountCents ? `-${moneyText(item.discountCents)}` : '—'}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600">${moneyText(item.subtotalCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.customerNote || '—')}</td>
+  </tr>`).join('');
+  return {
+    caseNumber: snapshot.caseNumber,
+    quoteNumber: snapshot.quoteNumber,
+    quoteVersion: String(snapshot.quoteVersion),
+    reportDate: snapshot.reportDate,
+    customerName: snapshot.customerName,
+    customerPhone: snapshot.customerPhone,
+    customerEmail: snapshot.customerEmail,
+    customerAddress: snapshot.customerAddress,
+    productName: snapshot.productName,
+    productVersion: snapshot.productVersion,
+    serialNumber: snapshot.serialNumber,
+    warrantyStatus: snapshot.warrantyStatus,
+    serviceCenter: snapshot.serviceCenter,
+    engineer: snapshot.engineer,
+    inspectedAt: snapshot.inspectedAt,
+    customerDescription: snapshot.customerDescription,
+    diagnosisSummary: snapshot.diagnosisSummary,
+    liabilityResult: snapshot.liabilityResult || '由 MaxCINE 管理员复核确认',
+    finalSolution: snapshot.finalSolution,
+    quoteItemsHtml,
+    quoteItemsText,
+    subtotal: moneyText(snapshot.subtotalCents),
+    discount: snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0),
+    shippingFee: moneyText(snapshot.shippingFeeCents),
+    grandTotal: moneyText(snapshot.grandTotalCents),
+    currency: snapshot.currency,
+    validUntil: snapshot.validUntil,
+    estimatedCycle: snapshot.estimatedCycle || '待确认',
+    customerNote: snapshot.customerNote,
+    paymentInstructions: snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。',
+    logoUrl: snapshot.logoUrl || 'https://maxcine-web-staging.pages.dev/assets/quote-logo.png'
+  };
+}
+
+function applyTemplateVariables(content: string, values: Record<string, string>, mode: 'html' | 'text'): string {
+  return Object.entries(values).reduce((output, [key, value]) => {
+    const safeValue = mode === 'html' && key !== 'quoteItemsHtml' ? escapeHtml(value) : value;
+    return output.replaceAll(`{{${key}}}`, safeValue);
+  }, content);
+}
+
+async function quoteMailContent(db: D1Database, snapshot: QuoteSnapshot, fallbackSubject: string): Promise<{ subject: string; html: string; text: string }> {
+  const override = await one<{ subject: string; html: string; text: string }>(db,
+    'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', 'after_sales_quote');
+  if (!override) return { subject: fallbackSubject, html: quoteHtml(snapshot), text: quoteText(snapshot) };
+  const values = quoteTemplateValues(snapshot);
+  return {
+    subject: applyTemplateVariables(override.subject, values, 'text'),
+    html: applyTemplateVariables(override.html, values, 'html'),
+    text: applyTemplateVariables(override.text || quoteText(snapshot), values, 'text')
+  };
+}
+
 type QuoteCaseContext = {
   id: string;
   caseNo: string;
@@ -2446,11 +2512,12 @@ app.get('/after-sales-quotes/:quoteId', requireAuth, async (c) => {
   const storedSnapshot = JSON.parse(String(quote.snapshotJson || '{}')) as QuoteSnapshot;
   const previewSnapshot = { ...storedSnapshot, caseNumber: String(quote.caseNo || storedSnapshot.caseNumber) };
   const isEditablePreview = ['DRAFT', 'READY_FOR_REVIEW'].includes(String(quote.workflowStatus));
+  const editableMailContent = isEditablePreview ? await quoteMailContent(c.env.DB, previewSnapshot, mailSubject('after_sales_quote', mailEnvironment(c.env), String(quote.caseNo || previewSnapshot.caseNumber))) : null;
   return c.json({
     quote: {
       ...quote,
-      htmlContent: isEditablePreview ? quoteHtml(previewSnapshot) : quote.htmlContent,
-      emailText: isEditablePreview ? quoteText(previewSnapshot) : quote.emailText,
+      htmlContent: editableMailContent ? editableMailContent.html : quote.htmlContent,
+      emailText: editableMailContent ? editableMailContent.text : quote.emailText,
       snapshot: isEditablePreview ? previewSnapshot : storedSnapshot
     },
     items,
@@ -2518,10 +2585,9 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
   if ((locked.meta.changes ?? 0) !== 1) throw conflict('报价正在发送，请勿重复提交');
   const sender = notificationSender(c.env);
   const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo, customerEmail: recipientEmail };
-  const deliveryHtml = quoteHtml(deliverySnapshot);
-  const deliveryText = quoteText(deliverySnapshot);
-  const subject = mailSubject('after_sales_quote', mailEnvironment(c.env), serviceCase.caseNo);
-  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: recipientEmail, subject, html: deliveryHtml, text: deliveryText, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
+  const defaultSubject = mailSubject('after_sales_quote', mailEnvironment(c.env), serviceCase.caseNo);
+  const mailContent = await quoteMailContent(c.env.DB, deliverySnapshot, defaultSubject);
+  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: recipientEmail, subject: mailContent.subject, html: mailContent.html, text: mailContent.text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
   const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
   const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
   const emailId = id();
@@ -2529,11 +2595,11 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
     c.env.DB.prepare(`INSERT INTO after_sales_quote_emails (id, quote_id, to_email, from_email, reply_to_email, subject, status, failure_reason, provider,
       provider_message_id, attempt_no, idempotency_key, email_html, email_text, sent_by, sent_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
-      .bind(emailId, quote.id, recipientEmail, sender.address, sender.replyTo, subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
-        delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, deliveryHtml, deliveryText, user.id, delivery.sent ? 'sent' : 'failed'),
+      .bind(emailId, quote.id, recipientEmail, sender.address, sender.replyTo, mailContent.subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
+        delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, mailContent.html, mailContent.text, user.id, delivery.sent ? 'sent' : 'failed'),
     c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = ?, status = ?, sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END,
       customer_email = ?, html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, recipientEmail, deliveryHtml, deliveryText, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
+      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, recipientEmail, mailContent.html, mailContent.text, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(delivery.sent ? 'WAITING_CUSTOMER_CONFIRMATION' : 'PENDING_QUOTE', user.id, quote.caseId),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, ?, ?, ?, ?)`)
@@ -3230,6 +3296,19 @@ app.patch('/admin/mail-center/templates/:template', requireAuth, async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'mail_template.update', entityType: 'mail_center_template', entityId: template, requestId: c.get('requestId'), before: previous, after: { subject: input.subject, html: input.html, text: input.text } })
   ]);
   return c.json({ template, subject: input.subject, html: input.html, text: input.text, isCustomized: true });
+});
+
+app.delete('/admin/mail-center/templates/:template', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const template = c.req.param('template') as MailTemplateKey;
+  if (!(template in mailTemplates)) throw notFound('未找到该邮件模板');
+  const previous = await one<{ subject: string; html: string; text: string }>(c.env.DB, 'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', template);
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM mail_center_templates WHERE template_key = ?').bind(template),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'mail_template.reset', entityType: 'mail_center_template', entityId: template, requestId: c.get('requestId'), before: previous, after: { resetToDefault: true } })
+  ]);
+  return c.json(await resolvedMailTemplate(c.env.DB, c.env, template));
 });
 
 app.post('/admin/mail-center/test-send', requireAuth, async (c) => {
