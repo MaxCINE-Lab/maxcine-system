@@ -4,6 +4,7 @@ import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
 import { AccountMenu, SystemNavigation, displayRoleLabel, displayRoleText } from './systemNavigation';
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
 type Notice = { tone: 'error' | 'success'; text: string } | null;
 type Option = { id: string; name: string; code?: string; email?: string };
 type Options = { roles: Array<Option & { code: string }>; dealers: Option[]; stores: Option[]; users: Option[]; serviceCenters: Option[] };
@@ -190,7 +191,7 @@ type ServiceDetailV2 = {
   case: ServiceDetail['case'] & { assetId: string | null; serviceStage: string; caseType: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; orderNo: string | null; materialCode: string | null; productVersion: string | null; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string };
   assessments: Array<{ result: string; details: string; actorName: string; assessedAt: string }>;
   recommendations: Array<{ recommendation: string; details: string; actorName: string; recommendedAt: string }>;
-  attachments: Array<{ id: string; category: string; photoSlot: string; originalFilename: string; uploadedByName: string; createdAt: string }>;
+  attachments: Array<{ id: string; category: string; photoSlot: string; objectKey?: string; dataUrl?: string; originalFilename: string; contentType?: string; uploadedByName: string; createdAt: string }>;
   receipts: Array<{ receivedItemsJson: string; packagingIntact: number; packagingNote: string; itemsMatch: number; missingItemsNote: string; receiptNote: string; receivedByName: string; receivedAt: string }>;
   inspections: Array<{ id: string; version: number; faultReproduced: string; reproductionStatus: string; testResult: string; conclusion: string; faultCause: string; affectedParts: string; suggestedAction: string; suggestedParts: string; recommendWarranty: number; recommendCharge: number; engineerNote: string; difficulty: string; estimatedDays: string; accidentalDamage: number; accidentalDamageType: string; accidentalDamageNote: string; materialSuggestedTotalCents: number | null; status: string; submittedByName: string; submittedAt: string; reviewNote: string }>;
   faultChains: FaultChainView[];
@@ -201,6 +202,21 @@ type ServiceDetailV2 = {
 };
 const serviceStageText: Record<string, string> = { PENDING_ADMIN_REVIEW: '待审核', NEEDS_MORE_INFO: '已退回补充', WAITING_CUSTOMER_SHIPMENT: '待客户寄修', WAITING_SERVICE_CENTER_RECEIPT: '待服务中心收货', WAITING_INSPECTION: '待检测', INSPECTION_IN_PROGRESS: '检测中', PENDING_ADMIN_INSPECTION_REVIEW: '待审核检测结果', INSPECTION_RETURNED: '检测结果退回', PENDING_QUOTE: '待出报价', WAITING_CUSTOMER_CONFIRMATION: '等待客户确认', CLOSED: '已关闭' };
 const caseTypeText: Record<string, string> = { OUT_OF_WARRANTY_REPAIR: '保外维修类', INSTALLATION_ISSUE: '安装异常类', QUALITY_ISSUE: '质量问题类', IMAGE_QUALITY_ISSUE: '拍摄效果类', MISSING_ACCESSORY: '缺少配件类', PART_PURCHASE: '单独购买部件类' };
+const afterSalesPhotoText: Record<string, string> = {
+  customer_problem_photo: '客户问题照片',
+  package_label: '外包装及面单照片',
+  received_items_front: '全部物品正面照片',
+  received_items_back: '全部物品反面照片',
+  product_front: '产品正面照片',
+  product_back: '产品背面照片',
+  product_left: '产品左侧照片',
+  product_right: '产品右侧照片',
+  product_top: '产品顶部照片',
+  product_bottom: '产品底部照片',
+  accidental_damage: '意外损坏照片',
+  inspection_other: '其他检测照片'
+};
+const afterSalesPhotoOrder = ['customer_problem_photo', 'package_label', 'received_items_front', 'received_items_back', 'product_front', 'product_back', 'product_left', 'product_right', 'product_top', 'product_bottom', 'accidental_damage', 'inspection_other'];
 const finalDecisionOptions = ['保修内免费处理', '保外收费维修', '收费更换部件', '单独销售部件', '无故障退回', '拒绝保修', '整机更换', '其他'];
 type QuoteItemDraft = { itemName: string; itemType: string; quantity: string; unitPrice: string; serviceFee: string; discount: string; note: string; customerNote: string; materialId?: string; materialCode?: string; quickFeeCode?: string };
 const freshQuoteItem = (): QuoteItemDraft => ({ itemName: '维修服务', itemType: '维修费', quantity: '1', unitPrice: '0', serviceFee: '0', discount: '0', note: '', customerNote: '' });
@@ -285,6 +301,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const [quoteBusy, setQuoteBusy] = useState(false);
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [quoteRecipientEmail, setQuoteRecipientEmail] = useState('');
+  const [photoViewer, setPhotoViewer] = useState<{ url: string; title: string } | null>(null);
   const load = () => api<{ cases: ServiceCaseV2[] }>('/after-sales?limit=100').then((data) => setItems(data.cases)).catch((error) => setNotice({ tone: 'error', text: errorText(error) }));
   const open = async (caseId: string) => {
     try {
@@ -309,6 +326,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
       setQuotePreview(null);
       setConfirmSendOpen(false);
       setQuoteRecipientEmail('');
+      setPhotoViewer(null);
     } catch (error) {
       setNotice({ tone: 'error', text: errorText(error) });
     }
@@ -327,6 +345,13 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const filtered = items?.filter((item) => stage === 'all' || item.serviceStage === stage) ?? [];
   const latestInspection = selected?.inspections[0] ?? null;
   const latestMaterials = latestInspection && selected ? selected.inspectionMaterials.filter((item) => item.inspectionId === latestInspection.id) : [];
+  const photoUrl = (attachment: ServiceDetailV2['attachments'][number]) =>
+    attachment.dataUrl || `${apiBaseUrl}/after-sales/${selected?.case.id}/attachments/${attachment.id}/content`;
+  const groupedPhotos = selected ? [...selected.attachments].sort((a, b) => {
+    const byCategory = afterSalesPhotoOrder.indexOf(a.category) - afterSalesPhotoOrder.indexOf(b.category);
+    if (byCategory !== 0) return byCategory;
+    return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+  }) : [];
   const catalogChoices = catalogMaterials.filter((item) => !latestMaterials.some((material) => material.materialId === item.id));
   const selectedEngineerMaterials = latestMaterials.filter((item) => engineerMaterialIds.includes(item.id));
   const selectedCatalogMaterials = catalogChoices.filter((item) => catalogMaterialIds.includes(item.id));
@@ -487,10 +512,20 @@ function AfterSalesV2({ user, route, logout }: Props) {
       {!items && <p>正在加载…</p>}
       {items?.length === 0 && <Empty text="暂无售后工单。" />}
       {selected && <section className="panel after-sales-detail">
+        {photoViewer && <div className="service-photo-viewer" role="dialog" aria-modal="true"><div className="service-photo-viewer__dialog"><header><strong>{photoViewer.title}</strong><button type="button" onClick={() => setPhotoViewer(null)} aria-label="关闭图片预览">×</button></header><img src={photoViewer.url} alt={`${photoViewer.title} 大图预览`} /></div></div>}
         <h2>{selected.case.caseNo} · {caseTypeText[selected.case.caseType] ?? selected.case.subject}</h2>
         <dl className="detail-grid"><dt>当前阶段</dt><dd>{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}</dd><dt>经销商</dt><dd>{selected.case.dealerName}</dd><dt>店铺</dt><dd>{selected.case.storeName || '—'}</dd><dt>产品</dt><dd>{selected.case.productName || '—'} {selected.case.productVersion || ''}</dd><dt>SN</dt><dd>{selected.case.serialNumber || '—'}</dd><dt>客户</dt><dd>{selected.case.contactName || '—'} / {selected.case.contactPhone || '—'} / {selected.case.contactEmail || '—'}</dd><dt>客户地址</dt><dd>{selected.case.contactAddress || '—'}</dd><dt>寄修单号</dt><dd>{selected.case.inboundCarrier || '—'} {selected.case.inboundTrackingNumber || ''}</dd></dl>
         <div className="action-list"><a className="button button--secondary" href={`#/system/service-center/cases/${selected.case.id}`}>进入检测/定损处理</a></div>
         <section><h3>问题资料</h3><p>{selected.case.description}</p><p className="hint">用户备注：{selected.case.customerNote || '—'}；内部备注：{selected.case.internalNote || '—'}</p></section>
+        <section><h3>工单与定损图片</h3>{groupedPhotos.length ? <div className="service-photo-preview-grid admin-after-sales-photos">{groupedPhotos.map((attachment) => {
+          const url = photoUrl(attachment);
+          const title = `${afterSalesPhotoText[attachment.category] ?? attachment.category}${attachment.photoSlot ? ` · ${attachment.photoSlot}` : ''}`;
+          return <figure key={attachment.id} className="service-photo-preview">
+            <img src={url} alt={`${title} 预览`} />
+            <figcaption><strong>{title}</strong><span>{attachment.originalFilename}</span><small>{attachment.uploadedByName || '—'} · {date(attachment.createdAt)}</small></figcaption>
+            <button type="button" className="button button--secondary" onClick={() => setPhotoViewer({ url, title })}>查看预览</button>
+          </figure>;
+        })}</div> : <p className="hint">暂无已上传图片。服务中心上传的收货、六面检测和意外损坏照片会显示在这里。</p>}</section>
         {['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(selected.case.serviceStage) && <section><h3>管理员初审</h3><div className="form-layout"><label>客户姓名<input value={reviewContactName} onChange={(event) => setReviewContactName(event.target.value)} placeholder="可在审核时修正" /></label><label>客户电话<input value={reviewContactPhone} onChange={(event) => setReviewContactPhone(event.target.value)} placeholder="可在审核时修正" /></label><label>客户邮箱<input type="email" value={reviewContactEmail} onChange={(event) => setReviewContactEmail(event.target.value)} placeholder="用于后续报价邮件" /></label><label>客户地址<textarea value={reviewContactAddress} onChange={(event) => setReviewContactAddress(event.target.value)} placeholder="本次售后联系和寄返地址" /></label></div><label>授权服务中心<select value={centerId} onChange={(event) => setCenterId(event.target.value)}><option value="">请选择服务中心</option>{options?.serviceCenters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><input type="checkbox" checked={requiresShipment} onChange={(event) => setRequiresShipment(event.target.checked)} /> 需要客户寄修</label><label>审核说明<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label><div className="action-list"><Button onClick={() => void adminReview(true)}>受理并分配</Button><Button danger onClick={() => void adminReview(false)}>不受理 / 退回补充</Button></div></section>}
         {selected.case.serviceStage === 'WAITING_CUSTOMER_SHIPMENT' && <section><h3>录入寄修单号</h3><label>快递公司<input value={inboundCarrier} onChange={(event) => setInboundCarrier(event.target.value)} /></label><label>寄修单号<input value={inboundTracking} onChange={(event) => setInboundTracking(event.target.value)} /></label><Button onClick={() => void saveInbound()}>保存寄修单号</Button></section>}
         <section><h3>工程师检测记录</h3>{selected.inspections.map((inspection) => <div key={inspection.id}><p><strong>检测版本 {inspection.version}</strong> · {inspection.submittedByName} · {date(inspection.submittedAt)} · {inspection.status}<br />定损结果：{inspection.testResult || inspection.conclusion || '—'}；建议：{inspection.suggestedAction}；工程师参考金额：{money(inspection.materialSuggestedTotalCents ?? 0)}</p><dl className="detail-grid"><dt>定损结果</dt><dd>{inspection.testResult || inspection.conclusion || '—'}</dd><dt>建议处理</dt><dd>{inspection.suggestedAction || '—'}</dd><dt>审核退回意见</dt><dd>{inspection.reviewNote || '—'}</dd></dl></div>)}</section>
