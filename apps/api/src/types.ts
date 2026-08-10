@@ -2,7 +2,7 @@ import type { SessionUser } from '@maxcine/shared';
 
 export type Env = {
   DB: D1Database;
-  ASSETS: R2Bucket;
+  ASSETS?: R2Bucket;
   SESSION_SECRET: string;
   APP_ORIGIN: string;
   COOKIE_SAMESITE?: 'Lax' | 'None' | 'Strict';

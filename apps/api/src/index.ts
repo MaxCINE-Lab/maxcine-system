@@ -2088,8 +2088,12 @@ app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
   if (category === 'customer_problem_photo' && await countAttachments(c.env.DB, serviceCase.id, category) >= 5) throw conflict('问题照片最多上传 5 张');
   if (category === 'accidental_damage' && await countAttachments(c.env.DB, serviceCase.id, category) >= 10) throw conflict('意外损坏照片最多上传 10 张');
   if (category !== 'customer_problem_photo' && category !== 'accidental_damage' && !canOperateAssignedCase(user, serviceCase.serviceCenterId) && !can(user, 'data:read:all')) throw forbidden('只有管理员或被分配服务中心可以上传该阶段照片');
-  const key = attachmentObjectKey(serviceCase.id, category, file.name || 'photo');
-  await c.env.ASSETS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+  const key = c.env.ASSETS
+    ? attachmentObjectKey(serviceCase.id, category, file.name || 'photo')
+    : `local-placeholder://${serviceCase.id}/${category}/${id()}-${file.name || 'photo'}`;
+  if (c.env.ASSETS) {
+    await c.env.ASSETS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+  }
   const attachmentId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, original_filename, content_type, file_size, uploaded_by)
