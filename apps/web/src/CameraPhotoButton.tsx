@@ -235,20 +235,26 @@ export function CameraPhotoButton({
 
   const drawArrow = (context: CanvasRenderingContext2D, annotation: Annotation) => {
     const angle = Math.atan2(annotation.y2 - annotation.y1, annotation.x2 - annotation.x1);
-    const headLength = Math.max(22, Math.round(Math.max(context.canvas.width, context.canvas.height) * 0.018));
+    const headLength = Math.max(28, Math.round(Math.max(context.canvas.width, context.canvas.height) * 0.026));
+    const headAngle = Math.PI / 7;
+    const shaftEndX = annotation.x2 - headLength * 0.72 * Math.cos(angle);
+    const shaftEndY = annotation.y2 - headLength * 0.72 * Math.sin(angle);
     context.beginPath();
     context.moveTo(annotation.x1, annotation.y1);
-    context.lineTo(annotation.x2, annotation.y2);
-    context.lineTo(
-      annotation.x2 - headLength * Math.cos(angle - Math.PI / 6),
-      annotation.y2 - headLength * Math.sin(angle - Math.PI / 6),
-    );
+    context.lineTo(shaftEndX, shaftEndY);
+    context.stroke();
+    context.beginPath();
     context.moveTo(annotation.x2, annotation.y2);
     context.lineTo(
-      annotation.x2 - headLength * Math.cos(angle + Math.PI / 6),
-      annotation.y2 - headLength * Math.sin(angle + Math.PI / 6),
+      annotation.x2 - headLength * Math.cos(angle - Math.PI / 6),
+      annotation.y2 - headLength * Math.sin(angle - headAngle),
     );
-    context.stroke();
+    context.lineTo(
+      annotation.x2 - headLength * Math.cos(angle + headAngle),
+      annotation.y2 - headLength * Math.sin(angle + headAngle),
+    );
+    context.closePath();
+    context.fill();
   };
 
   const saveCapturedImage = async () => {
@@ -270,6 +276,7 @@ export function CameraPhotoButton({
       const finalAnnotations = draftAnnotation ? [...annotations, draftAnnotation] : annotations;
       context.save();
       context.strokeStyle = "#ef1111";
+      context.fillStyle = "#ef1111";
       context.lineWidth = Math.max(6, Math.round(canvas.width * 0.006));
       context.lineCap = "round";
       context.lineJoin = "round";
@@ -371,8 +378,8 @@ export function CameraPhotoButton({
                       ),
                     )}
                     <defs>
-                      <marker id="camera-arrow-head" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto" markerUnits="strokeWidth">
-                        <path d="M2,2 L10,6 L2,10 Z" />
+                      <marker id="camera-arrow-head" markerWidth="24" markerHeight="24" refX="22" refY="12" orient="auto" markerUnits="userSpaceOnUse">
+                        <path d="M2,4 L22,12 L2,20 Z" />
                       </marker>
                     </defs>
                   </svg>

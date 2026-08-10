@@ -931,6 +931,7 @@ function CasePageV2({
   const [localPhotoPreviews, setLocalPhotoPreviews] = useState<
     Record<string, Array<{ id: string; fileName: string; url: string; createdAt: string }>>
   >({});
+  const [photoViewer, setPhotoViewer] = useState<{ url: string; title: string } | null>(null);
   const localPreviewUrlsRef = useRef<string[]>([]);
   const load = () =>
     api<CaseDetailV2>(`/after-sales/${id}`)
@@ -952,9 +953,20 @@ function CasePageV2({
   );
   const upload = async (category: string, file: File | undefined) => {
     if (!file) return;
+    const previewUrl = URL.createObjectURL(file);
+    localPreviewUrlsRef.current.push(previewUrl);
+    setLocalPhotoPreviews((current) => ({
+      ...current,
+      [category]: [
+        {
+          id: `${category}-${Date.now()}`,
+          fileName: file.name || "拍摄照片",
+          url: previewUrl,
+          createdAt: new Date().toISOString(),
+        },
+      ],
+    }));
     try {
-      const previewUrl = URL.createObjectURL(file);
-      localPreviewUrlsRef.current.push(previewUrl);
       const form = new FormData();
       form.append("category", category);
       form.append("file", file);
@@ -962,18 +974,6 @@ function CasePageV2({
         method: "POST",
         body: form,
       });
-      setLocalPhotoPreviews((current) => ({
-        ...current,
-        [category]: [
-          {
-            id: `${category}-${Date.now()}`,
-            fileName: file.name || "拍摄照片",
-            url: previewUrl,
-            createdAt: new Date().toISOString(),
-          },
-          ...(current[category] ?? []),
-        ],
-      }));
       setNotice({ tone: "success", text: "图片已上传。" });
       void load();
     } catch (error) {
@@ -997,6 +997,13 @@ function CasePageV2({
           <figure key={item.id} className="service-photo-preview">
             <img src={item.url} alt={`${item.fileName} 预览`} />
             <figcaption>{item.fileName}</figcaption>
+            <button
+              type="button"
+              className="table-action"
+              onClick={() => setPhotoViewer({ url: item.url, title: item.fileName })}
+            >
+              查看
+            </button>
           </figure>
         ))}
         {uploadedOnly.map((item) => (
@@ -1011,9 +1018,10 @@ function CasePageV2({
   const photoUpload = (category: string, label: string) => (
     <div className="photo-upload-field" key={category}>
       <strong>{label}</strong>
+      {photoPreviews(category)}
       <div className="photo-upload-actions">
         <label className="button button--secondary">
-          选择图片
+          {localPhotoPreviews[category]?.length ? "重新选择图片" : "选择图片"}
           <input
             hidden
             type="file"
@@ -1025,14 +1033,13 @@ function CasePageV2({
           />
         </label>
         <CameraPhotoButton
-          label="摄像头拍照"
+          label={localPhotoPreviews[category]?.length ? "重新拍照" : "摄像头拍照"}
           fileNamePrefix={category}
           watermarkLines={cameraWatermarkLines}
           onCapture={(file) => upload(category, file)}
           onError={(text) => setNotice({ tone: "error", text })}
         />
       </div>
-      {photoPreviews(category)}
     </div>
   );
   const run = async (path: string, body?: unknown, text = "操作已保存。") => {
@@ -1140,6 +1147,17 @@ function CasePageV2({
           className={`notice notice--${notice.tone === "error" ? "error" : "info"}`}
         >
           {notice.text}
+        </div>
+      )}
+      {photoViewer && (
+        <div className="service-photo-viewer" role="dialog" aria-modal="true">
+          <div className="service-photo-viewer__dialog">
+            <header>
+              <strong>{photoViewer.title}</strong>
+              <button type="button" onClick={() => setPhotoViewer(null)} aria-label="关闭图片预览">×</button>
+            </header>
+            <img src={photoViewer.url} alt={`${photoViewer.title} 大图预览`} />
+          </div>
         </div>
       )}
       {!data ? (

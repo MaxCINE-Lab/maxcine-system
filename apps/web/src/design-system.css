@@ -251,18 +251,17 @@
 
 .service-photo-preview-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  grid-template-columns: 1fr;
   gap: var(--mc-space-2);
 }
 
 .service-photo-preview {
   display: grid;
-  gap: 6px;
+  gap: 8px;
   margin: 0;
-  padding: 8px;
-  border: 1px solid var(--mc-border);
-  border-radius: var(--mc-radius-sm);
-  background: var(--mc-surface);
+  padding: 0;
+  border: 0;
+  background: transparent;
   color: var(--mc-text-secondary);
   font-size: 12px;
 }
@@ -270,7 +269,9 @@
 .service-photo-preview img {
   width: 100%;
   aspect-ratio: 4 / 3;
-  border-radius: 10px;
+  max-height: 220px;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-md);
   object-fit: cover;
   background: var(--mc-surface-muted);
 }
@@ -284,6 +285,10 @@
 .service-photo-preview--file {
   min-height: 92px;
   align-content: center;
+  padding: var(--mc-space-3);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-md);
+  background: var(--mc-surface);
 }
 
 .service-photo-preview--file span {
@@ -293,6 +298,54 @@
   background: var(--mc-surface-muted);
   color: var(--mc-text);
   font-size: 12px;
+}
+
+.service-photo-viewer {
+  position: fixed;
+  inset: 0;
+  z-index: 130;
+  display: grid;
+  place-items: center;
+  padding: var(--mc-space-5);
+  background: rgb(17 24 39 / 62%);
+}
+
+.service-photo-viewer__dialog {
+  display: grid;
+  width: min(92vw, 980px);
+  max-height: 90vh;
+  overflow: hidden;
+  border: 1px solid rgb(255 255 255 / 22%);
+  border-radius: var(--mc-radius-xl);
+  background: var(--mc-surface);
+  box-shadow: var(--mc-shadow-floating);
+}
+
+.service-photo-viewer__dialog header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mc-space-3);
+  padding: var(--mc-space-4) var(--mc-space-5);
+  border-bottom: 1px solid var(--mc-border);
+}
+
+.service-photo-viewer__dialog header button {
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-pill);
+  background: var(--mc-surface-muted);
+  color: var(--mc-text);
+  cursor: pointer;
+}
+
+.service-photo-viewer__dialog img {
+  display: block;
+  max-width: 100%;
+  max-height: calc(90vh - 68px);
+  margin: 0 auto;
+  object-fit: contain;
 }
 
 .camera-photo-backdrop {
