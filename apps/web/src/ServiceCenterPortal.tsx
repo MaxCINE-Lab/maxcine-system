@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/exhaustive-deps */
-import { useEffect, useState, type FormEvent, type ReactNode } from "react";
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "react";
 import type { SessionUser } from "@maxcine/shared";
 import { api, ApiClientError } from "./api";
 import { GsxPortal } from "./GsxPortal";
@@ -928,6 +928,10 @@ function CasePageV2({
   const [accidentalDamageType, setAccidentalDamageType] =
     useState("跌落或碰撞");
   const [accidentalDamageNote, setAccidentalDamageNote] = useState("");
+  const [localPhotoPreviews, setLocalPhotoPreviews] = useState<
+    Record<string, Array<{ id: string; fileName: string; url: string; createdAt: string }>>
+  >({});
+  const localPreviewUrlsRef = useRef<string[]>([]);
   const load = () =>
     api<CaseDetailV2>(`/after-sales/${id}`)
       .then((value) => {
@@ -939,9 +943,18 @@ function CasePageV2({
   useEffect(() => {
     void load();
   }, [id]);
+  useEffect(
+    () => () => {
+      localPreviewUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      localPreviewUrlsRef.current = [];
+    },
+    [],
+  );
   const upload = async (category: string, file: File | undefined) => {
     if (!file) return;
     try {
+      const previewUrl = URL.createObjectURL(file);
+      localPreviewUrlsRef.current.push(previewUrl);
       const form = new FormData();
       form.append("category", category);
       form.append("file", file);
@@ -949,6 +962,18 @@ function CasePageV2({
         method: "POST",
         body: form,
       });
+      setLocalPhotoPreviews((current) => ({
+        ...current,
+        [category]: [
+          {
+            id: `${category}-${Date.now()}`,
+            fileName: file.name || "拍摄照片",
+            url: previewUrl,
+            createdAt: new Date().toISOString(),
+          },
+          ...(current[category] ?? []),
+        ],
+      }));
       setNotice({ tone: "success", text: "图片已上传。" });
       void load();
     } catch (error) {
@@ -959,6 +984,30 @@ function CasePageV2({
     "山东省服务中心",
     `工号 ${employeeNumberForUser(user) ?? "9353"}`,
   ];
+  const photoPreviews = (category: string) => {
+    const local = localPhotoPreviews[category] ?? [];
+    const uploaded = (data?.attachments ?? []).filter((item) => item.category === category);
+    const uploadedOnly = uploaded.filter(
+      (item) => !local.some((preview) => preview.fileName === item.originalFilename),
+    );
+    if (!local.length && !uploadedOnly.length) return null;
+    return (
+      <div className="service-photo-preview-grid">
+        {local.map((item) => (
+          <figure key={item.id} className="service-photo-preview">
+            <img src={item.url} alt={`${item.fileName} 预览`} />
+            <figcaption>{item.fileName}</figcaption>
+          </figure>
+        ))}
+        {uploadedOnly.map((item) => (
+          <figure key={item.id} className="service-photo-preview service-photo-preview--file">
+            <span>已上传</span>
+            <figcaption>{item.originalFilename}</figcaption>
+          </figure>
+        ))}
+      </div>
+    );
+  };
   const photoUpload = (category: string, label: string) => (
     <div className="photo-upload-field" key={category}>
       <strong>{label}</strong>
@@ -983,6 +1032,7 @@ function CasePageV2({
           onError={(text) => setNotice({ tone: "error", text })}
         />
       </div>
+      {photoPreviews(category)}
     </div>
   );
   const run = async (path: string, body?: unknown, text = "操作已保存。") => {

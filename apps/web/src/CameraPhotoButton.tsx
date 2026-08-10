@@ -4,6 +4,8 @@ type CameraPhotoButtonProps = {
   label?: string;
   fileNamePrefix?: string;
   watermarkLines?: string[];
+  maxOutputWidth?: number;
+  quality?: number;
   disabled?: boolean;
   onCapture: (file: File) => void | Promise<void>;
   onError?: (message: string) => void;
@@ -41,6 +43,8 @@ export function CameraPhotoButton({
   label = "摄像头拍照",
   fileNamePrefix = "camera-photo",
   watermarkLines = [],
+  maxOutputWidth,
+  quality = 0.9,
   disabled = false,
   onCapture,
   onError,
@@ -147,8 +151,9 @@ export function CameraPhotoButton({
     setBusy(true);
     try {
       const canvas = document.createElement("canvas");
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
+      const scale = maxOutputWidth ? Math.min(1, maxOutputWidth / video.videoWidth) : 1;
+      canvas.width = Math.round(video.videoWidth * scale);
+      canvas.height = Math.round(video.videoHeight * scale);
       const context = canvas.getContext("2d");
       if (!context) throw new Error("canvas unavailable");
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
@@ -173,7 +178,7 @@ export function CameraPhotoButton({
         context.restore();
       }
       setCaptured({
-        dataUrl: canvas.toDataURL("image/jpeg", 0.9),
+        dataUrl: canvas.toDataURL("image/jpeg", quality),
         width: canvas.width,
         height: canvas.height,
       });
@@ -282,7 +287,7 @@ export function CameraPhotoButton({
       });
       context.restore();
       const blob = await new Promise<Blob | null>((resolve) =>
-        canvas.toBlob(resolve, "image/jpeg", 0.9),
+        canvas.toBlob(resolve, "image/jpeg", quality),
       );
       if (!blob) throw new Error("blob unavailable");
       const file = new File([blob], `${fileNamePrefix}-${Date.now()}.jpg`, {

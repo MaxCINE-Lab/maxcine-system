@@ -249,6 +249,52 @@
   padding: 0 var(--mc-space-4);
 }
 
+.service-photo-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(132px, 1fr));
+  gap: var(--mc-space-2);
+}
+
+.service-photo-preview {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-surface);
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+}
+
+.service-photo-preview img {
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  object-fit: cover;
+  background: var(--mc-surface-muted);
+}
+
+.service-photo-preview figcaption {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.service-photo-preview--file {
+  min-height: 92px;
+  align-content: center;
+}
+
+.service-photo-preview--file span {
+  width: max-content;
+  padding: 4px 8px;
+  border-radius: var(--mc-radius-pill);
+  background: var(--mc-surface-muted);
+  color: var(--mc-text);
+  font-size: 12px;
+}
+
 .camera-photo-backdrop {
   position: fixed;
   inset: 0;
