@@ -3,7 +3,7 @@ import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import type { SessionUser } from "@maxcine/shared";
 import { api, ApiClientError } from "./api";
 import { GsxPortal } from "./GsxPortal";
-import { AccountMenu, SystemNavigation } from "./systemNavigation";
+import { AccountMenu, employeeNumberForUser, SystemNavigation } from "./systemNavigation";
 import { CameraPhotoButton } from "./CameraPhotoButton";
 
 type Notice = { tone: "error" | "success"; text: string } | null;
@@ -955,6 +955,10 @@ function CasePageV2({
       setNotice({ tone: "error", text: errorText(error) });
     }
   };
+  const cameraWatermarkLines = [
+    "山东省服务中心",
+    `工号 ${employeeNumberForUser(user) ?? "9353"}`,
+  ];
   const photoUpload = (category: string, label: string) => (
     <div className="photo-upload-field" key={category}>
       <strong>{label}</strong>
@@ -974,6 +978,7 @@ function CasePageV2({
         <CameraPhotoButton
           label="摄像头拍照"
           fileNamePrefix={category}
+          watermarkLines={cameraWatermarkLines}
           onCapture={(file) => upload(category, file)}
           onError={(text) => setNotice({ tone: "error", text })}
         />

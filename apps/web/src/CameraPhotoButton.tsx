@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 type CameraPhotoButtonProps = {
   label?: string;
   fileNamePrefix?: string;
+  watermarkLines?: string[];
   disabled?: boolean;
   onCapture: (file: File) => void | Promise<void>;
   onError?: (message: string) => void;
@@ -16,9 +17,15 @@ type VideoInputDevice = {
 const cameraUnavailableText =
   "当前浏览器无法调用摄像头，请确认已允许摄像头权限，或改用选择图片。";
 
+const formatCaptureTime = (value: Date) => {
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+};
+
 export function CameraPhotoButton({
   label = "摄像头拍照",
   fileNamePrefix = "camera-photo",
+  watermarkLines = [],
   disabled = false,
   onCapture,
   onError,
@@ -121,6 +128,26 @@ export function CameraPhotoButton({
       const context = canvas.getContext("2d");
       if (!context) throw new Error("canvas unavailable");
       context.drawImage(video, 0, 0, canvas.width, canvas.height);
+      if (watermarkLines.length) {
+        const lines = [formatCaptureTime(new Date()), ...watermarkLines];
+        const padding = Math.max(18, Math.round(canvas.width * 0.022));
+        const fontSize = Math.max(18, Math.round(canvas.width * 0.022));
+        const lineHeight = Math.round(fontSize * 1.35);
+        context.save();
+        context.globalAlpha = 0.5;
+        context.fillStyle = "rgb(229, 231, 235)";
+        context.shadowColor = "rgb(17, 24, 39)";
+        context.shadowBlur = Math.max(2, Math.round(fontSize * 0.18));
+        context.shadowOffsetX = 1;
+        context.shadowOffsetY = 1;
+        context.font = `600 ${fontSize}px -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", sans-serif`;
+        context.textBaseline = "bottom";
+        const startY = canvas.height - padding - lineHeight * (lines.length - 1);
+        lines.forEach((line, index) => {
+          context.fillText(line, padding, startY + index * lineHeight);
+        });
+        context.restore();
+      }
       const blob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, "image/jpeg", 0.88),
       );

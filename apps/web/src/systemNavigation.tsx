@@ -24,6 +24,10 @@ const employeeNumberByEmail: Readonly<Record<string, string>> = {
   'ericzhu@maxcine.cn': '6583'
 };
 
+export function employeeNumberForUser(user: SessionUser): string | null {
+  return employeeNumberByEmail[user.email.trim().toLowerCase()] ?? null;
+}
+
 const hasAnyPermission = (user: SessionUser, permissions: Permission[]) => permissions.some((permission) => user.permissions.includes(permission));
 
 export function displayRoleLabel(role: string): string {
