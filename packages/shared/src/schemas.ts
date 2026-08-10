@@ -281,7 +281,7 @@ export const inboundShipmentSchema = z.object({
 export const receiptSchema = z.object({
   packagingIntact: z.boolean().default(true),
   packagingNote: z.string().trim().max(1000).default(''),
-  receivedItems: z.array(z.enum(['产品主体', '安装配件', '包装盒', '保护盒', '配重模块', '其他附件', '其他'])).default([]),
+  receivedItems: z.array(z.enum(['产品主体', '全套包装', '收纳盒', '平衡模块', '其他非官方附件'])).default([]),
   itemsMatch: z.boolean().default(true),
   missingItemsNote: z.string().trim().max(1000).default(''),
   receiptNote: z.string().trim().max(1000).default('')

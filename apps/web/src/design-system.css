@@ -2726,6 +2726,34 @@ body:has(.system) {
   font-variant-numeric: tabular-nums;
 }
 
+.quote-quick-phrases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: -4px 0 14px;
+}
+
+.quote-quick-phrases button {
+  max-width: min(100%, 360px);
+  padding: 8px 12px;
+  color: var(--mc-text);
+  background: var(--mc-surface-muted);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-pill);
+  font-size: 13px;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 160ms var(--mc-motion-ease, ease), background 160ms var(--mc-motion-ease, ease), transform 160ms var(--mc-motion-ease, ease);
+}
+
+.quote-quick-phrases button:hover,
+.quote-quick-phrases button:focus-visible {
+  background: var(--mc-surface);
+  border-color: var(--mc-text);
+  transform: translateY(-1px);
+}
+
 .quote-action-message {
   margin: 14px 0;
   padding: 11px 14px;

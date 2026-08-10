@@ -99,6 +99,7 @@ type InspectionRow = {
   version: number;
   faultReproduced: string;
   reproductionStatus: string;
+  testResult: string;
   conclusion: string;
   faultCause: string;
   affectedParts: string;
@@ -207,12 +208,10 @@ const serviceStageName: Record<string, string> = {
 };
 const receivedItemOptions = [
   "产品主体",
-  "安装配件",
-  "包装盒",
-  "保护盒",
-  "配重模块",
-  "其他附件",
-  "其他",
+  "全套包装",
+  "收纳盒",
+  "平衡模块",
+  "其他非官方附件",
 ];
 const facePhotos = [
   ["product_front", "正面"],
@@ -231,144 +230,6 @@ const accidentalDamageTypes = [
   "严重划伤",
   "部件缺失",
   "其他",
-];
-const faultPartOptions = [
-  "整套产品",
-  "产品主体",
-  "包装及附件",
-  "收纳盒",
-  "配重模块",
-  "镜头主上组件外框",
-  "镜头主上模块",
-  "环绕围脖",
-  "主体框架",
-  "转接或安装结构",
-  "卡扣或固定结构",
-  "背胶或粘合结构",
-  "主体光学镜片",
-  "长焦外光学镜片",
-  "内侧镜片",
-  "镀层",
-  "保护膜",
-  "外置UV",
-  "ND8组件",
-  "ND16组件",
-  "ND32组件",
-  "ND64组件",
-  "ND滤镜外框",
-  "内镜组支架",
-  "哈苏镜片",
-  "中长焦镜片",
-  "长焦镜片",
-  "收纳盒外壳",
-  "收纳盒内胆",
-  "卡扣",
-  "包装彩盒",
-  "说明书",
-  "保修卡",
-  "其他附件",
-  "无法确定",
-];
-const damageTypeOptions = [
-  "划伤",
-  "磕碰",
-  "裂纹",
-  "断裂",
-  "变形",
-  "缺口",
-  "脱落",
-  "松动",
-  "卡扣损坏",
-  "螺纹损坏",
-  "粘合失效",
-  "装配错位",
-  "部件缺失",
-  "镜片划伤",
-  "镜片破裂",
-  "镜片崩边",
-  "镀层损伤",
-  "镀层脱落",
-  "镜片污渍",
-  "内部异物",
-  "水汽或起雾",
-  "胶水溢出",
-  "光轴偏移",
-  "镜片安装异常",
-  "无法安装",
-  "安装过紧",
-  "安装过松",
-  "干涉机身或云台",
-  "云台失衡",
-  "云台抖动",
-  "遮挡画面",
-  "滤镜无法识别或固定",
-  "配重异常",
-  "附件不匹配",
-  "跌落",
-  "碰撞",
-  "挤压",
-  "进水",
-  "受潮",
-  "高温变形",
-  "非官方拆装",
-  "非官方维修",
-  "使用非官方胶水",
-  "人为改装",
-  "错误安装",
-  "其他意外损坏",
-];
-const symptomOptions = [
-  "画面模糊",
-  "局部模糊",
-  "边缘画质下降",
-  "畸变异常",
-  "眩光",
-  "鬼影",
-  "色偏",
-  "对比度下降",
-  "暗角",
-  "遮挡画面",
-  "画面出现污点",
-  "画面反射异常",
-  "无法安装",
-  "无法拆卸",
-  "固定不牢",
-  "部件脱落风险",
-  "装配间隙异常",
-  "卡扣失效",
-  "收纳盒无法闭合",
-  "附件无法固定",
-  "云台抖动",
-  "云台失衡",
-  "云台过载",
-  "俯仰受限",
-  "云台运动干涉",
-  "飞行稳定性风险",
-  "镜片进一步损坏风险",
-  "进灰风险",
-  "进水或受潮风险",
-  "结构强度下降",
-  "无法继续安全使用",
-  "不影响主要功能",
-  "暂未发现衍生故障",
-  "无法确认",
-  "其他",
-];
-const severityOptions = [
-  "轻微",
-  "一般",
-  "严重",
-  "无法继续使用",
-  "存在安全风险",
-];
-const repairabilityOptions = [
-  "无需维修",
-  "可现场处理",
-  "可更换部件修复",
-  "建议整体组件更换",
-  "建议全套更换",
-  "无法维修",
-  "待管理员判断",
 ];
 const actionOptions = [
   "无故障",
@@ -523,25 +384,6 @@ function toggleValue(
     ? Array.from(new Set([...values, value]))
     : values.filter((item) => item !== value);
 }
-function newFaultChain(
-  part = "无法确定",
-  damage = "其他意外损坏",
-  symptoms: string[] = [],
-): FaultChainDraft {
-  return {
-    faultPart: part,
-    damageType: damage,
-    causeType: "原因不明",
-    derivedSymptoms: symptoms,
-    evidence: "",
-    relatedPhotoIds: [],
-    severity: "一般",
-    repairability: "待管理员判断",
-    recommendedAction: "维修",
-    engineerNote: "",
-  };
-}
-
 function CaseListV2({ user, route }: { user: SessionUser; route: string }) {
   const [tab, setTab] = useState(
     new URLSearchParams(route.split("?")[1] ?? "").get("stage") ??
@@ -766,7 +608,6 @@ function MaterialSelector({
                 <th>处理方式</th>
                 <th>选项</th>
                 <th>参考金额</th>
-                <th>工程师备注</th>
                 <th>操作</th>
               </tr>
             </thead>
@@ -845,28 +686,9 @@ function MaterialSelector({
                       />{" "}
                       仅维修
                     </label>
-                    <label>
-                      <input
-                        type="checkbox"
-                        checked={item.recommendCharge}
-                        onChange={(event) =>
-                          update(index, {
-                            recommendCharge: event.target.checked,
-                          })
-                        }
-                      />{" "}
-                      建议收费
-                    </label>
+
                   </td>
                   <td>{money(lineTotal(item))}</td>
-                  <td>
-                    <textarea
-                      value={item.engineerNote}
-                      onChange={(event) =>
-                        update(index, { engineerNote: event.target.value })
-                      }
-                    />
-                  </td>
                   <td>
                     <Button
                       secondary
@@ -900,32 +722,16 @@ function CasePageV2({
   const [notice, setNotice] = useState<Notice>(null);
   const [inboundCarrier, setInboundCarrier] = useState("顺丰速运");
   const [inboundTracking, setInboundTracking] = useState("");
-  const [packagingIntact, setPackagingIntact] = useState(true);
-  const [itemsMatch, setItemsMatch] = useState(true);
-  const [packagingNote, setPackagingNote] = useState("");
-  const [missingItemsNote, setMissingItemsNote] = useState("");
   const [receiptNote, setReceiptNote] = useState("");
   const [receivedItems, setReceivedItems] = useState<string[]>(["产品主体"]);
   const [faultReproduced, setFaultReproduced] = useState("yes");
   const [reproductionStatus, setReproductionStatus] = useState("REPRODUCED");
   const [testResult, setTestResult] = useState("");
-  const [faultParts, setFaultParts] = useState<string[]>([]);
-  const [selectedDamageTypes, setSelectedDamageTypes] = useState<string[]>([]);
-  const [derivedSymptoms, setDerivedSymptoms] = useState<string[]>([]);
-  const [faultChains, setFaultChains] = useState<FaultChainDraft[]>([
-    newFaultChain(),
-  ]);
   const [selectedMaterials, setSelectedMaterials] = useState<
     SelectedMaterial[]
   >([]);
-  const [conclusion, setConclusion] = useState("");
-  const [affectedParts, setAffectedParts] = useState("");
   const [suggestedAction, setSuggestedAction] = useState("维修");
-  const [suggestedParts, setSuggestedParts] = useState("");
-  const [recommendWarranty, setRecommendWarranty] = useState(false);
-  const [recommendCharge, setRecommendCharge] = useState(true);
-  const [engineerNote, setEngineerNote] = useState("");
-  const [accidentalDamage, setAccidentalDamage] = useState(false);
+  const [accidentalDamage, setAccidentalDamage] = useState(true);
   const [accidentalDamageType, setAccidentalDamageType] =
     useState("跌落或碰撞");
   const [accidentalDamageNote, setAccidentalDamageNote] = useState("");
@@ -1089,11 +895,11 @@ function CasePageV2({
     void run(
       `/after-sales/${id}/receipt`,
       {
-        packagingIntact,
-        packagingNote,
+        packagingIntact: true,
+        packagingNote: "",
         receivedItems,
-        itemsMatch,
-        missingItemsNote,
+        itemsMatch: true,
+        missingItemsNote: "",
         receiptNote,
       },
       "收货已确认。",
@@ -1120,23 +926,23 @@ function CasePageV2({
         reproductionCondition: "",
         reproductionProcess: "",
         testResult,
-        faultParts,
-        damageTypes: selectedDamageTypes,
-        derivedSymptoms,
-        conclusion,
+        faultParts: [],
+        damageTypes: accidentalDamage ? [accidentalDamageType] : [],
+        derivedSymptoms: [],
+        conclusion: testResult,
         faultCause: "",
-        affectedParts,
+        affectedParts: "",
         suggestedAction,
-        suggestedParts,
-        recommendWarranty,
-        recommendCharge,
-        engineerNote,
+        suggestedParts: "",
+        recommendWarranty: false,
+        recommendCharge: true,
+        engineerNote: "",
         difficulty: "",
         estimatedDays: "",
         accidentalDamage,
         accidentalDamageType,
         accidentalDamageNote,
-        faultChains,
+        faultChains: [],
         repairMaterials: selectedMaterials.map((item) => ({
           materialId: item.material.id,
           quantity: Number(item.quantity),
@@ -1152,10 +958,6 @@ function CasePageV2({
       "检测结果已提交管理员审核。",
     );
   };
-  const updateChain = (index: number, patch: Partial<FaultChainDraft>) =>
-    setFaultChains((rows) =>
-      rows.map((row, i) => (i === index ? { ...row, ...patch } : row)),
-    );
   return (
     <Shell user={user} route={route}>
       <Header
@@ -1239,27 +1041,6 @@ function CasePageV2({
           )}
           <form className="panel" onSubmit={saveReceipt}>
             <h2>收货确认</h2>
-            <p className="hint">收货照片和备注均为可选；如现场方便，建议上传便于后续核对。</p>
-            <div className="form-layout">
-              {photoUpload("package_label", "外包装及面单照片")}
-              {photoUpload("received_items_front", "全部物品正面照片")}
-              {photoUpload("received_items_back", "全部物品反面照片")}
-            </div>
-            <label>
-              <input
-                type="checkbox"
-                checked={packagingIntact}
-                onChange={(event) => setPackagingIntact(event.target.checked)}
-              />{" "}
-              外包装完好
-            </label>
-            <label>
-              包装异常备注
-              <textarea
-                value={packagingNote}
-                onChange={(event) => setPackagingNote(event.target.value)}
-              />
-            </label>
             <fieldset>
               <legend>收到物品清单</legend>
               {receivedItemOptions.map((item) => (
@@ -1278,25 +1059,11 @@ function CasePageV2({
               ))}
             </fieldset>
             <label>
-              <input
-                type="checkbox"
-                checked={itemsMatch}
-                onChange={(event) => setItemsMatch(event.target.checked)}
-              />{" "}
-              与工单描述一致
-            </label>
-            <label>
-              缺件或不一致说明
-              <textarea
-                value={missingItemsNote}
-                onChange={(event) => setMissingItemsNote(event.target.value)}
-              />
-            </label>
-            <label>
               收货备注
               <textarea
                 value={receiptNote}
                 onChange={(event) => setReceiptNote(event.target.value)}
+                placeholder="可填写外包装、附件、客户随寄物等情况"
               />
             </label>
             <Button type="submit">确认收货</Button>
@@ -1321,7 +1088,7 @@ function CasePageV2({
           )}
           <form className="panel" onSubmit={submitInspection}>
             <h2>故障诊断与定损</h2>
-            <p className="hint">照片、故障链和说明均可后续补充；工程师可先提交处理建议给管理员审核。</p>
+            <p className="hint">照片和说明均可后续补充；工程师可先提交定损结果和处理建议给管理员审核。</p>
             <section>
               <h3>客户反馈故障</h3>
               <p>{data.case.description}</p>
@@ -1361,230 +1128,21 @@ function CasePageV2({
               </select>
             </label>
             <label>
-              测试结果
+              定损结果
               <textarea
                 value={testResult}
                 onChange={(event) => setTestResult(event.target.value)}
+                placeholder="请填写本次检测后的定损结果"
               />
             </label>
-            <fieldset>
-              <legend>故障部位</legend>
-              {faultPartOptions.map((item) => (
-                <label key={item}>
-                  <input
-                    type="checkbox"
-                    checked={faultParts.includes(item)}
-                    onChange={(event) =>
-                      setFaultParts((values) =>
-                        toggleValue(values, item, event.target.checked),
-                      )
-                    }
-                  />
-                  {item}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset>
-              <legend>损坏类型</legend>
-              {damageTypeOptions.map((item) => (
-                <label key={item}>
-                  <input
-                    type="checkbox"
-                    checked={selectedDamageTypes.includes(item)}
-                    onChange={(event) =>
-                      setSelectedDamageTypes((values) =>
-                        toggleValue(values, item, event.target.checked),
-                      )
-                    }
-                  />
-                  {item}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset>
-              <legend>衍生故障</legend>
-              {symptomOptions.map((item) => (
-                <label key={item}>
-                  <input
-                    type="checkbox"
-                    checked={derivedSymptoms.includes(item)}
-                    onChange={(event) =>
-                      setDerivedSymptoms((values) =>
-                        toggleValue(values, item, event.target.checked),
-                      )
-                    }
-                  />
-                  {item}
-                </label>
-              ))}
-            </fieldset>
-            <section>
-              <h3>故障链</h3>
-              <div className="action-list">
-                <Button
-                  secondary
-                  onClick={() =>
-                    setFaultChains((rows) => [
-                      ...rows,
-                      newFaultChain(
-                        faultParts[0],
-                        selectedDamageTypes[0],
-                        derivedSymptoms.slice(0, 3),
-                      ),
-                    ])
-                  }
-                >
-                  新增故障链
-                </Button>
-              </div>
-              {faultChains.map((chain, index) => (
-                <div className="panel panel--nested" key={index}>
-                  <h4>故障链 {index + 1}</h4>
-                  <div className="form-layout">
-                    <label>
-                      故障部位
-                      <select
-                        value={chain.faultPart}
-                        onChange={(event) =>
-                          updateChain(index, { faultPart: event.target.value })
-                        }
-                      >
-                        {faultPartOptions.map((item) => (
-                          <option key={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      损坏类型
-                      <select
-                        value={chain.damageType}
-                        onChange={(event) =>
-                          updateChain(index, { damageType: event.target.value })
-                        }
-                      >
-                        {damageTypeOptions.map((item) => (
-                          <option key={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      严重程度
-                      <select
-                        value={chain.severity}
-                        onChange={(event) =>
-                          updateChain(index, { severity: event.target.value })
-                        }
-                      >
-                        {severityOptions.map((item) => (
-                          <option key={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      可维修性
-                      <select
-                        value={chain.repairability}
-                        onChange={(event) =>
-                          updateChain(index, {
-                            repairability: event.target.value,
-                          })
-                        }
-                      >
-                        {repairabilityOptions.map((item) => (
-                          <option key={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                    <label>
-                      建议处理
-                      <select
-                        value={chain.recommendedAction}
-                        onChange={(event) =>
-                          updateChain(index, {
-                            recommendedAction: event.target.value,
-                          })
-                        }
-                      >
-                        {actionOptions.map((item) => (
-                          <option key={item}>{item}</option>
-                        ))}
-                      </select>
-                    </label>
-                  </div>
-                  <fieldset>
-                    <legend>该故障链的衍生故障</legend>
-                    {symptomOptions.map((item) => (
-                      <label key={item}>
-                        <input
-                          type="checkbox"
-                          checked={chain.derivedSymptoms.includes(item)}
-                          onChange={(event) =>
-                            updateChain(index, {
-                              derivedSymptoms: toggleValue(
-                                chain.derivedSymptoms,
-                                item,
-                                event.target.checked,
-                              ),
-                            })
-                          }
-                        />
-                        {item}
-                      </label>
-                    ))}
-                  </fieldset>
-                  <label>
-                    检测证据
-                    <textarea
-                      value={chain.evidence}
-                      onChange={(event) =>
-                        updateChain(index, { evidence: event.target.value })
-                      }
-                    />
-                  </label>
-                  <label>
-                    工程师说明
-                    <textarea
-                      value={chain.engineerNote}
-                      onChange={(event) =>
-                        updateChain(index, { engineerNote: event.target.value })
-                      }
-                    />
-                  </label>
-                  {faultChains.length > 1 && (
-                    <Button
-                      secondary
-                      onClick={() =>
-                        setFaultChains((rows) =>
-                          rows.filter((_, i) => i !== index),
-                        )
-                      }
-                    >
-                      删除该故障链
-                    </Button>
-                  )}
-                </div>
-              ))}
-            </section>
+
             <MaterialSelector
               assetId={data.case.assetId}
               selected={selectedMaterials}
               onChange={setSelectedMaterials}
               notice={setNotice}
             />
-            <label>
-              检测结论
-              <textarea
-                value={conclusion}
-                onChange={(event) => setConclusion(event.target.value)}
-              />
-            </label>
-            <label>
-              影响部件
-              <input
-                value={affectedParts}
-                onChange={(event) => setAffectedParts(event.target.value)}
-              />
-            </label>
+
             <label>
               建议处理方式
               <select
@@ -1596,36 +1154,7 @@ function CasePageV2({
                 ))}
               </select>
             </label>
-            <label>
-              建议更换部件
-              <textarea
-                value={suggestedParts}
-                onChange={(event) => setSuggestedParts(event.target.value)}
-              />
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={recommendWarranty}
-                onChange={(event) => setRecommendWarranty(event.target.checked)}
-              />{" "}
-              建议保修
-            </label>
-            <label>
-              <input
-                type="checkbox"
-                checked={recommendCharge}
-                onChange={(event) => setRecommendCharge(event.target.checked)}
-              />{" "}
-              建议收费
-            </label>
-            <label>
-              工程师备注
-              <textarea
-                value={engineerNote}
-                onChange={(event) => setEngineerNote(event.target.value)}
-              />
-            </label>
+
             <label>
               <input
                 type="checkbox"
@@ -1672,7 +1201,7 @@ function CasePageV2({
                   {item.submittedByName} · {date(item.submittedAt)} ·{" "}
                   {item.status}
                   <br />
-                  {item.conclusion}；参考金额：
+                  定损结果：{item.testResult || item.conclusion || "—"}；参考金额：
                   {money(item.materialSuggestedTotalCents)}
                 </p>
                 <ul>
