@@ -2221,6 +2221,68 @@ app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
   return c.json({ id: attachmentId, objectKey: key, dataUrl, category, photoSlot }, 201);
 });
 
+app.get('/after-sales/:id/attachments/:attachmentId/content', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const attachment = await one<{ id: string; objectKey: string; dataUrl: string; contentType: string; originalFilename: string }>(
+    c.env.DB,
+    'SELECT id, object_key AS objectKey, data_url AS dataUrl, content_type AS contentType, original_filename AS originalFilename FROM after_sales_attachments WHERE id = ? AND case_id = ?',
+    c.req.param('attachmentId'),
+    serviceCase.id
+  );
+  if (!attachment) throw notFound('未找到该图片');
+  if (attachment.dataUrl) {
+    const match = attachment.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) throw notFound('该图片内容不可用');
+    const bytes = Uint8Array.from(atob(match[2]), (char) => char.charCodeAt(0));
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': match[1] || attachment.contentType || 'application/octet-stream',
+        'Cache-Control': 'private, max-age=300',
+        'Content-Disposition': `inline; filename="${encodeURIComponent(attachment.originalFilename || 'photo')}"`
+      }
+    });
+  }
+  if (c.env.ASSETS && attachment.objectKey && !attachment.objectKey.startsWith('local-placeholder://')) {
+    const object = await c.env.ASSETS.get(attachment.objectKey);
+    if (object) {
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': object.httpMetadata?.contentType || attachment.contentType || 'application/octet-stream',
+          'Cache-Control': 'private, max-age=300',
+          'Content-Disposition': `inline; filename="${encodeURIComponent(attachment.originalFilename || 'photo')}"`
+        }
+      });
+    }
+  }
+  throw notFound('该图片缺少可查看内容，请重新上传');
+});
+
+app.delete('/after-sales/:id/attachments/:attachmentId', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const attachment = await one<{ id: string; objectKey: string; category: string; uploadedBy: string }>(
+    c.env.DB,
+    'SELECT id, object_key AS objectKey, category, uploaded_by AS uploadedBy FROM after_sales_attachments WHERE id = ? AND case_id = ?',
+    c.req.param('attachmentId'),
+    serviceCase.id
+  );
+  if (!attachment) throw notFound('未找到该图片');
+  const canDelete = can(user, 'data:read:all') || canOperateAssignedCase(user, serviceCase.serviceCenterId) || attachment.uploadedBy === user.id;
+  if (!canDelete) throw forbidden('你无权删除该图片');
+  if (c.env.ASSETS && attachment.objectKey && !attachment.objectKey.startsWith('local-placeholder://')) {
+    await c.env.ASSETS.delete(attachment.objectKey);
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM after_sales_attachments WHERE id = ?').bind(attachment.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_deleted', '删除售后图片', ?, ?)`).bind(id(), serviceCase.id, attachment.category, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_delete', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), before: { attachmentId: attachment.id, category: attachment.category, objectKey: attachment.objectKey } })
+  ]);
+  return c.body(null, 204);
+});
+
 app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:assign');

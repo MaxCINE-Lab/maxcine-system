@@ -6,6 +6,8 @@ import { GsxPortal } from "./GsxPortal";
 import { AccountMenu, employeeNumberForUser, SystemNavigation } from "./systemNavigation";
 import { CameraPhotoButton } from "./CameraPhotoButton";
 
+const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api";
+
 type Notice = { tone: "error" | "success"; text: string } | null;
 type CaseRow = {
   id: string;
@@ -142,6 +144,7 @@ type CaseDetailV2 = {
     category: string;
     photoSlot: string;
     dataUrl: string;
+    contentType: string;
     originalFilename: string;
     uploadedByName: string;
     createdAt: string;
@@ -736,7 +739,7 @@ function CasePageV2({
     useState("跌落或碰撞");
   const [accidentalDamageNote, setAccidentalDamageNote] = useState("");
   const [localPhotoPreviews, setLocalPhotoPreviews] = useState<
-    Record<string, Array<{ id: string; fileName: string; url: string; createdAt: string }>>
+    Record<string, Array<{ id: string; fileName: string; url: string; createdAt: string; saved: boolean }>>
   >({});
   const [photoViewer, setPhotoViewer] = useState<{ url: string; title: string } | null>(null);
   const localPreviewUrlsRef = useRef<string[]>([]);
@@ -770,6 +773,7 @@ function CasePageV2({
           fileName: file.name || "拍摄照片",
           url: previewUrl,
           createdAt: new Date().toISOString(),
+          saved: false,
         },
       ],
     }));
@@ -788,6 +792,7 @@ function CasePageV2({
           fileName: file.name || "拍摄照片",
           url: uploaded.dataUrl || previewUrl,
           createdAt: new Date().toISOString(),
+          saved: true,
         }],
       }));
       setNotice({ tone: "success", text: "图片已上传。" });
@@ -800,10 +805,26 @@ function CasePageV2({
     "山东省服务中心",
     `工号 ${employeeNumberForUser(user) ?? "9353"}`,
   ];
+  const attachmentContentUrl = (attachmentId: string) =>
+    `${apiBaseUrl}/after-sales/${id}/attachments/${attachmentId}/content`;
+  const removeAttachment = async (category: string, attachmentId: string) => {
+    if (!window.confirm("确定删除这张图片吗？删除后需要重新上传。")) return;
+    try {
+      await api(`/after-sales/${id}/attachments/${attachmentId}`, { method: "DELETE" });
+      setLocalPhotoPreviews((current) => ({
+        ...current,
+        [category]: (current[category] ?? []).filter((item) => item.id !== attachmentId),
+      }));
+      setNotice({ tone: "success", text: "图片已删除。" });
+      void load();
+    } catch (error) {
+      setNotice({ tone: "error", text: errorText(error) });
+    }
+  };
   const photoPreviews = (category: string) => {
     const local = localPhotoPreviews[category] ?? [];
     const uploaded = (data?.attachments ?? []).filter((item) => item.category === category);
-    const uploadedOnly = uploaded.filter((item) => !local.some((preview) => preview.fileName === item.originalFilename));
+    const uploadedOnly = uploaded.filter((item) => !local.some((preview) => preview.id === item.id));
     if (!local.length && !uploadedOnly.length) return null;
     return (
       <div className="service-photo-preview-grid">
@@ -818,26 +839,41 @@ function CasePageV2({
             >
               查看预览
             </button>
+            {item.saved ? (
+              <button
+                type="button"
+                className="button button--danger"
+                onClick={() => void removeAttachment(category, item.id)}
+              >
+                删除
+              </button>
+            ) : (
+              <small>正在上传…</small>
+            )}
           </figure>
         ))}
-        {uploadedOnly.map((item) => item.dataUrl ? (
+        {uploadedOnly.map((item) => {
+          const imageUrl = item.dataUrl || attachmentContentUrl(item.id);
+          return (
           <figure key={item.id} className="service-photo-preview">
-            <img src={item.dataUrl} alt={`${item.originalFilename} 预览`} />
+            <img src={imageUrl} alt={`${item.originalFilename} 预览`} />
             <figcaption>{item.originalFilename}</figcaption>
             <button
               type="button"
               className="button button--secondary"
-              onClick={() => setPhotoViewer({ url: item.dataUrl, title: item.originalFilename })}
+              onClick={() => setPhotoViewer({ url: imageUrl, title: item.originalFilename })}
             >
               查看预览
             </button>
+            <button
+              type="button"
+              className="button button--danger"
+              onClick={() => void removeAttachment(category, item.id)}
+            >
+              删除
+            </button>
           </figure>
-        ) : (
-          <figure key={item.id} className="service-photo-preview service-photo-preview--file">
-            <span>已上传</span>
-            <figcaption>{item.originalFilename}</figcaption>
-          </figure>
-        ))}
+        )})}
       </div>
     );
   };
