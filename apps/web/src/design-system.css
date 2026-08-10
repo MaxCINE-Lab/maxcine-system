@@ -315,6 +315,59 @@
   background: #0f172a;
 }
 
+.camera-photo-preview-wrap {
+  display: grid;
+  place-items: center;
+  min-height: 260px;
+  max-height: 56vh;
+  padding: var(--mc-space-3);
+  overflow: auto;
+  background: #0f172a;
+}
+
+.camera-photo-preview {
+  position: relative;
+  max-width: 100%;
+  max-height: 52vh;
+  touch-action: none;
+}
+
+.camera-photo-preview.is-drawing {
+  cursor: crosshair;
+}
+
+.camera-photo-preview img {
+  display: block;
+  width: auto;
+  height: auto;
+  max-width: 100%;
+  max-height: 52vh;
+  object-fit: contain;
+  user-select: none;
+}
+
+.camera-photo-preview svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+  pointer-events: none;
+}
+
+.camera-photo-preview rect,
+.camera-photo-preview line {
+  fill: none;
+  stroke: #ef1111;
+  stroke-width: 8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.camera-photo-preview marker path {
+  fill: #ef1111;
+}
+
 .camera-photo-controls {
   display: grid;
   gap: var(--mc-space-3);
@@ -328,6 +381,29 @@
   margin: 0;
   color: var(--mc-text-secondary);
   font-size: 13px;
+}
+
+.camera-annotation-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mc-space-2);
+}
+
+.camera-annotation-tools button {
+  min-height: 34px;
+  padding: 0 var(--mc-space-3);
+  border: 1px solid var(--mc-border-strong);
+  border-radius: var(--mc-radius-pill);
+  background: var(--mc-white);
+  color: var(--mc-text);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.camera-annotation-tools button.is-active {
+  border-color: #ef1111;
+  background: rgba(239, 17, 17, .08);
+  color: #b91c1c;
 }
 
 .system-top {
