@@ -3040,3 +3040,24 @@ body:has(.system) {
   border: 1px solid var(--mc-border);
   border-radius: var(--mc-radius-card);
 }
+
+.mail-template-editor {
+  display: grid;
+  gap: var(--mc-space-3);
+  margin-bottom: var(--mc-space-4);
+  padding: var(--mc-space-4);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-card);
+  background: var(--mc-surface-muted);
+}
+
+.mail-template-editor textarea {
+  min-height: 180px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.mail-template-editor label:nth-of-type(2) textarea {
+  min-height: 360px;
+}

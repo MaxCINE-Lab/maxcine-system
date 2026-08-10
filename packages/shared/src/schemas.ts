@@ -386,6 +386,12 @@ export const mailPreviewSchema = z.object({
   template: mailTemplateKeySchema.default('system_test')
 });
 
+export const updateMailTemplateSchema = z.object({
+  subject: z.string().trim().min(1, '请填写邮件主题').max(200, '邮件主题过长'),
+  html: z.string().trim().min(20, '请填写 HTML 内容').max(200000, 'HTML 内容过长'),
+  text: z.string().trim().max(30000, '纯文本内容过长').default('')
+});
+
 export const adminDamageReviewSchema = z.object({
   inspectionId: z.string().trim().min(1).max(120),
   finalDecision: z.enum(['保修内免费处理', '保外收费维修', '收费更换部件', '单独销售部件', '无故障退回', '拒绝保修', '整机更换', '其他']),

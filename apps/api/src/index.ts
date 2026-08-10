@@ -3,7 +3,7 @@ import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
-  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
@@ -611,6 +611,21 @@ function mailSampleData(env: Env, template: MailTemplateKey): MailTemplateData {
     reference: template === 'service_report' ? '服务单号 CAS-ABCDE-12345' : undefined,
     fields: fields[template],
     sections: sections[template]
+  };
+}
+
+async function resolvedMailTemplate(db: D1Database, env: Env, template: MailTemplateKey): Promise<{ template: MailTemplateKey; subject: string; html: string; text: string; isCustomized: boolean; updatedAt: string | null }> {
+  const override = await one<{ subject: string; html: string; text: string; updatedAt: string }>(db,
+    'SELECT subject, html_content AS html, text_content AS text, updated_at AS updatedAt FROM mail_center_templates WHERE template_key = ?', template);
+  if (override) return { template, subject: override.subject, html: override.html, text: override.text, isCustomized: true, updatedAt: override.updatedAt };
+  const data = mailSampleData(env, template);
+  return {
+    template,
+    subject: mailSubject(template, mailEnvironment(env)),
+    html: renderMailHtml(data),
+    text: renderMailText(data),
+    isCustomized: false,
+    updatedAt: null
   };
 }
 
@@ -3176,6 +3191,8 @@ app.get('/admin/mail-center/status', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'system:manage');
   const sender = notificationSender(c.env);
   const domain = await resendDomainStatus(c.env);
+  const templateOverrides = await all<{ templateKey: string; updatedAt: string }>(c.env.DB, 'SELECT template_key AS templateKey, updated_at AS updatedAt FROM mail_center_templates');
+  const overrideMap = new Map(templateOverrides.map((item) => [item.templateKey, item.updatedAt]));
   const recent = await all(c.env.DB, `SELECT id, provider, template_key AS templateKey, subject, to_email AS toEmail, from_email AS fromEmail,
     reply_to_email AS replyToEmail, status, failure_reason AS failureReason, provider_message_id AS providerMessageId, created_at AS createdAt, sent_at AS sentAt
     FROM mail_center_messages ORDER BY created_at DESC LIMIT 20`);
@@ -3186,7 +3203,7 @@ app.get('/admin/mail-center/status', requireAuth, async (c) => {
     from: { name: sender.name, address: sender.address },
     replyTo: { name: sender.replyToName, address: sender.replyTo },
     domain,
-    templates: Object.entries(mailTemplates).map(([key, value]) => ({ key, ...value })),
+    templates: Object.entries(mailTemplates).map(([key, value]) => ({ key, ...value, isCustomized: overrideMap.has(key), updatedAt: overrideMap.get(key) ?? null })),
     recent
   });
 });
@@ -3195,8 +3212,24 @@ app.post('/admin/mail-center/preview', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'system:manage');
   const input = await parseBody(c.req.raw, mailPreviewSchema);
   const template = input.template as MailTemplateKey;
-  const data = mailSampleData(c.env, template);
-  return c.json({ template, subject: mailSubject(template, mailEnvironment(c.env)), html: renderMailHtml(data), text: renderMailText(data) });
+  return c.json(await resolvedMailTemplate(c.env.DB, c.env, template));
+});
+
+app.patch('/admin/mail-center/templates/:template', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const template = c.req.param('template') as MailTemplateKey;
+  if (!(template in mailTemplates)) throw notFound('未找到该邮件模板');
+  const input = await parseBody(c.req.raw, updateMailTemplateSchema);
+  const previous = await one<{ subject: string; html: string; text: string }>(c.env.DB, 'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', template);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO mail_center_templates (template_key, subject, html_content, text_content, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(template_key) DO UPDATE SET subject = excluded.subject, html_content = excluded.html_content, text_content = excluded.text_content, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`)
+      .bind(template, input.subject, input.html, input.text, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'mail_template.update', entityType: 'mail_center_template', entityId: template, requestId: c.get('requestId'), before: previous, after: { subject: input.subject, html: input.html, text: input.text } })
+  ]);
+  return c.json({ template, subject: input.subject, html: input.html, text: input.text, isCustomized: true });
 });
 
 app.post('/admin/mail-center/test-send', requireAuth, async (c) => {
@@ -3207,12 +3240,9 @@ app.post('/admin/mail-center/test-send', requireAuth, async (c) => {
     WHERE sent_by = ? AND template_key = 'system_test' AND created_at >= datetime('now', '-60 seconds')`, user.id);
   if ((recent?.count ?? 0) >= 3) throw conflict('测试邮件发送过于频繁，请一分钟后再试');
   const template = input.template as MailTemplateKey;
-  const data = mailSampleData(c.env, template);
-  const html = renderMailHtml(data);
-  const text = renderMailText(data);
-  const subject = mailSubject(template, mailEnvironment(c.env));
-  const result = await sendViaMailCenter(c, { template, to: input.recipient, subject, html, text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'mail_center_test', relatedEntityId: user.id });
-  return c.json({ ...result, status: result.sent ? 'sent' : 'failed', subject });
+  const resolved = await resolvedMailTemplate(c.env.DB, c.env, template);
+  const result = await sendViaMailCenter(c, { template, to: input.recipient, subject: resolved.subject, html: resolved.html, text: resolved.text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'mail_center_test', relatedEntityId: user.id });
+  return c.json({ ...result, status: result.sent ? 'sent' : 'failed', subject: resolved.subject });
 });
 
 app.get('/admin/dashboard', requireAuth, async (c) => {
