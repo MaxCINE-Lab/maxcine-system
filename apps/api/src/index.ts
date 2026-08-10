@@ -476,6 +476,16 @@ function attachmentObjectKey(caseId: string, category: string, filename: string)
   return `after-sales/${caseId}/${category}/${crypto.randomUUID()}${ext ? `.${ext}` : ''}`;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
@@ -2040,7 +2050,7 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
     all(c.env.DB, 'SELECT result, details, assessed_at AS assessedAt, users.name AS actorName FROM after_sales_assessments JOIN users ON users.id = after_sales_assessments.assessed_by WHERE case_id = ? ORDER BY assessed_at DESC', serviceCase.id),
     all(c.env.DB, 'SELECT recommendation, details, recommended_at AS recommendedAt, users.name AS actorName FROM after_sales_recommendations JOIN users ON users.id = after_sales_recommendations.recommended_by WHERE case_id = ? ORDER BY recommended_at DESC', serviceCase.id),
     all(c.env.DB, 'SELECT outcome, resolution, note, approved_at AS approvedAt, users.name AS actorName FROM after_sales_approvals JOIN users ON users.id = after_sales_approvals.approved_by WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id),
-    all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, data_url AS dataUrl, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
     all(c.env.DB, `SELECT event_type AS eventType, title, description, metadata_json AS metadataJson, users.name AS actorName, after_sales_timeline.created_at AS createdAt FROM after_sales_timeline LEFT JOIN users ON users.id = after_sales_timeline.actor_id WHERE case_id = ? ORDER BY after_sales_timeline.created_at ASC`, serviceCase.id),
     all(c.env.DB, `SELECT received_items_json AS receivedItemsJson, packaging_intact AS packagingIntact, packaging_note AS packagingNote, items_match AS itemsMatch, missing_items_note AS missingItemsNote, receipt_note AS receiptNote, users.name AS receivedByName, received_at AS receivedAt FROM after_sales_receipts JOIN users ON users.id = after_sales_receipts.received_by WHERE case_id = ? ORDER BY received_at DESC`, serviceCase.id),
     all(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
@@ -2088,16 +2098,18 @@ app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
   if (category === 'customer_problem_photo' && await countAttachments(c.env.DB, serviceCase.id, category) >= 5) throw conflict('问题照片最多上传 5 张');
   if (category === 'accidental_damage' && await countAttachments(c.env.DB, serviceCase.id, category) >= 10) throw conflict('意外损坏照片最多上传 10 张');
   if (category !== 'customer_problem_photo' && category !== 'accidental_damage' && !canOperateAssignedCase(user, serviceCase.serviceCenterId) && !can(user, 'data:read:all')) throw forbidden('只有管理员或被分配服务中心可以上传该阶段照片');
+  const fileBuffer = await file.arrayBuffer();
+  const dataUrl = `data:${file.type};base64,${arrayBufferToBase64(fileBuffer)}`;
   const key = c.env.ASSETS
     ? attachmentObjectKey(serviceCase.id, category, file.name || 'photo')
     : `local-placeholder://${serviceCase.id}/${category}/${id()}-${file.name || 'photo'}`;
   if (c.env.ASSETS) {
-    await c.env.ASSETS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+    await c.env.ASSETS.put(key, fileBuffer, { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
   }
   const attachmentId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, original_filename, content_type, file_size, uploaded_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(attachmentId, serviceCase.id, category, photoSlot, key, file.name || 'photo', file.type, file.size, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, data_url, original_filename, content_type, file_size, uploaded_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(attachmentId, serviceCase.id, category, photoSlot, key, dataUrl, file.name || 'photo', file.type, file.size, user.id),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_uploaded', '上传售后图片', ?, ?)`).bind(id(), serviceCase.id, `${category}${photoSlot ? ` / ${photoSlot}` : ''}`, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_upload', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { category, photoSlot, key } })
   ]);
@@ -2821,7 +2833,12 @@ app.get('/assets/:id', requireAuth, async (c) => {
     throw forbidden('未找到该资产或你无权查看');
   }
   const visibility = eventVisibilityScope(user);
-  const [identifiers, events, serviceCases, notes, sales, audit] = await Promise.all([
+  const assetSnValues = [asset.currentSn, asset.originalSn].filter((value): value is string => Boolean(value)).map((value) => value.toUpperCase());
+  const snPlaceholders = assetSnValues.map(() => '?').join(', ');
+  const afterSalesPhotoWhere = assetSnValues.length
+    ? `(after_sales_cases.asset_id = ? OR UPPER(after_sales_cases.serial_number) IN (${snPlaceholders}))`
+    : `after_sales_cases.asset_id = ?`;
+  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
     all(c.env.DB, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.subject, after_sales_cases.description, service_centers.name AS serviceCenterName, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt,
@@ -2833,9 +2850,15 @@ app.get('/assets/:id', requireAuth, async (c) => {
       WHERE after_sales_cases.asset_id = ? ORDER BY after_sales_cases.updated_at DESC`, asset.id),
     hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? ORDER BY created_at DESC`, asset.id) : all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? AND visibility <> 'admin_private' ORDER BY created_at DESC`, asset.id),
     hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
-    hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
+    hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([]),
+    all(c.env.DB, `SELECT shipment_photos.id, 'shipment' AS source, shipment_photos.category, shipment_photos.data_url AS dataUrl, shipment_photos.original_filename AS originalFilename, shipment_photos.content_type AS contentType, users.name AS uploadedByName, shipment_photos.created_at AS createdAt, orders.order_no AS relatedNo, shipments.tracking_number AS trackingNumber
+      FROM shipment_photos LEFT JOIN users ON users.id = shipment_photos.uploaded_by LEFT JOIN orders ON orders.id = shipment_photos.order_id LEFT JOIN shipments ON shipments.id = shipment_photos.shipment_id
+      WHERE shipment_photos.order_id = ? ORDER BY shipment_photos.created_at DESC`, asset.latestOrderId || ''),
+    all(c.env.DB, `SELECT after_sales_attachments.id, 'after_sales' AS source, after_sales_attachments.category, after_sales_attachments.photo_slot AS photoSlot, after_sales_attachments.data_url AS dataUrl, after_sales_attachments.original_filename AS originalFilename, after_sales_attachments.content_type AS contentType, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt, after_sales_cases.case_no AS relatedNo
+      FROM after_sales_attachments JOIN after_sales_cases ON after_sales_cases.id = after_sales_attachments.case_id LEFT JOIN users ON users.id = after_sales_attachments.uploaded_by
+      WHERE ${afterSalesPhotoWhere} ORDER BY after_sales_attachments.created_at DESC`, asset.id, ...assetSnValues)
   ]);
-  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
+  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit, photos: [...shipmentPhotos, ...afterSalesPhotos] });
 });
 
 app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {

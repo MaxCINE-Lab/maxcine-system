@@ -140,6 +140,7 @@ type CaseDetailV2 = {
     id: string;
     category: string;
     photoSlot: string;
+    dataUrl: string;
     originalFilename: string;
     uploadedByName: string;
     createdAt: string;
@@ -987,9 +988,7 @@ function CasePageV2({
   const photoPreviews = (category: string) => {
     const local = localPhotoPreviews[category] ?? [];
     const uploaded = (data?.attachments ?? []).filter((item) => item.category === category);
-    const uploadedOnly = uploaded.filter(
-      (item) => !local.some((preview) => preview.fileName === item.originalFilename),
-    );
+    const uploadedOnly = uploaded.filter((item) => !local.some((preview) => preview.fileName === item.originalFilename));
     if (!local.length && !uploadedOnly.length) return null;
     return (
       <div className="service-photo-preview-grid">
@@ -1006,7 +1005,19 @@ function CasePageV2({
             </button>
           </figure>
         ))}
-        {uploadedOnly.map((item) => (
+        {uploadedOnly.map((item) => item.dataUrl ? (
+          <figure key={item.id} className="service-photo-preview">
+            <img src={item.dataUrl} alt={`${item.originalFilename} 预览`} />
+            <figcaption>{item.originalFilename}</figcaption>
+            <button
+              type="button"
+              className="table-action"
+              onClick={() => setPhotoViewer({ url: item.dataUrl, title: item.originalFilename })}
+            >
+              查看
+            </button>
+          </figure>
+        ) : (
           <figure key={item.id} className="service-photo-preview service-photo-preview--file">
             <span>已上传</span>
             <figcaption>{item.originalFilename}</figcaption>
