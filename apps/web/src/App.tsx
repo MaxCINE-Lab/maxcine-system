@@ -53,10 +53,6 @@ function Button({ children, secondary = false, href, onClick, type = 'button', d
   return href ? <a className={className} href={href}>{children}</a> : <button className={className} onClick={onClick} type={type} disabled={disabled}>{children}</button>;
 }
 
-function Home() {
-  return <PublicLayout><section className="hero"><div className="eyebrow">MAXCINE · PROFESSIONAL DISPLAY</div><h1>让每一次呈现<br />更接近本意。</h1><p>MaxCINE 为专业渠道提供简洁、可靠的产品、库存与履约体验。</p><div className="button-row"><Button href="#/products">探索产品</Button><Button secondary href="#/login">进入业务系统</Button></div><div className="hero-art"><div className="hero-screen"><img src="/assets/maxcine-logo-lockup.jpg" alt="MaxCINE 标志" /></div><p>专业设备 · 渠道服务 · 全程可追溯</p></div></section><section className="feature-grid section"><Feature number="01" title="清晰的信息" text="围绕产品、库存、订单和售后建立一致的信息层级。" /><Feature number="02" title="可靠的履约" text="从审核、拣货到顺丰运单与产品 SN，关键节点均可追溯。" /><Feature number="03" title="克制的服务" text="交易通知、资料下载与售后入口保持清楚、直接、易于使用。" /></section><section className="statement section"><div><span className="eyebrow">为渠道而设</span><h2>专业并不复杂。<br />它应当自然发生。</h2></div><a className="text-link" href="#/service">了解服务体系 <span>›</span></a></section></PublicLayout>;
-}
-
 function Feature({ number, title, text }: { number: string; title: string; text: string }) {
   return <article className="feature"><span>{number}</span><h3>{title}</h3><p>{text}</p></article>;
 }
@@ -89,7 +85,7 @@ function PageHero({ eyebrow, title, text }: { eyebrow: string; title: string; te
 function SystemShell({ user, children, title, subtitle }: { user: SessionUser; children: ReactNode; title: string; subtitle?: string }) {
   const [open, setOpen] = useState(false);
   const signOut = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { location.hash = '#/login'; } };
-  return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><AccountMenu user={user} logout={() => void signOut()} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><SystemNavigation user={user} route={location.hash.slice(1) || '/system/dashboard'} onNavigate={() => setOpen(false)} /><a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
+  return <div className="system"><header className="system-top"><Logo compact /><button className="menu-toggle" aria-label="打开菜单" onClick={() => setOpen(!open)}>菜单</button><AccountMenu user={user} logout={() => void signOut()} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><SystemNavigation user={user} route={location.hash.slice(1) || '/system/dashboard'} onNavigate={() => setOpen(false)} /></aside><main className="system-main"><header className="page-title"><div><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1>{subtitle && <p>{subtitle}</p>}</div></header>{children}</main></div>;
 }
 
 function EnvironmentBadge() {
@@ -189,7 +185,13 @@ function isDealerRoute(path: string): boolean {
 }
 
 function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void; onLogout: () => void }) {
-  if (route === '/') return <Home />;
+  if (route === '/') {
+    if (user) {
+      location.hash = `#${defaultSystemRoute(user)}`;
+      return null;
+    }
+    return <Login onLogin={onLogin} />;
+  }
   if (route === '/products') return <Products />;
   if (route === '/downloads') return <Downloads />;
   if (route === '/service') return <Service />;

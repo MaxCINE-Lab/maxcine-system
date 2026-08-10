@@ -361,9 +361,6 @@ function Shell({
           route={route}
           onNavigate={() => setOpen(false)}
         />
-        <a href="#/" className="nav-exit">
-          返回官网
-        </a>
       </aside>
       <main className="system-main">{children}</main>
     </div>
