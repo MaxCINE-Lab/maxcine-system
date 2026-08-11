@@ -596,6 +596,11 @@
   fill: #ef1111;
 }
 
+.camera-photo-preview polygon {
+  fill: #ef1111;
+  stroke: none;
+}
+
 .camera-photo-controls {
   display: grid;
   gap: var(--mc-space-3);

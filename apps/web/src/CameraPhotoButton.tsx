@@ -31,12 +31,51 @@ type CapturedImage = {
   height: number;
 };
 
+type ArrowGeometry = {
+  shaftEndX: number;
+  shaftEndY: number;
+  tipX: number;
+  tipY: number;
+  leftX: number;
+  leftY: number;
+  rightX: number;
+  rightY: number;
+};
+
 const cameraUnavailableText =
   "当前浏览器无法调用摄像头，请确认已允许摄像头权限，或改用选择图片。";
 
 const formatCaptureTime = (value: Date) => {
   const pad = (input: number) => String(input).padStart(2, "0");
   return `${value.getFullYear()}-${pad(value.getMonth() + 1)}-${pad(value.getDate())} ${pad(value.getHours())}:${pad(value.getMinutes())}:${pad(value.getSeconds())}`;
+};
+
+const arrowGeometry = (annotation: Annotation, width: number, height: number): ArrowGeometry | null => {
+  const dx = annotation.x2 - annotation.x1;
+  const dy = annotation.y2 - annotation.y1;
+  const length = Math.hypot(dx, dy);
+  if (length < 1) return null;
+  const unitX = dx / length;
+  const unitY = dy / length;
+  const perpX = -unitY;
+  const perpY = unitX;
+  const headLength = Math.min(
+    Math.max(28, Math.round(Math.max(width, height) * 0.03)),
+    Math.max(12, length * 0.42),
+  );
+  const headWidth = headLength * 0.72;
+  const baseX = annotation.x2 - unitX * headLength;
+  const baseY = annotation.y2 - unitY * headLength;
+  return {
+    shaftEndX: baseX,
+    shaftEndY: baseY,
+    tipX: annotation.x2,
+    tipY: annotation.y2,
+    leftX: baseX + perpX * headWidth * 0.5,
+    leftY: baseY + perpY * headWidth * 0.5,
+    rightX: baseX - perpX * headWidth * 0.5,
+    rightY: baseY - perpY * headWidth * 0.5,
+  };
 };
 
 export function CameraPhotoButton({
@@ -234,25 +273,16 @@ export function CameraPhotoButton({
   };
 
   const drawArrow = (context: CanvasRenderingContext2D, annotation: Annotation) => {
-    const angle = Math.atan2(annotation.y2 - annotation.y1, annotation.x2 - annotation.x1);
-    const headLength = Math.max(28, Math.round(Math.max(context.canvas.width, context.canvas.height) * 0.026));
-    const headAngle = Math.PI / 7;
-    const shaftEndX = annotation.x2 - headLength * 0.72 * Math.cos(angle);
-    const shaftEndY = annotation.y2 - headLength * 0.72 * Math.sin(angle);
+    const arrow = arrowGeometry(annotation, context.canvas.width, context.canvas.height);
+    if (!arrow) return;
     context.beginPath();
     context.moveTo(annotation.x1, annotation.y1);
-    context.lineTo(shaftEndX, shaftEndY);
+    context.lineTo(arrow.shaftEndX, arrow.shaftEndY);
     context.stroke();
     context.beginPath();
-    context.moveTo(annotation.x2, annotation.y2);
-    context.lineTo(
-      annotation.x2 - headLength * Math.cos(angle - Math.PI / 6),
-      annotation.y2 - headLength * Math.sin(angle - headAngle),
-    );
-    context.lineTo(
-      annotation.x2 - headLength * Math.cos(angle + headAngle),
-      annotation.y2 - headLength * Math.sin(angle + headAngle),
-    );
+    context.moveTo(arrow.tipX, arrow.tipY);
+    context.lineTo(arrow.leftX, arrow.leftY);
+    context.lineTo(arrow.rightX, arrow.rightY);
     context.closePath();
     context.fill();
   };
@@ -357,31 +387,27 @@ export function CameraPhotoButton({
                 >
                   <img src={captured.dataUrl} alt="拍照预览" draggable={false} />
                   <svg viewBox={`0 0 ${captured.width} ${captured.height}`} aria-hidden="true">
-                    {[...annotations, ...(draftAnnotation ? [draftAnnotation] : [])].map((annotation) =>
-                      annotation.type === "rect" ? (
-                        <rect
-                          key={annotation.id}
-                          x={Math.min(annotation.x1, annotation.x2)}
-                          y={Math.min(annotation.y1, annotation.y2)}
-                          width={Math.abs(annotation.x2 - annotation.x1)}
-                          height={Math.abs(annotation.y2 - annotation.y1)}
-                        />
-                      ) : (
-                        <line
-                          key={annotation.id}
-                          x1={annotation.x1}
-                          y1={annotation.y1}
-                          x2={annotation.x2}
-                          y2={annotation.y2}
-                          markerEnd="url(#camera-arrow-head)"
-                        />
-                      ),
-                    )}
-                    <defs>
-                      <marker id="camera-arrow-head" markerWidth="24" markerHeight="24" refX="22" refY="12" orient="auto" markerUnits="userSpaceOnUse">
-                        <path d="M2,4 L22,12 L2,20 Z" />
-                      </marker>
-                    </defs>
+                    {[...annotations, ...(draftAnnotation ? [draftAnnotation] : [])].map((annotation) => {
+                      if (annotation.type === "rect") {
+                        return (
+                          <rect
+                            key={annotation.id}
+                            x={Math.min(annotation.x1, annotation.x2)}
+                            y={Math.min(annotation.y1, annotation.y2)}
+                            width={Math.abs(annotation.x2 - annotation.x1)}
+                            height={Math.abs(annotation.y2 - annotation.y1)}
+                          />
+                        );
+                      }
+                      const arrow = arrowGeometry(annotation, captured.width, captured.height);
+                      if (!arrow) return null;
+                      return (
+                        <g key={annotation.id}>
+                          <line x1={annotation.x1} y1={annotation.y1} x2={arrow.shaftEndX} y2={arrow.shaftEndY} />
+                          <polygon points={`${arrow.tipX},${arrow.tipY} ${arrow.leftX},${arrow.leftY} ${arrow.rightX},${arrow.rightY}`} />
+                        </g>
+                      );
+                    })}
                   </svg>
                 </div>
               </div>
