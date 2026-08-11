@@ -63,6 +63,31 @@ export const shipmentSchema = z.object({
   })).max(3).default([])
 });
 
+const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'outbound_product_back', 'outbound_all_items']);
+
+export const afterSalesOutboundShipmentSchema = z.object({
+  carrier: z.string().trim().min(2, '请填写快递公司').max(40).default('顺丰速运'),
+  trackingNumber: optionalTrackingSchema.default(''),
+  serialNumber: z.string().transform((value) => value.replace(/[\r\n\t]/g, '').trim().toUpperCase()).pipe(
+    z.string().max(100).regex(/^[A-Z0-9._\-/]*$/, 'SN 只能包含字母、数字和常用连接符')
+  ).default(''),
+  shippedAt: z.string().trim().max(40).default(''),
+  photos: z.array(z.object({
+    slot: afterSalesOutboundPhotoSlotSchema,
+    originalFilename: z.string().trim().min(1).max(180),
+    contentType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+    dataUrl: z.string().max(750000).refine(
+      (value) => /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+      '发货照片仅支持 PNG、JPG 或 WebP 图片'
+    )
+  })).length(3, '请上传三张发货照片：产品正面、产品背面、全部物品')
+}).superRefine((value, context) => {
+  const slots = new Set(value.photos.map((photo) => photo.slot));
+  for (const slot of afterSalesOutboundPhotoSlotSchema.options) {
+    if (!slots.has(slot)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['photos'], message: '请上传三张发货照片：产品正面、产品背面、全部物品' });
+  }
+});
+
 export const orderFulfillmentSchema = z.object({
   packageMaterials: z.array(z.enum(['顺丰f1纸箱', '顺丰f2纸箱', '普通纸箱', '定制纸箱', '防水袋', '文件袋', '葫芦泡（白色普通）', '葫芦泡（蓝色加强）'])).max(8).default([]),
   carrier: z.string().trim().min(2).max(40).default('顺丰速运'),

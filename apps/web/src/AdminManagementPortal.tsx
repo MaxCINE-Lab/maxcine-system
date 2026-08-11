@@ -2,7 +2,8 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
-import { AccountMenu, SystemNavigation, displayRoleLabel, displayRoleText } from './systemNavigation';
+import { CameraPhotoButton } from './CameraPhotoButton';
+import { AccountMenu, SystemNavigation, displayRoleLabel, displayRoleText, employeeNumberForUser } from './systemNavigation';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
 type Notice = { tone: 'error' | 'success'; text: string } | null;
@@ -188,7 +189,7 @@ type ServiceCaseV2 = ServiceCase & { serviceStage: string; serialNumber: string 
 type FaultChainView = { id: string; inspectionId: string; faultPart: string; damageType: string; causeType: string; derivedSymptomsJson: string; evidence: string; severity: string; repairability: string; recommendedAction: string; engineerNote: string };
 type InspectionMaterialView = { id: string; inspectionId: string; materialId: string; materialCode: string; materialName: string; quantity: number; handlingMethod: string; unitPriceCents: number | null; serviceFeeCents: number | null; suggestedTotalCents: number | null; priceStatus: string; serviceFeeStatus: string; compatibilityStatus: string; compatibilityWarning: string; compatibilityOverrideReason: string; engineerNote: string };
 type ServiceDetailV2 = {
-  case: ServiceDetail['case'] & { assetId: string | null; serviceStage: string; caseType: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; orderNo: string | null; materialCode: string | null; productVersion: string | null; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string };
+  case: ServiceDetail['case'] & { assetId: string | null; serviceStage: string; caseType: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; orderNo: string | null; materialCode: string | null; productVersion: string | null; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; outboundCarrier: string; outboundTrackingNumber: string; outboundSerialNumber: string; outboundShippedAt: string | null; outboundRecordedAt: string | null; outboundMailStatus: string; outboundMailFailureReason: string; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string };
   assessments: Array<{ result: string; details: string; actorName: string; assessedAt: string }>;
   recommendations: Array<{ recommendation: string; details: string; actorName: string; recommendedAt: string }>;
   attachments: Array<{ id: string; category: string; photoSlot: string; objectKey?: string; dataUrl?: string; originalFilename: string; contentType?: string; uploadedByName: string; createdAt: string }>;
@@ -200,7 +201,7 @@ type ServiceDetailV2 = {
   quotes: Array<{ id: string; quoteNo: string; version: number; finalDecision: string; totalCents: number; currency: string; status: string; workflowStatus: string; customerName: string; customerEmail: string; fromEmail: string; replyToEmail: string; validUntil: string; createdAt: string; confirmedAt: string | null; sentAt: string | null; emailStatus: string | null; emailFailureReason: string | null }>;
   timeline: Array<{ eventType: string; title: string; description: string; actorName: string | null; createdAt: string }>;
 };
-const serviceStageText: Record<string, string> = { PENDING_ADMIN_REVIEW: '待审核', NEEDS_MORE_INFO: '已退回补充', WAITING_CUSTOMER_SHIPMENT: '待客户寄修', WAITING_SERVICE_CENTER_RECEIPT: '待服务中心收货', WAITING_INSPECTION: '待检测', INSPECTION_IN_PROGRESS: '检测中', PENDING_ADMIN_INSPECTION_REVIEW: '待出报价', INSPECTION_RETURNED: '检测结果退回', PENDING_QUOTE: '待出报价', WAITING_CUSTOMER_CONFIRMATION: '等待客户确认', READY_FOR_PROCESSING: '待处理', WAITING_PAYMENT_CONFIRMATION: '确认收款', WAITING_REPAIR_SHIPMENT: '待维修及发货', CLOSED: '已关闭' };
+const serviceStageText: Record<string, string> = { PENDING_ADMIN_REVIEW: '待审核', NEEDS_MORE_INFO: '已退回补充', WAITING_CUSTOMER_SHIPMENT: '待客户寄修', WAITING_SERVICE_CENTER_RECEIPT: '待服务中心收货', WAITING_INSPECTION: '待检测', INSPECTION_IN_PROGRESS: '检测中', PENDING_ADMIN_INSPECTION_REVIEW: '待出报价', INSPECTION_RETURNED: '检测结果退回', PENDING_QUOTE: '待出报价', WAITING_CUSTOMER_CONFIRMATION: '等待客户确认', READY_FOR_PROCESSING: '待处理', WAITING_PAYMENT_CONFIRMATION: '确认收款', WAITING_REPAIR_SHIPMENT: '待维修及发货', RETURN_SHIPPED: '售后已发货', CLOSED: '已关闭' };
 const caseTypeText: Record<string, string> = { OUT_OF_WARRANTY_REPAIR: '保外维修类', INSTALLATION_ISSUE: '安装异常类', QUALITY_ISSUE: '质量问题类', IMAGE_QUALITY_ISSUE: '拍摄效果类', MISSING_ACCESSORY: '缺少配件类', PART_PURCHASE: '单独购买部件类' };
 const afterSalesPhotoText: Record<string, string> = {
   customer_problem_photo: '客户问题照片',
@@ -216,7 +217,18 @@ const afterSalesPhotoText: Record<string, string> = {
   accidental_damage: '意外损坏照片',
   inspection_other: '其他检测照片'
 };
+const afterSalesPhotoSlotText: Record<string, string> = {
+  outbound_product_front: '售后发货产品正面照片',
+  outbound_product_back: '售后发货产品背面照片',
+  outbound_all_items: '售后发货全部物品照片'
+};
 const afterSalesPhotoOrder = ['customer_problem_photo', 'package_label', 'received_items_front', 'received_items_back', 'product_front', 'product_back', 'product_left', 'product_right', 'product_top', 'product_bottom', 'accidental_damage', 'inspection_other'];
+const outboundPhotoSlots = [
+  { slot: 'outbound_product_front', label: '产品正面照片' },
+  { slot: 'outbound_product_back', label: '产品背面照片' },
+  { slot: 'outbound_all_items', label: '全部物品照片' }
+] as const;
+type OutboundPhotoDraft = { slot: (typeof outboundPhotoSlots)[number]['slot']; originalFilename: string; contentType: 'image/png' | 'image/jpeg' | 'image/webp'; dataUrl: string };
 const finalDecisionOptions = ['保修内免费处理', '保外收费维修', '收费更换部件', '单独销售部件', '无故障退回', '拒绝保修', '整机更换', '其他'];
 type QuoteItemDraft = { itemName: string; itemType: string; quantity: string; unitPrice: string; serviceFee: string; discount: string; note: string; customerNote: string; materialId?: string; materialCode?: string; quickFeeCode?: string };
 const freshQuoteItem = (): QuoteItemDraft => ({ itemName: '维修服务', itemType: '维修费', quantity: '1', unitPrice: '0', serviceFee: '0', discount: '0', note: '', customerNote: '' });
@@ -302,6 +314,12 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const [confirmSendOpen, setConfirmSendOpen] = useState(false);
   const [quoteRecipientEmail, setQuoteRecipientEmail] = useState('');
   const [photoViewer, setPhotoViewer] = useState<{ url: string; title: string } | null>(null);
+  const [outboundCarrier, setOutboundCarrier] = useState('顺丰速运');
+  const [outboundTracking, setOutboundTracking] = useState('');
+  const [outboundSerial, setOutboundSerial] = useState('');
+  const [outboundShippedAt, setOutboundShippedAt] = useState(() => new Date().toISOString().slice(0, 16));
+  const [outboundPhotos, setOutboundPhotos] = useState<Partial<Record<OutboundPhotoDraft['slot'], OutboundPhotoDraft>>>({});
+  const [outboundBusy, setOutboundBusy] = useState(false);
   const load = () => api<{ cases: ServiceCaseV2[] }>('/after-sales?limit=100').then((data) => setItems(data.cases)).catch((error) => setNotice({ tone: 'error', text: errorText(error) }));
   const open = async (caseId: string) => {
     try {
@@ -327,6 +345,11 @@ function AfterSalesV2({ user, route, logout }: Props) {
       setConfirmSendOpen(false);
       setQuoteRecipientEmail('');
       setPhotoViewer(null);
+      setOutboundCarrier(detail.case.outboundCarrier || '顺丰速运');
+      setOutboundTracking(detail.case.outboundTrackingNumber || '');
+      setOutboundSerial(detail.case.outboundSerialNumber || detail.case.serialNumber || '');
+      setOutboundShippedAt(detail.case.outboundShippedAt ? detail.case.outboundShippedAt.slice(0, 16) : new Date().toISOString().slice(0, 16));
+      setOutboundPhotos({});
     } catch (error) {
       setNotice({ tone: 'error', text: errorText(error) });
     }
@@ -359,6 +382,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const engineerSelectionPendingCount = selectedEngineerMaterials.filter((item) => item.suggestedTotalCents === null).length;
   const catalogSelectionTotalCents = selectedCatalogMaterials.reduce((sum, item) => sum + (item.outOfWarrantyPriceCents ?? 0) + (item.calculatedServiceFeeCents ?? 0), 0);
   const catalogSelectionPendingCount = selectedCatalogMaterials.filter((item) => item.outOfWarrantyPriceCents === null || (item.calculatedServiceFeeCents === null && item.calculatedServiceFeeStatus !== 'included')).length;
+  const cameraWatermarkLines = ['山东省服务中心', `工号 ${employeeNumberForUser(user) ?? '9353'}`];
   const appendQuoteItems = (rows: QuoteItemDraft[]) => setQuoteItems((current) => {
     const nextIds = new Set(rows.map((item) => item.materialId).filter(Boolean));
     return [...current.filter((item) => !item.materialId || !nextIds.has(item.materialId)), ...rows];
@@ -432,6 +456,41 @@ function AfterSalesV2({ user, route, logout }: Props) {
       void load();
     } catch (error) {
       setNotice({ tone: 'error', text: errorText(error) });
+    }
+  };
+  const readOutboundPhoto = (slot: OutboundPhotoDraft['slot'], file: File | undefined) => {
+    if (!file) return;
+    if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return setNotice({ tone: 'error', text: '发货照片仅支持 PNG、JPG 或 WebP 图片。' });
+    const reader = new FileReader();
+    reader.onload = () => {
+      setOutboundPhotos((current) => ({
+        ...current,
+        [slot]: { slot, originalFilename: file.name || `${slot}.jpg`, contentType: file.type as OutboundPhotoDraft['contentType'], dataUrl: String(reader.result || '') }
+      }));
+    };
+    reader.onerror = () => setNotice({ tone: 'error', text: '图片读取失败，请重新选择。' });
+    reader.readAsDataURL(file);
+  };
+  const submitOutboundShipment = async () => {
+    if (!selected) return;
+    const photos = outboundPhotoSlots.map((item) => outboundPhotos[item.slot]).filter(Boolean) as OutboundPhotoDraft[];
+    if (photos.length !== outboundPhotoSlots.length) return setNotice({ tone: 'error', text: '请上传三张发货照片：产品正面、产品背面、全部物品。' });
+    setOutboundBusy(true);
+    try {
+      const result = await api<{ serviceStage: string; mailStatus: string; failureReason: string }>(`/after-sales/${selected.case.id}/outbound-shipment`, {
+        method: 'POST',
+        body: JSON.stringify({ carrier: outboundCarrier, trackingNumber: outboundTracking, serialNumber: outboundSerial, shippedAt: outboundShippedAt, photos })
+      });
+      const text = result.mailStatus === 'sent'
+        ? '售后发货已记录，发货邮件已发送给客户。'
+        : `售后发货已记录，但发货邮件发送失败：${result.failureReason || '请检查邮件配置。'}`;
+      setNotice({ tone: result.mailStatus === 'sent' ? 'success' : 'error', text });
+      await open(selected.case.id);
+      void load();
+    } catch (error) {
+      setNotice({ tone: 'error', text: errorText(error) });
+    } finally {
+      setOutboundBusy(false);
     }
   };
   const quotePayload = (workflowStatus: 'DRAFT' | 'READY_FOR_REVIEW') => ({ inspectionSummary: quoteSummary, finalDecision, validUntil: quoteValidUntil, estimatedCycle: quoteCycle, paymentInstructions: '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。', note: '', workflowStatus, items: quoteItems.map((item) => ({ itemName: item.itemName, itemType: item.itemType, quantity: Number(item.quantity), unitPriceCents: centsFromYuan(item.unitPrice), serviceFeeCents: Math.max(0, centsFromYuan(item.serviceFee || '0')), discountCents: Math.max(0, centsFromYuan(item.discount || '0')), materialId: item.materialId, materialCode: item.materialCode || '', customerNote: item.customerNote, note: item.note })) });
@@ -509,19 +568,19 @@ function AfterSalesV2({ user, route, logout }: Props) {
     <Feedback notice={notice} />
     <section className="toolbar"><a className="button" href="#/system/after-sales/new">代客户提交工单</a><Button secondary onClick={() => setShowMaterials(!showMaterials)}>{showMaterials ? '返回工单' : '售后物料'}</Button></section>
     {showMaterials ? <RepairMaterialsPanel notice={setNotice} /> : <>
-      <div className="filter-row">{[['PENDING_ADMIN_REVIEW', '待审核'], ['WAITING_CUSTOMER_SHIPMENT', '待寄修'], ['WAITING_SERVICE_CENTER_RECEIPT', '待收货'], ['INSPECTION_IN_PROGRESS', '检测中'], ['PENDING_QUOTE', '待出报价'], ['WAITING_PAYMENT_CONFIRMATION', '确认收款'], ['READY_FOR_PROCESSING', '待处理'], ['WAITING_REPAIR_SHIPMENT', '待维修及发货'], ['all', '全部']].map(([value, label]) => <button key={value} className={`filter ${stage === value ? 'active' : ''}`} onClick={() => setStage(value)}>{label}</button>)}</div>
+      <div className="filter-row">{[['PENDING_ADMIN_REVIEW', '待审核'], ['WAITING_CUSTOMER_SHIPMENT', '待寄修'], ['WAITING_SERVICE_CENTER_RECEIPT', '待收货'], ['INSPECTION_IN_PROGRESS', '检测中'], ['PENDING_QUOTE', '待出报价'], ['WAITING_PAYMENT_CONFIRMATION', '确认收款'], ['READY_FOR_PROCESSING', '待处理'], ['WAITING_REPAIR_SHIPMENT', '待维修及发货'], ['RETURN_SHIPPED', '售后已发货'], ['all', '全部']].map(([value, label]) => <button key={value} className={`filter ${stage === value ? 'active' : ''}`} onClick={() => setStage(value)}>{label}</button>)}</div>
       <div className="table-wrap"><table><thead><tr><th>工单编号</th><th>问题</th><th>产品 / SN</th><th>阶段</th><th>创建时间</th><th>操作</th></tr></thead><tbody>{filtered.map((item) => <tr key={item.id}><td>{item.caseNo}</td><td>{caseTypeText[item.caseType] ?? item.subject}</td><td>{item.productName || '—'} / {item.serialNumber || '—'}</td><td>{serviceStageText[item.serviceStage] ?? item.serviceStage}</td><td>{date(item.createdAt)}</td><td><Button secondary onClick={() => void open(item.id)}>查看处理</Button></td></tr>)}</tbody></table></div>
       {!items && <p>正在加载…</p>}
       {items?.length === 0 && <Empty text="暂无售后工单。" />}
       {selected && <section className="panel after-sales-detail">
         {photoViewer && <div className="service-photo-viewer" role="dialog" aria-modal="true"><div className="service-photo-viewer__dialog"><header><strong>{photoViewer.title}</strong><button type="button" onClick={() => setPhotoViewer(null)} aria-label="关闭图片预览">×</button></header><img src={photoViewer.url} alt={`${photoViewer.title} 大图预览`} /></div></div>}
         <h2>{selected.case.caseNo} · {caseTypeText[selected.case.caseType] ?? selected.case.subject}</h2>
-        <dl className="detail-grid"><dt>当前阶段</dt><dd>{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}</dd><dt>经销商</dt><dd>{selected.case.dealerName}</dd><dt>店铺</dt><dd>{selected.case.storeName || '—'}</dd><dt>产品</dt><dd>{selected.case.productName || '—'} {selected.case.productVersion || ''}</dd><dt>SN</dt><dd>{selected.case.serialNumber || '—'}</dd><dt>客户</dt><dd>{selected.case.contactName || '—'} / {selected.case.contactPhone || '—'} / {selected.case.contactEmail || '—'}</dd><dt>客户地址</dt><dd>{selected.case.contactAddress || '—'}</dd><dt>寄修单号</dt><dd>{selected.case.inboundCarrier || '—'} {selected.case.inboundTrackingNumber || ''}</dd></dl>
+        <dl className="detail-grid"><dt>当前阶段</dt><dd>{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}</dd><dt>经销商</dt><dd>{selected.case.dealerName}</dd><dt>店铺</dt><dd>{selected.case.storeName || '—'}</dd><dt>产品</dt><dd>{selected.case.productName || '—'} {selected.case.productVersion || ''}</dd><dt>SN</dt><dd>{selected.case.serialNumber || '—'}</dd><dt>客户</dt><dd>{selected.case.contactName || '—'} / {selected.case.contactPhone || '—'} / {selected.case.contactEmail || '—'}</dd><dt>客户地址</dt><dd>{selected.case.contactAddress || '—'}</dd><dt>寄修单号</dt><dd>{selected.case.inboundCarrier || '—'} {selected.case.inboundTrackingNumber || ''}</dd><dt>售后发货</dt><dd>{selected.case.outboundCarrier || '—'} {selected.case.outboundTrackingNumber || ''}{selected.case.outboundShippedAt ? ` · ${date(selected.case.outboundShippedAt)}` : ''}</dd><dt>发货邮件</dt><dd>{selected.case.outboundMailStatus === 'sent' ? '已发送' : selected.case.outboundMailStatus === 'failed' ? `发送失败：${selected.case.outboundMailFailureReason || '原因未知'}` : '—'}</dd></dl>
         <div className="action-list"><a className="button button--secondary" href={`#/system/service-center/cases/${selected.case.id}`}>进入检测/定损处理</a></div>
         <section><h3>问题资料</h3><p>{selected.case.description}</p><p className="hint">用户备注：{selected.case.customerNote || '—'}；内部备注：{selected.case.internalNote || '—'}</p></section>
         <section><h3>工单与定损图片</h3>{groupedPhotos.length ? <div className="service-photo-preview-grid admin-after-sales-photos">{groupedPhotos.map((attachment) => {
           const url = photoUrl(attachment);
-          const title = `${afterSalesPhotoText[attachment.category] ?? attachment.category}${attachment.photoSlot ? ` · ${attachment.photoSlot}` : ''}`;
+          const title = afterSalesPhotoSlotText[attachment.photoSlot] || `${afterSalesPhotoText[attachment.category] ?? attachment.category}${attachment.photoSlot ? ` · ${attachment.photoSlot}` : ''}`;
           return <figure key={attachment.id} className="service-photo-preview">
             <img src={url} alt={`${title} 预览`} />
             <figcaption><strong>{title}</strong><span>{attachment.originalFilename}</span><small>{attachment.uploadedByName || '—'} · {date(attachment.createdAt)}</small></figcaption>
@@ -539,7 +598,10 @@ function AfterSalesV2({ user, route, logout }: Props) {
           <label>检测结论摘要<textarea value={quoteSummary} onChange={(event) => setQuoteSummary(event.target.value)} /></label><div className="quote-quick-phrases" aria-label="报价单快捷短句">{quoteQuickPhrases.map((phrase, index) => <button type="button" key={phrase} onClick={() => setQuoteSummary((value) => `${value}${value.trim() ? '\n\n' : ''}${phrase}`)}>{index === 0 ? phrase : `${phrase.slice(0, 24)}…`}</button>)}</div><label>最终方案<select value={finalDecision} onChange={(event) => setFinalDecision(event.target.value)}>{finalDecisionOptions.map((item) => <option key={item}>{item}</option>)}</select></label><label>管理员内部定损备注<textarea value={inspectionNote} onChange={(event) => setInspectionNote(event.target.value)} placeholder="仅内部记录，不会进入客户邮件" /></label><label>报价有效期<input type="date" value={quoteValidUntil} onChange={(event) => setQuoteValidUntil(event.target.value)} /></label><label>预计周期<input value={quoteCycle} onChange={(event) => setQuoteCycle(event.target.value)} /></label>
           <h4>四、最终报价项目</h4><div className="table-wrap" id="admin-final-quote-items"><table><thead><tr><th>项目</th><th>类型</th><th>数量</th><th>单价（元）</th><th>服务费（元）</th><th>折扣（元）</th><th>实时小计</th><th>内部备注</th><th>客户备注</th><th>操作</th></tr></thead><tbody>{quoteItems.map((item, index) => <tr key={`${item.materialId ?? item.quickFeeCode ?? 'manual'}-${index}`}><td><input value={item.itemName} onChange={(event) => updateQuoteItem(index, { itemName: event.target.value })} /></td><td><select value={item.itemType} onChange={(event) => updateQuoteItem(index, { itemType: event.target.value })}>{['维修物料', '更换组件', '服务费', '检测费', '维修费', '配件费', '人工费', '运费', '折扣', '其他'].map((value) => <option key={value}>{value}</option>)}</select></td><td><input type="number" min="1" step="1" value={item.quantity} onChange={(event) => updateQuoteItem(index, { quantity: event.target.value })} /></td><td><input type="number" step="0.01" value={item.unitPrice} onChange={(event) => updateQuoteItem(index, { unitPrice: event.target.value })} /></td><td><input type="number" min="0" step="0.01" value={item.serviceFee} onChange={(event) => updateQuoteItem(index, { serviceFee: event.target.value })} /></td><td><input type="number" min="0" step="0.01" value={item.discount} onChange={(event) => updateQuoteItem(index, { discount: event.target.value })} /></td><td className="quote-line-total">{money(quoteItemSubtotalCents(item))}</td><td><input value={item.note} onChange={(event) => updateQuoteItem(index, { note: event.target.value })} /></td><td><input value={item.customerNote} onChange={(event) => updateQuoteItem(index, { customerNote: event.target.value })} /></td><td><Button secondary onClick={() => setQuoteItems((rows) => rows.filter((_, i) => i !== index))}>移除</Button></td></tr>)}</tbody></table></div>{!quoteItems.length && <p className="hint">尚未生成报价项。请先从上方区域勾选物料、选择服务费，或增加手工费用项。</p>}{quoteItems.length > 0 && <div className="quote-total-bar" aria-live="polite"><span>共 {quoteItems.length} 项</span><span>折扣前 <strong>{money(quoteSubtotalBeforeDiscountCents)}</strong></span><span>折扣 <strong>-{money(quoteDiscountCents)}</strong></span><span>报价总额 <strong>{money(quoteTotalCents)}</strong></span></div>}<div className="action-list"><Button secondary onClick={() => setQuoteItems((rows) => [...rows, freshQuoteItem()])}>增加手工费用项</Button><Button disabled={quoteBusy} onClick={() => void saveQuote('READY_FOR_REVIEW')}>{quoteBusy ? '正在生成…' : '生成报价预览'}</Button></div></section>}
         {selected.case.serviceStage === 'WAITING_PAYMENT_CONFIRMATION' && <section><h3>确认收款</h3><p className="hint">该工单报价金额大于 0 元。客户付款到账后，由管理员确认收款，工单将进入待维修及发货流程。</p><div className="action-list"><Button onClick={() => void confirmPayment()}>确认已收款</Button></div></section>}
-        {['READY_FOR_PROCESSING', 'WAITING_REPAIR_SHIPMENT'].includes(selected.case.serviceStage) && <section><h3>{selected.case.serviceStage === 'READY_FOR_PROCESSING' ? '待处理' : '待维修及发货'}</h3><p className="hint">{selected.case.serviceStage === 'READY_FOR_PROCESSING' ? '该工单报价为 0 元，产品服务报告书发送后已自动进入待处理流程。' : '管理员已确认收款，请继续安排维修、替换或后续发货。'}</p></section>}
+        <section><h3>售后发货</h3>{['READY_FOR_PROCESSING', 'WAITING_REPAIR_SHIPMENT'].includes(selected.case.serviceStage) ? <><p className="hint">{selected.case.serviceStage === 'READY_FOR_PROCESSING' ? '该工单报价为 0 元，产品服务报告书发送后已自动进入待处理流程。处理完成后在这里记录发货。' : '管理员已确认收款，请继续安排维修、替换或后续发货。'}照片仅用于系统内留档，不会发送给客户。</p><div className="form-layout"><label>快递公司<input value={outboundCarrier} onChange={(event) => setOutboundCarrier(event.target.value)} /></label><label>快递单号<input value={outboundTracking} onChange={(event) => setOutboundTracking(event.target.value)} placeholder="可为空" /></label><label>产品 SN（如有）<input value={outboundSerial} onChange={(event) => setOutboundSerial(event.target.value)} placeholder="可为空" /></label><label>发货时间<input type="datetime-local" value={outboundShippedAt} onChange={(event) => setOutboundShippedAt(event.target.value)} /></label></div><div className="service-photo-preview-grid admin-after-sales-photos">{outboundPhotoSlots.map((item) => {
+          const photo = outboundPhotos[item.slot];
+          return <figure key={item.slot} className="service-photo-preview"><figcaption><strong>{item.label}</strong><span>请上传本次售后寄回发货照片。</span></figcaption>{photo && <img src={photo.dataUrl} alt={`${item.label}预览`} />}<div className="action-list"><label className="button button--secondary">选择图片<input type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={(event) => readOutboundPhoto(item.slot, event.target.files?.[0])} /></label><CameraPhotoButton label={photo ? '重新拍照' : '摄像头拍照'} fileNamePrefix={`after-sales-outbound-${item.slot}`} watermarkLines={cameraWatermarkLines} maxOutputWidth={1600} quality={0.82} onCapture={(file) => readOutboundPhoto(item.slot, file)} onError={(text) => setNotice({ tone: 'error', text })} />{photo && <Button secondary onClick={() => setPhotoViewer({ url: photo.dataUrl, title: item.label })}>查看预览</Button>}</div></figure>;
+        })}</div><div className="action-list"><Button disabled={outboundBusy} onClick={() => void submitOutboundShipment()}>{outboundBusy ? '正在记录发货…' : '确认售后发货并发送邮件'}</Button></div></> : selected.case.serviceStage === 'RETURN_SHIPPED' ? <dl className="detail-grid"><dt>快递公司</dt><dd>{selected.case.outboundCarrier || '—'}</dd><dt>快递单号</dt><dd>{selected.case.outboundTrackingNumber || '—'}</dd><dt>产品 SN</dt><dd>{selected.case.outboundSerialNumber || selected.case.serialNumber || '—'}</dd><dt>发货时间</dt><dd>{date(selected.case.outboundShippedAt)}</dd><dt>邮件状态</dt><dd>{selected.case.outboundMailStatus === 'sent' ? '客户发货邮件已发送' : selected.case.outboundMailStatus === 'failed' ? `发送失败：${selected.case.outboundMailFailureReason || '请检查邮件配置'}` : '—'}</dd></dl> : <p className="hint">该工单当前阶段为“{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}”。报价发送后为 0 元会进入“待处理”，收费工单确认收款后会进入“待维修及发货”，届时可在这里记录发货并发送客户邮件。</p>}</section>
         <section><h3>报价记录</h3>{selected.quotes.length ? <div className="table-wrap"><table><thead><tr><th>报价单</th><th>版本</th><th>状态</th><th>金额</th><th>收件邮箱</th><th>邮件结果</th><th>操作</th></tr></thead><tbody>{selected.quotes.map((quote) => <tr key={quote.id}><td>{quote.quoteNo}</td><td>V{quote.version}</td><td>{quoteWorkflowText[quote.workflowStatus] || quote.workflowStatus}</td><td>{money(quote.totalCents)}</td><td>{quote.customerEmail || '—'}</td><td>{quote.emailStatus === 'sent' ? '已发送' : quote.emailStatus === 'failed' ? `失败：${quote.emailFailureReason || '原因未知'}` : '尚未发送'}</td><td><Button secondary onClick={() => void loadQuotePreview(quote.id, ['DRAFT', 'READY_FOR_REVIEW'].includes(quote.workflowStatus))}>预览</Button></td></tr>)}</tbody></table></div> : <p>暂无报价。</p>}</section>
         <section><h3>售后进度</h3><ul className="timeline">{selected.timeline.map((item) => <li key={`${item.eventType}-${item.createdAt}`}><i /><span><strong>{item.title}</strong><small>{date(item.createdAt)} · {item.actorName || '系统'} · {item.description || '—'}</small></span></li>)}</ul></section>
       </section>}

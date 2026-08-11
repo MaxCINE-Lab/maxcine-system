@@ -210,6 +210,7 @@ const serviceStageName: Record<string, string> = {
   READY_FOR_PROCESSING: "待处理",
   WAITING_PAYMENT_CONFIRMATION: "等待确认收款",
   WAITING_REPAIR_SHIPMENT: "待维修及发货",
+  RETURN_SHIPPED: "售后已发货",
   CLOSED: "已关闭",
 };
 const receivedItemOptions = [

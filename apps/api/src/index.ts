@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
-  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
+  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
@@ -490,6 +490,12 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
     binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
   }
   return btoa(binary);
+}
+
+function dataUrlToBytes(dataUrl: string): { contentType: string; bytes: Uint8Array } {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw badRequest('图片内容格式有误，请重新上传');
+  return { contentType: match[1], bytes: Uint8Array.from(atob(match[2]), (char) => char.charCodeAt(0)) };
 }
 
 function escapeHtml(value: string): string {
@@ -2136,13 +2142,16 @@ app.get('/after-sales', requireAuth, async (c) => {
 app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
-  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; orderNo: string | null; productId: string | null; productName: string | null; productVersion: string | null; materialCode: string | null; serialNumber: string | null; assetId: string | null; caseType: string; subject: string; description: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; inboundRecordedAt: string | null; status: string; workflowStage: string; serviceStage: string; sourceRole: string; sourceServiceCenterId: string | null; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string }>(c.env.DB,
+  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; orderNo: string | null; productId: string | null; productName: string | null; productVersion: string | null; materialCode: string | null; serialNumber: string | null; assetId: string | null; caseType: string; subject: string; description: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; inboundRecordedAt: string | null; outboundCarrier: string; outboundTrackingNumber: string; outboundSerialNumber: string; outboundShippedAt: string | null; outboundRecordedAt: string | null; outboundMailStatus: string; outboundMailFailureReason: string; status: string; workflowStage: string; serviceStage: string; sourceRole: string; sourceServiceCenterId: string | null; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string }>(c.env.DB,
     `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, after_sales_cases.store_id AS storeId, stores.name AS storeName,
       after_sales_cases.order_id AS orderId, orders.order_no AS orderNo, after_sales_cases.product_id AS productId, products.name AS productName, products.product_version AS productVersion, products.sku AS materialCode,
       after_sales_cases.serial_number AS serialNumber, after_sales_cases.asset_id AS assetId, after_sales_cases.case_type AS caseType, after_sales_cases.subject AS subject, after_sales_cases.description AS description,
       after_sales_cases.customer_note AS customerNote, after_sales_cases.internal_note AS internalNote, after_sales_cases.contact_name AS contactName, after_sales_cases.contact_phone AS contactPhone, after_sales_cases.customer_email AS contactEmail,
       after_sales_cases.customer_address AS contactAddress, after_sales_cases.inbound_carrier AS inboundCarrier, after_sales_cases.inbound_tracking_number AS inboundTrackingNumber, after_sales_cases.inbound_note AS inboundNote,
-      after_sales_cases.inbound_recorded_at AS inboundRecordedAt, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.service_stage AS serviceStage,
+      after_sales_cases.inbound_recorded_at AS inboundRecordedAt, after_sales_cases.outbound_carrier AS outboundCarrier, after_sales_cases.outbound_tracking_number AS outboundTrackingNumber,
+      after_sales_cases.outbound_serial_number AS outboundSerialNumber, after_sales_cases.outbound_shipped_at AS outboundShippedAt, after_sales_cases.outbound_recorded_at AS outboundRecordedAt,
+      after_sales_cases.outbound_mail_status AS outboundMailStatus, after_sales_cases.outbound_mail_failure_reason AS outboundMailFailureReason,
+      after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.service_stage AS serviceStage,
       after_sales_cases.source_role AS sourceRole, after_sales_cases.source_service_center_id AS sourceServiceCenterId, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt,
       after_sales_cases.admin_review_note AS adminReviewNote, after_sales_cases.final_decision AS finalDecision, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
      FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id
@@ -2694,6 +2703,75 @@ app.post('/after-sales/:id/payment/confirm', requireAuth, async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.payment_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { serviceStage: 'WAITING_REPAIR_SHIPMENT' } })
   ]);
   return c.json({ id: serviceCase.id, serviceStage: 'WAITING_REPAIR_SHIPMENT' });
+});
+
+app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, afterSalesOutboundShipmentSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!['READY_FOR_PROCESSING', 'WAITING_REPAIR_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前还不能发货');
+  if (!serviceCase.contactEmail) throw conflict('该工单缺少客户邮箱，无法发送发货通知');
+  const previous = await one<{ id: string }>(c.env.DB, "SELECT id FROM after_sales_cases WHERE id = ? AND service_stage = 'RETURN_SHIPPED'", serviceCase.id);
+  if (previous) throw conflict('该工单已完成售后发货，请勿重复提交');
+  const uploadedPhotos = await Promise.all(input.photos.map(async (photo) => {
+    const parsed = dataUrlToBytes(photo.dataUrl);
+    const key = c.env.ASSETS
+      ? attachmentObjectKey(serviceCase.id, 'inspection_other', photo.originalFilename)
+      : `local-placeholder://${serviceCase.id}/inspection_other/${id()}-${photo.originalFilename}`;
+    if (c.env.ASSETS) {
+      await c.env.ASSETS.put(key, parsed.bytes, {
+        httpMetadata: { contentType: parsed.contentType },
+        customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: photo.originalFilename, photoSlot: photo.slot }
+      });
+    }
+    return { ...photo, id: id(), key, fileSize: parsed.bytes.byteLength };
+  }));
+  const shippedAt = input.shippedAt || new Date().toISOString();
+  const mailData: MailTemplateData = {
+    title: '售后发货通知',
+    preheader: `您的 MaxCINE 售后工单 ${serviceCase.caseNo} 已安排发货。`,
+    logoUrl: `${c.env.APP_ORIGIN || 'https://maxcine-web-staging.pages.dev'}/assets/quote-logo.png`,
+    reference: `案例号 ${serviceCase.caseNo}`,
+    fields: [
+      ['案例号', serviceCase.caseNo],
+      ['客户', serviceCase.contactName || '客户'],
+      ['产品', serviceCase.productName || 'MaxCINE 产品'],
+      ['产品 SN', input.serialNumber || serviceCase.serialNumber || '暂无数据'],
+      ['快递公司', input.carrier || '顺丰速运'],
+      ['快递单号', input.trackingNumber || '暂无数据'],
+      ['发货时间', shippedAt]
+    ],
+    sections: [
+      { heading: '发货说明', body: '您的售后产品已由 MaxCINE 安排寄出。请根据快递单号关注物流进度；如信息暂未更新，请稍后再查询。' },
+      { heading: '温馨提示', body: '发货照片仅用于 MaxCINE 内部留档，不会随邮件发送给客户。' }
+    ]
+  };
+  const mailContent = { subject: mailSubject('shipment_notice', mailEnvironment(c.env), serviceCase.caseNo), html: renderMailHtml(mailData), text: renderMailText(mailData) };
+  const mailResult = await sendViaMailCenter(c, {
+    template: 'shipment_notice',
+    to: serviceCase.contactEmail,
+    subject: mailContent.subject,
+    html: mailContent.html,
+    text: mailContent.text,
+    idempotencyKey: `after-sales-outbound-${serviceCase.id}-${input.trackingNumber || shippedAt}`,
+    actorId: user.id,
+    relatedEntityType: 'after_sales_case',
+    relatedEntityId: serviceCase.id
+  });
+  const description = `${input.carrier}${input.trackingNumber ? ` ${input.trackingNumber}` : ''}${input.serialNumber ? `；SN ${input.serialNumber}` : ''}；邮件${mailResult.sent ? '已发送' : `发送失败：${mailResult.failureReason || '请检查邮件配置'}`}`;
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'RETURN_SHIPPED', outbound_carrier = ?, outbound_tracking_number = ?, outbound_serial_number = ?,
+      outbound_shipped_at = ?, outbound_recorded_at = CURRENT_TIMESTAMP, outbound_recorded_by = ?, outbound_mail_status = ?, outbound_mail_failure_reason = ?,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.carrier, input.trackingNumber, input.serialNumber, shippedAt, user.id, mailResult.sent ? 'sent' : 'failed', mailResult.failureReason, user.id, serviceCase.id),
+    ...uploadedPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, data_url, original_filename, content_type, file_size, uploaded_by)
+      VALUES (?, ?, 'inspection_other', ?, ?, ?, ?, ?, ?, ?)`).bind(photo.id, serviceCase.id, photo.slot, photo.key, photo.dataUrl, photo.originalFilename, photo.contentType, photo.fileSize, user.id)),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id, metadata_json) VALUES (?, ?, 'outbound_shipped', '售后产品已发货', ?, ?, ?)`)
+      .bind(id(), serviceCase.id, description, user.id, JSON.stringify({ carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, photoSlots: uploadedPhotos.map((photo) => photo.slot), mailStatus: mailResult.sent ? 'sent' : 'failed' })),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.outbound_shipment', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, photoCount: uploadedPhotos.length, mailStatus: mailResult.sent ? 'sent' : 'failed', providerMessageId: mailResult.providerMessageId } })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'RETURN_SHIPPED', mailStatus: mailResult.sent ? 'sent' : 'failed', failureReason: mailResult.failureReason, providerMessageId: mailResult.providerMessageId });
 });
 
 app.post('/after-sales-quotes/:quoteId/new-version', requireAuth, async (c) => {
