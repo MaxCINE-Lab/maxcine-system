@@ -1,18 +1,19 @@
 import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
-  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
+  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
-  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
-import { sendEmail } from './email';
+import { mailSubject, mailTemplates, renderMailHtml, renderMailText, sendEmail, type MailTemplateData, type MailTemplateKey } from './email';
 import type { Env, Variables } from './types';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
 type OrderItemRow = { id: string; productId: string; name: string; sku: string; productVersion?: string; specification?: string; quantity: number; unitPriceCents: number };
+type FulfillmentItemRow = OrderItemRow & { inventoryId: string; availableQuantity: number; reservedQuantity: number };
 type DbUser = { id: string; email: string; passwordHash: string; name: string; isActive: number };
 
 const app = new Hono<App>();
@@ -67,6 +68,12 @@ function isAllowedOrigin(origin: string | undefined, appOrigin: string | undefin
 function statusLabel(status: string): string {
   return ({ draft: '草稿', submitted: '待审核', approved: '审核通过', rejected: '审核未通过', picking: '配货中', packed: '已打包', shipped: '已发货', delivered: '已签收', cancelled: '已取消' } as Record<string, string>)[status] ?? status;
 }
+
+const shipmentPhotoRequirements = [
+  { category: 'box_sn', label: '产品盒面 SN 照片', help: '请拍到产品盒子表面和清晰 SN。' },
+  { category: 'packed_photo_1', label: '打包完成照片 1', help: '请拍摄打包完成后的外观。' },
+  { category: 'packed_photo_2', label: '打包完成照片 2', help: '请从另一个角度拍摄打包完成状态。' }
+] as const;
 
 function assertPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, permission)) throw forbidden();
@@ -356,10 +363,11 @@ async function runStatementsInChunks(db: D1Database, statements: D1PreparedState
   for (let offset = 0; offset < statements.length; offset += size) await db.batch(statements.slice(offset, offset + size));
 }
 
-async function orderItemsForFulfillment(db: D1Database, orderId: string): Promise<Array<OrderItemRow & { inventoryId: string }>> {
-  return all<OrderItemRow & { inventoryId: string }>(db,
+async function orderItemsForFulfillment(db: D1Database, orderId: string): Promise<FulfillmentItemRow[]> {
+  return all<FulfillmentItemRow>(db,
     `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
-      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents, inventory.id AS inventoryId
+      products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents,
+      inventory.id AS inventoryId, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity
      FROM order_items JOIN inventory ON inventory.product_id = order_items.product_id LEFT JOIN products ON products.id = order_items.product_id
      WHERE order_items.order_id = ?`, orderId);
 }
@@ -371,9 +379,10 @@ async function allocatedSerialsForOrder(db: D1Database, orderId: string): Promis
      WHERE order_items.order_id = ? AND serial_numbers.state IN ('allocated','shipped')`, orderId);
 }
 
-async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string } | null> {
-  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string }>(db,
-    `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, assets.asset_status AS assetStatus
+async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string } | null> {
+  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string }>(db,
+    `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
+      assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus
      FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id
      WHERE assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
      ORDER BY CASE WHEN assets.current_sn = ? COLLATE NOCASE THEN 0 WHEN assets.original_sn = ? COLLATE NOCASE THEN 1 ELSE 2 END, assets.updated_at DESC
@@ -410,6 +419,7 @@ async function allocationStatementsForSerials(db: D1Database, input: { orderId: 
     if (existing?.orderId && existing.orderId !== input.orderId) throw conflict(`该 SN 已绑定其他订单：${serialNumber}`);
     const asset = await findAssetByIdentifier(db, serialNumber);
     if (!asset) throw notFound(`该 SN 不存在：${serialNumber}`);
+    if (asset.dataQualityStatus !== 'normal' || !asset.currentSn) throw conflict(`该 SN 属于待确认异常标签，不能发货：${serialNumber}`);
     const item = asset.productId
       ? items.find((value) => value.productId === asset.productId)
       : items.find((value) => asset.version && [value.productVersion, value.specification].filter(Boolean).includes(asset.version))
@@ -418,8 +428,15 @@ async function allocationStatementsForSerials(db: D1Database, input: { orderId: 
     if (!item) throw conflict(`该 SN 不属于本订单产品：${serialNumber}`);
     if ((counts.get(item.id) ?? 0) >= item.quantity) throw conflict(`产品 ${item.name} 已达到订单数量，不能继续绑定 SN`);
     counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
-    statements.push(db.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, order_item_id, bound_at, created_by, updated_by)
-      VALUES (?, ?, ?, 'allocated', ?, CURRENT_TIMESTAMP, ?, ?)`).bind(id(), item.productId, serialNumber, item.id, input.actorId, input.actorId));
+    if (existing?.id) {
+      if (existing.state !== 'available') throw conflict(`该 SN 当前不可发货：${serialNumber}`);
+      statements.push(db.prepare(`UPDATE serial_numbers SET product_id = ?, state = 'allocated', order_item_id = ?, bound_at = CURRENT_TIMESTAMP,
+        updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND state = 'available'`)
+        .bind(item.productId, item.id, input.actorId, existing.id));
+    } else {
+      statements.push(db.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, order_item_id, bound_at, created_by, updated_by)
+        VALUES (?, ?, ?, 'allocated', ?, CURRENT_TIMESTAMP, ?, ?)`).bind(id(), item.productId, serialNumber, item.id, input.actorId, input.actorId));
+    }
     serials.push({ serialNumber, productId: item.productId, orderItemId: item.id });
   }
   for (const item of items) {
@@ -465,6 +482,22 @@ function attachmentObjectKey(caseId: string, category: string, filename: string)
   return `after-sales/${caseId}/${category}/${crypto.randomUUID()}${ext ? `.${ext}` : ''}`;
 }
 
+function arrayBufferToBase64(buffer: ArrayBuffer): string {
+  const bytes = new Uint8Array(buffer);
+  let binary = '';
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+function dataUrlToBytes(dataUrl: string): { contentType: string; bytes: Uint8Array } {
+  const match = dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+  if (!match) throw badRequest('图片内容格式有误，请重新上传');
+  return { contentType: match[1], bytes: Uint8Array.from(atob(match[2]), (char) => char.charCodeAt(0)) };
+}
+
 function escapeHtml(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
@@ -479,13 +512,6 @@ async function getCaseForAccess(db: D1Database, user: SessionUser, caseId: strin
      WHERE after_sales_cases.id = ? AND ${scope.sql}`, caseId, ...scope.params);
   if (!serviceCase) throw forbidden('你无权查看或处理该售后工单');
   return serviceCase;
-}
-
-async function requireAttachments(db: D1Database, caseId: string, requirements: Array<{ category: string; slot?: string; label: string }>): Promise<void> {
-  for (const requirement of requirements) {
-    const attachment = await one<{ id: string }>(db, `SELECT id FROM after_sales_attachments WHERE case_id = ? AND category = ? AND photo_slot = ? ORDER BY created_at DESC LIMIT 1`, caseId, requirement.category, requirement.slot ?? '');
-    if (!attachment) throw conflict(`请先上传${requirement.label}`);
-  }
 }
 
 async function countAttachments(db: D1Database, caseId: string, category: string): Promise<number> {
@@ -515,6 +541,8 @@ type QuoteSnapshot = {
   customerPhone: string;
   customerEmail: string;
   customerAddress: string;
+  caseCustomerNote: string;
+  caseInternalNote: string;
   productName: string;
   productVersion: string;
   serialNumber: string;
@@ -522,6 +550,10 @@ type QuoteSnapshot = {
   serviceCenter: string;
   engineer: string;
   inspectedAt: string;
+  engineerNote: string;
+  testResult: string;
+  faultCause: string;
+  suggestedAction: string;
   customerDescription: string;
   diagnosisSummary: string;
   liabilityResult: string;
@@ -538,6 +570,7 @@ type QuoteSnapshot = {
   paymentInstructions: string;
   fromEmail: string;
   replyToEmail: string;
+  logoUrl?: string;
   pdfObjectKey: string | null;
 };
 
@@ -545,13 +578,139 @@ function moneyText(value: number): string {
   return `¥${(value / 100).toFixed(2)}`;
 }
 
-function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string } {
+const ALIPAY_PAYMENT_URL = 'https://qr.alipay.com/fkx13048tsi5aspx4dbzq72';
+
+function quotePaymentNoticeHtml(snapshot: QuoteSnapshot): string {
+  return `<div style="border:1px solid #e5e7eb;border-radius:16px;background:#f9fafb;padding:18px 20px">
+    <p style="margin:0 0 14px;color:#111827;font-weight:700">本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方按钮进行付款。</p>
+    <a href="${ALIPAY_PAYMENT_URL}" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#121315;color:#fff;text-decoration:none;font-weight:700">使用支付宝付款</a>
+    <p style="margin:12px 0 14px;color:#111827;font-weight:700">请您付款时添加备注您的案例号：${escapeHtml(snapshot.caseNumber)}</p>
+    <ol style="margin:0;padding-left:20px;color:#4b5563;line-height:1.8">
+      <li>请确认报价明细无误后再付款，我们将在确认款项到账后为您提供维修服务；</li>
+      <li>MaxCINE 将按照您登记的收货地址寄回产品。如有变动，请及时联系我们更改，您可通过邮箱 support@maxcine.cn 或您的经销商联系 MaxCINE 技术支持；</li>
+      <li>MaxCINE 将给您退回全额付费维修更换后的零部件（任何享有折扣、减免或优惠的维修旧件，更换后将归 MaxCINE 所有）；</li>
+      <li>为保证维修质量，MaxCINE 可能会升级或更换产品模块，如若升级或更换，S/N 也可能发生变更，但不影响正常使用售后服务；</li>
+      <li>MaxCINE 默认使用陆运为您寄回产品，如需物流加急，您可通过 MaxCINE 技术支持补差价付费升级顺丰特快类物流产品；</li>
+      <li>请您在收到我们发出的维修报价通知后 30 日内及时支付维修费用以便于我们将修好的产品寄送至您指定地址。如果您在规定时间内仍未支付维修费用，我们可能将产品退回您登记的收货地址；</li>
+      <li>若您最终选择不维修直接退回，您将有可能被收取一定的服务费用。</li>
+    </ol>
+  </div>`;
+}
+
+function quotePaymentNoticeText(snapshot: QuoteSnapshot): string {
+  return `本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方链接进行付款。
+使用支付宝付款：${ALIPAY_PAYMENT_URL}
+请您付款时添加备注您的案例号：${snapshot.caseNumber}
+
+1. 请确认报价明细无误后再付款，我们将在确认款项到账后为您提供维修服务；
+2. MaxCINE 将按照您登记的收货地址寄回产品。如有变动，请及时联系我们更改，您可通过邮箱 support@maxcine.cn 或您的经销商联系 MaxCINE 技术支持；
+3. MaxCINE 将给您退回全额付费维修更换后的零部件（任何享有折扣、减免或优惠的维修旧件，更换后将归 MaxCINE 所有）；
+4. 为保证维修质量，MaxCINE 可能会升级或更换产品模块，如若升级或更换，S/N 也可能发生变更，但不影响正常使用售后服务；
+5. MaxCINE 默认使用陆运为您寄回产品，如需物流加急，您可通过 MaxCINE 技术支持补差价付费升级顺丰特快类物流产品；
+6. 请您在收到我们发出的维修报价通知后 30 日内及时支付维修费用以便于我们将修好的产品寄送至您指定地址。如果您在规定时间内仍未支付维修费用，我们可能将产品退回您登记的收货地址；
+7. 若您最终选择不维修直接退回，您将有可能被收取一定的服务费用。`;
+}
+
+function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string; logoUrl: string } {
   return {
     address: env.NOTIFICATION_EMAIL_FROM || 'notification@maxcine.cn',
-    name: env.NOTIFICATION_EMAIL_NAME || 'MaxCINE 通知中心',
+    name: env.NOTIFICATION_EMAIL_NAME || '【请勿回复】MaxCINE 服务中心',
     replyTo: env.SUPPORT_EMAIL_REPLY_TO || 'support@maxcine.cn',
-    replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持'
+    replyToName: env.SUPPORT_EMAIL_REPLY_TO_NAME || 'MaxCINE 客户支持',
+    logoUrl: `${env.APP_ORIGIN || 'https://maxcine-web-staging.pages.dev'}/assets/quote-logo.png`
   };
+}
+
+const employeeNumberByEmail: Readonly<Record<string, string>> = {
+  '9353xuyan@maxcine.cn': '9353',
+  '8982warehouse@maxcine.cn': '8982',
+  '8016sun@maxcine.cn': '8016',
+  '0982chen@maxcine.cn': '0982',
+  '9527rui@maxcine.cn': '9527',
+  '3086zhu@maxcine.cn': '3086'
+};
+
+function employeeNumberFromEmail(email: string | null | undefined): string {
+  return employeeNumberByEmail[email?.trim().toLowerCase() ?? ''] ?? '';
+}
+
+function mailEnvironment(env: Env): 'local' | 'staging' | 'production' {
+  if (env.APP_ORIGIN?.includes('staging') || env.APP_ORIGIN?.includes('pages.dev')) return 'staging';
+  if (env.APP_ORIGIN?.includes('localhost') || env.APP_ORIGIN?.includes('127.0.0.1')) return 'local';
+  return 'production';
+}
+
+function mailSampleData(env: Env, template: MailTemplateKey): MailTemplateData {
+  const sender = notificationSender(env);
+  const fields: Record<MailTemplateKey, Array<[string, string]>> = {
+    system_test: [['当前 Provider', env.EMAIL_PROVIDER || 'mock'], ['发件人', `${sender.name} <${sender.address}>`], ['Reply-To', `${sender.replyToName} <${sender.replyTo}>`]],
+    after_sales_quote: [['案例号', 'CAS-ABCDE-12345'], ['产品 SN', '6901649533304'], ['报价总额', '¥180.00']],
+    service_report: [['服务单号', 'CAS-ABCDE-12345'], ['SN', '6901649533304'], ['产品', 'MaxCINE Mavic 4 Pro 增广镜'], ['检测日期', '2026-08-06'], ['保修状态', '保修中']],
+    shipment_notice: [['订单号', 'MC-20260806-DEMO'], ['快递公司', '顺丰速运'], ['运单号', 'SF-DEMO-0001']],
+    password_reset: [['账号', 'staff@example.test'], ['有效期', '30 分钟']]
+  };
+  const sections: Record<MailTemplateKey, MailTemplateData['sections']> = {
+    system_test: [{ heading: '测试说明', body: '这是一封 MaxCINE Mail Center 系统测试邮件，用于验证模板、发件人、Reply-To 和邮件服务配置。' }],
+    after_sales_quote: [{ heading: '检测结果', body: '经检测，产品需要更换部件并完成基础排查。' }, { heading: '最终处理方案', body: '管理员确认后按报价明细执行。' }],
+    service_report: [{ heading: '检测结果', body: '外观与功能检测已完成。' }, { heading: '处理方式', body: '按管理员审批结果执行。' }, { heading: '工程师意见', body: '建议按标准流程维修。' }, { heading: '管理员审批', body: '同意按客户确认结果继续处理。' }, { heading: '免责声明', body: '本报告仅用于本次 MaxCINE 售后服务处理，不作为其他用途证明。' }],
+    shipment_notice: [{ heading: '发货说明', body: '订单已完成发货确认，请留意物流状态。' }],
+    password_reset: [{ heading: '密码重置说明', body: '请使用管理员提供的临时信息完成密码重置，并尽快修改为个人密码。' }]
+  };
+  return {
+    title: mailTemplates[template].name,
+    preheader: mailTemplates[template].description,
+    logoUrl: sender.logoUrl,
+    reference: template === 'service_report' ? '服务单号 CAS-ABCDE-12345' : undefined,
+    fields: fields[template],
+    sections: sections[template]
+  };
+}
+
+async function resolvedMailTemplate(db: D1Database, env: Env, template: MailTemplateKey): Promise<{ template: MailTemplateKey; subject: string; html: string; text: string; isCustomized: boolean; updatedAt: string | null }> {
+  const override = await one<{ subject: string; html: string; text: string; updatedAt: string }>(db,
+    'SELECT subject, html_content AS html, text_content AS text, updated_at AS updatedAt FROM mail_center_templates WHERE template_key = ?', template);
+  if (override) return { template, subject: override.subject, html: override.html, text: override.text, isCustomized: true, updatedAt: override.updatedAt };
+  const data = mailSampleData(env, template);
+  return {
+    template,
+    subject: mailSubject(template, mailEnvironment(env)),
+    html: renderMailHtml(data),
+    text: renderMailText(data),
+    isCustomized: false,
+    updatedAt: null
+  };
+}
+
+async function resendDomainStatus(env: Env): Promise<{ status: string; detail: string }> {
+  if (env.EMAIL_PROVIDER !== 'resend') return { status: '未启用', detail: '当前 Provider 不是 Resend。' };
+  if (!env.RESEND_API_KEY) return { status: '未配置', detail: 'Cloudflare Secret 缺少 RESEND_API_KEY。' };
+  try {
+    const response = await fetch('https://api.resend.com/domains', { headers: { Authorization: `Bearer ${env.RESEND_API_KEY}` } });
+    const payload = await response.json().catch(() => ({})) as { data?: Array<{ name?: string; status?: string }> };
+    const domain = payload.data?.find((item) => item.name?.toLowerCase() === 'maxcine.cn');
+    return domain ? { status: domain.status || '未知', detail: `maxcine.cn：${domain.status || '未知'}` } : { status: '需在 Resend 后台确认', detail: '当前 Resend Key 可能仅有发送权限，无法读取域名列表；请以 Resend 后台域名验证状态和测试邮件发送结果为准。' };
+  } catch {
+    return { status: '检查失败', detail: '无法连接 Resend 域名接口。' };
+  }
+}
+
+async function sendViaMailCenter(c: Context<App>, input: { template: MailTemplateKey; to: string; subject: string; html: string; text: string; idempotencyKey: string; actorId: string; relatedEntityType?: string; relatedEntityId?: string }): Promise<{ messageId: string; sent: boolean; provider: string; providerMessageId: string; failureReason: string }> {
+  const sender = notificationSender(c.env);
+  const existing = await one<{ id: string; status: string; providerMessageId: string; failureReason: string; provider: string }>(c.env.DB,
+    'SELECT id, status, provider_message_id AS providerMessageId, failure_reason AS failureReason, provider FROM mail_center_messages WHERE idempotency_key = ?', input.idempotencyKey);
+  if (existing) return { messageId: existing.id, sent: existing.status === 'sent', provider: existing.provider, providerMessageId: existing.providerMessageId, failureReason: existing.failureReason };
+  const delivery = await sendEmail(c.env, { from: sender.address, fromName: sender.name, replyTo: sender.replyTo, replyToName: sender.replyToName, to: input.to, subject: input.subject, html: input.html, text: input.text }, input.idempotencyKey);
+  const messageId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO mail_center_messages (id, provider, template_key, subject, to_email, from_email, from_name, reply_to_email, reply_to_name,
+      status, failure_reason, provider_message_id, related_entity_type, related_entity_id, idempotency_key, html_content, text_content, sent_by, sent_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
+      .bind(messageId, delivery.provider, input.template, input.subject, input.to, sender.address, sender.name, sender.replyTo, sender.replyToName,
+        delivery.sent ? 'sent' : 'failed', delivery.failureReason, delivery.providerMessageId, input.relatedEntityType ?? '', input.relatedEntityId ?? '',
+        input.idempotencyKey, input.html, input.text, input.actorId, delivery.sent ? 'sent' : 'failed'),
+    dbAudit(c.env.DB, { actorId: input.actorId, action: delivery.sent ? 'mail.send' : 'mail.send_failed', entityType: 'mail_center_message', entityId: messageId, requestId: c.get('requestId'), after: { template: input.template, provider: delivery.provider, providerMessageId: delivery.providerMessageId, relatedEntityType: input.relatedEntityType, relatedEntityId: input.relatedEntityId } })
+  ]);
+  return { messageId, sent: delivery.sent, provider: delivery.provider, providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason };
 }
 
 function quoteHtml(snapshot: QuoteSnapshot): string {
@@ -566,15 +725,17 @@ function quoteHtml(snapshot: QuoteSnapshot): string {
     <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.customerNote || '—')}</td>
   </tr>`).join('');
   const detailRow = (label: string, value: string) => `<tr><td style="width:120px;padding:7px 0;color:#6b7280;vertical-align:top">${escapeHtml(label)}</td><td style="padding:7px 0;color:#111827">${escapeHtml(value || '暂无数据')}</td></tr>`;
+  const paymentAction = snapshot.grandTotalCents > 0 ? `<section style="padding:0 34px 26px">${quotePaymentNoticeHtml(snapshot)}</section>` : '';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>产品服务报告书 ${escapeHtml(snapshot.caseNumber)}</title></head>
   <body style="margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
   <main style="max-width:760px;margin:0 auto;padding:28px 14px"><section style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden">
-  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="https://maxcine.cn/assets/maxcine-logo-on-light.png" alt="MaxCINE" width="168" style="display:block;width:168px;max-width:48%;height:auto;margin-bottom:26px"><h1 style="margin:0 0 8px;font-size:26px;line-height:1.25">产品服务报告书</h1><p style="margin:0;color:#6b7280;font-size:14px">案例号 ${escapeHtml(snapshot.caseNumber)}</p></header>
+  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="${escapeHtml(snapshot.logoUrl || 'https://maxcine-web-staging.pages.dev/assets/quote-logo.png')}" alt="MaxCINE" width="188" style="display:block;width:188px;max-width:54%;height:auto;margin-bottom:26px"><h1 style="margin:0 0 8px;font-size:26px;line-height:1.25">产品服务报告书</h1><p style="margin:0;color:#6b7280;font-size:14px">案例号 ${escapeHtml(snapshot.caseNumber)}</p></header>
   <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 12px;font-size:17px">案例详情</h2><table role="presentation" style="width:100%;border-collapse:collapse;font-size:14px">${detailRow('案例号', snapshot.caseNumber)}${detailRow('报告日期', snapshot.reportDate)}${detailRow('客户', snapshot.customerName)}${detailRow('产品', `${snapshot.productName} ${snapshot.productVersion}`.trim())}${detailRow('产品 SN', snapshot.serialNumber)}${detailRow('检测时间', snapshot.inspectedAt)}${detailRow('保障状态', snapshot.warrantyStatus)}${detailRow('服务站点', snapshot.serviceCenter)}${detailRow('检测工程师', snapshot.engineer)}</table></section>
   <section style="padding:24px 34px;border-bottom:1px solid #e5e7eb"><h2 style="margin:0 0 10px;font-size:17px">用户问题描述</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.customerDescription || '暂无数据')}</p><h2 style="margin:24px 0 10px;font-size:17px">检测结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.diagnosisSummary)}</p><h2 style="margin:24px 0 10px;font-size:17px">定责结果</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.liabilityResult || '由 MaxCINE 管理员复核确认')}</p><h2 style="margin:24px 0 10px;font-size:17px">最终处理方案</h2><p style="margin:0;line-height:1.7;white-space:pre-wrap">${escapeHtml(snapshot.finalSolution)}</p></section>
   <section style="padding:24px 20px 28px"><h2 style="margin:0 14px 14px;font-size:17px">消耗物料和服务明细</h2><div style="overflow-x:auto"><table style="width:100%;min-width:680px;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f9fafb;color:#4b5563"><th style="padding:10px 8px;text-align:left">料号</th><th style="padding:10px 8px;text-align:left">项目</th><th style="padding:10px 8px">数量</th><th style="padding:10px 8px;text-align:right">单价</th><th style="padding:10px 8px;text-align:right">服务费</th><th style="padding:10px 8px;text-align:right">折扣</th><th style="padding:10px 8px;text-align:right">小计</th><th style="padding:10px 8px;text-align:left">说明</th></tr></thead><tbody>${rows}</tbody></table></div>
   <table role="presentation" style="width:100%;max-width:360px;margin:22px 0 0 auto;border-collapse:collapse;font-size:14px">${detailRow('项目及服务合计', moneyText(snapshot.subtotalCents))}${detailRow('折扣', snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0))}${detailRow('运费', moneyText(snapshot.shippingFeeCents))}<tr><td style="padding:12px 0;border-top:1px solid #111827;font-weight:700">总金额</td><td style="padding:12px 0;border-top:1px solid #111827;text-align:right;font-size:20px;font-weight:750">${moneyText(snapshot.grandTotalCents)}</td></tr></table></section>
-  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7"><p style="margin:0 0 6px">报价有效期：${escapeHtml(snapshot.validUntil)}；预计处理周期：${escapeHtml(snapshot.estimatedCycle || '待确认')}</p><p style="margin:0 0 6px">${escapeHtml(snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。')}</p>${snapshot.customerNote ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.customerNote)}</p>` : ''}<p style="margin:18px 0 0">此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。</p></footer>
+  ${paymentAction}
+  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7"><p style="margin:0 0 6px">报价有效期：${escapeHtml(snapshot.validUntil)}；预计处理周期：${escapeHtml(snapshot.estimatedCycle || '待确认')}</p>${snapshot.paymentInstructions ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.paymentInstructions)}</p>` : ''}${snapshot.customerNote ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.customerNote)}</p>` : ''}<p style="margin:18px 0 0">此邮件为系统自动发送，请勿直接回复。</p><p style="margin:0">若您对报价单有任何疑问，可联系 MaxCINE 技术支持获取协助（人工服务时间为每日 09:00-21:00），感谢您的理解。</p></footer>
   </section></main></body></html>`;
 }
 
@@ -611,9 +772,94 @@ ${items}
 报价有效期：${snapshot.validUntil}
 预计处理周期：${snapshot.estimatedCycle || '待确认'}
 
-${snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。'}
+${snapshot.paymentInstructions || ''}
+${snapshot.grandTotalCents > 0 ? `\n${quotePaymentNoticeText(snapshot)}` : ''}
 
-此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。`;
+此邮件为系统自动发送，请勿直接回复。
+若您对报价单有任何疑问，可联系 MaxCINE 技术支持获取协助（人工服务时间为每日 09:00-21:00），感谢您的理解。`;
+}
+
+function quoteTemplateValues(snapshot: QuoteSnapshot): Record<string, string> {
+  const quoteItemsText = snapshot.quoteItems.map((item) => `${item.materialCode || '—'} ${item.itemName} × ${item.quantity}：${moneyText(item.subtotalCents)}${item.customerNote ? `（${item.customerNote}）` : ''}`).join('\n');
+  const quoteItemsHtml = snapshot.quoteItems.map((item) => `<tr>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.materialCode || '—')}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.itemName)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:center">${item.quantity}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.unitPriceCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${moneyText(item.serviceFeeCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right">${item.discountCents ? `-${moneyText(item.discountCents)}` : '—'}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb;text-align:right;font-weight:600">${moneyText(item.subtotalCents)}</td>
+    <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.customerNote || '—')}</td>
+  </tr>`).join('');
+  return {
+    caseNumber: snapshot.caseNumber,
+    quoteNumber: snapshot.quoteNumber,
+    quoteVersion: String(snapshot.quoteVersion),
+    reportDate: snapshot.reportDate,
+    customerName: snapshot.customerName,
+    customerPhone: snapshot.customerPhone,
+    customerEmail: snapshot.customerEmail,
+    customerAddress: snapshot.customerAddress,
+    productName: snapshot.productName,
+    productVersion: snapshot.productVersion,
+    serialNumber: snapshot.serialNumber,
+    warrantyStatus: snapshot.warrantyStatus,
+    serviceCenter: snapshot.serviceCenter,
+    engineer: snapshot.engineer,
+    inspectedAt: snapshot.inspectedAt,
+    customerDescription: snapshot.customerDescription,
+    diagnosisSummary: snapshot.diagnosisSummary,
+    liabilityResult: snapshot.liabilityResult || '由 MaxCINE 管理员复核确认',
+    finalSolution: snapshot.finalSolution,
+    quoteItemsHtml,
+    quoteItemsText,
+    paymentActionHtml: snapshot.grandTotalCents > 0 ? quotePaymentNoticeHtml(snapshot) : '',
+    paymentActionText: snapshot.grandTotalCents > 0 ? quotePaymentNoticeText(snapshot) : '',
+    subtotal: moneyText(snapshot.subtotalCents),
+    discount: snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0),
+    shippingFee: moneyText(snapshot.shippingFeeCents),
+    grandTotal: moneyText(snapshot.grandTotalCents),
+    currency: snapshot.currency,
+    validUntil: snapshot.validUntil,
+    estimatedCycle: snapshot.estimatedCycle || '待确认',
+    customerNote: snapshot.customerNote,
+    paymentInstructions: snapshot.paymentInstructions,
+    logoUrl: snapshot.logoUrl || 'https://maxcine-web-staging.pages.dev/assets/quote-logo.png'
+  };
+}
+
+function ensurePaidQuotePaymentAction(html: string, snapshot: QuoteSnapshot): string {
+  const normalized = html
+    .replace(/本次报告金额为\s*([^，<]+)，如确认处理方案，可点击下方按钮使用支付宝付款。/g, `本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方按钮进行付款。`)
+    .replaceAll('立即支付（支付宝）', '使用支付宝付款')
+    .replaceAll('付款完成后请联系 MaxCINE 客户支持确认到账。', `请您付款时添加备注您的案例号：${escapeHtml(snapshot.caseNumber)}`)
+    .replaceAll('如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。', '');
+  if (snapshot.grandTotalCents <= 0 || normalized.includes(ALIPAY_PAYMENT_URL)) return normalized;
+  const action = `<section style="padding:0 34px 26px">${quoteTemplateValues(snapshot).paymentActionHtml}</section>`;
+  if (normalized.includes('<footer')) return normalized.replace('<footer', `${action}<footer`);
+  if (normalized.includes('</body>')) return normalized.replace('</body>', `${action}</body>`);
+  return `${normalized}${action}`;
+}
+
+function applyTemplateVariables(content: string, values: Record<string, string>, mode: 'html' | 'text'): string {
+  return Object.entries(values).reduce((output, [key, value]) => {
+    const safeValue = mode === 'html' && key !== 'quoteItemsHtml' ? escapeHtml(value) : value;
+    return output.replaceAll(`{{${key}}}`, safeValue);
+  }, content);
+}
+
+async function quoteMailContent(db: D1Database, snapshot: QuoteSnapshot, fallbackSubject: string): Promise<{ subject: string; html: string; text: string }> {
+  const override = await one<{ subject: string; html: string; text: string }>(db,
+    'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', 'after_sales_quote');
+  if (!override) return { subject: fallbackSubject, html: quoteHtml(snapshot), text: quoteText(snapshot) };
+  const values = quoteTemplateValues(snapshot);
+  const html = applyTemplateVariables(override.html, values, 'html');
+  const text = applyTemplateVariables(override.text || quoteText(snapshot), values, 'text');
+  return {
+    subject: applyTemplateVariables(override.subject, values, 'text'),
+    html: ensurePaidQuotePaymentAction(html, snapshot),
+    text: snapshot.grandTotalCents > 0 && !text.includes(ALIPAY_PAYMENT_URL) ? `${text}\n\n${values.paymentActionText}` : text
+  };
 }
 
 type QuoteCaseContext = {
@@ -625,6 +871,8 @@ type QuoteCaseContext = {
   customerEmail: string;
   customerAddress: string;
   customerDescription: string;
+  caseCustomerNote: string;
+  caseInternalNote: string;
   productName: string;
   productVersion: string;
   serialNumber: string;
@@ -634,16 +882,23 @@ type QuoteCaseContext = {
   serviceCenter: string;
   engineer: string;
   inspectedAt: string;
+  engineerNote: string;
+  testResult: string;
+  faultCause: string;
+  suggestedAction: string;
 };
 
 async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCaseContext> {
   const value = await one<QuoteCaseContext>(db, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.case_type AS caseType,
     COALESCE(after_sales_cases.contact_name, '') AS customerName, COALESCE(after_sales_cases.contact_phone, '') AS customerPhone,
-    after_sales_cases.customer_email AS customerEmail, after_sales_cases.customer_address AS customerAddress, after_sales_cases.description AS customerDescription,
+    COALESCE(after_sales_cases.customer_email, '') AS customerEmail, COALESCE(after_sales_cases.customer_address, '') AS customerAddress, COALESCE(after_sales_cases.description, '') AS customerDescription,
+    COALESCE(after_sales_cases.customer_note, '') AS caseCustomerNote, COALESCE(after_sales_cases.internal_note, '') AS caseInternalNote,
     COALESCE(products.name, assets.product_name_snapshot, '') AS productName, COALESCE(products.product_version, assets.version_snapshot, '') AS productVersion,
     COALESCE(after_sales_cases.serial_number, assets.current_sn, '') AS serialNumber, assets.warranty_start_at AS warrantyStartAt,
     assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, COALESCE(service_centers.name, '') AS serviceCenter,
-    COALESCE(engineer.name, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt
+    COALESCE(engineer.email, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt,
+    COALESCE(inspection.engineer_note, '') AS engineerNote, COALESCE(inspection.test_result, '') AS testResult,
+    COALESCE(inspection.fault_cause, '') AS faultCause, COALESCE(inspection.suggested_action, '') AS suggestedAction
     FROM after_sales_cases
     LEFT JOIN products ON products.id = after_sales_cases.product_id
     LEFT JOIN assets ON assets.id = after_sales_cases.asset_id
@@ -657,6 +912,7 @@ async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCa
     LEFT JOIN users engineer ON engineer.id = inspection.submitted_by
     WHERE after_sales_cases.id = ?`, caseId);
   if (!value) throw notFound('未找到该售后工单');
+  value.engineer = employeeNumberFromEmail(value.engineer) || value.engineer;
   return value;
 }
 
@@ -703,6 +959,8 @@ function quoteSnapshotFor(input: {
     customerPhone: input.context.customerPhone,
     customerEmail: input.context.customerEmail,
     customerAddress: input.context.customerAddress,
+    caseCustomerNote: input.context.caseCustomerNote,
+    caseInternalNote: input.context.caseInternalNote,
     productName: input.context.productName || 'MaxCINE 产品',
     productVersion: input.context.productVersion,
     serialNumber: input.context.serialNumber,
@@ -714,6 +972,10 @@ function quoteSnapshotFor(input: {
     serviceCenter: input.context.serviceCenter,
     engineer: input.context.engineer,
     inspectedAt: input.context.inspectedAt,
+    engineerNote: input.context.engineerNote,
+    testResult: input.context.testResult,
+    faultCause: input.context.faultCause,
+    suggestedAction: input.context.suggestedAction,
     customerDescription: input.context.customerDescription,
     diagnosisSummary: input.inspectionSummary,
     liabilityResult: input.finalDecision,
@@ -727,6 +989,7 @@ function quoteSnapshotFor(input: {
     paymentInstructions: input.paymentInstructions,
     fromEmail: input.sender.address,
     replyToEmail: input.sender.replyTo,
+    logoUrl: input.sender.logoUrl,
     pdfObjectKey: null
   };
 }
@@ -902,12 +1165,16 @@ app.post('/auth/login', async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'auth.login', entityType: 'user', entityId: user.id, requestId: c.get('requestId') })
   ]);
   const isSecure = new URL(c.req.url).protocol === 'https:';
-  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=28800${isSecure ? '; Secure' : ''}`);
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = isSecure || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
   return c.json({ user: sessionUser });
 });
 
 app.post('/auth/logout', requireAuth, (c) => {
-  c.header('Set-Cookie', 'mc_session=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0');
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = new URL(c.req.url).protocol === 'https:' || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=0${secure ? '; Secure' : ''}`);
   return c.body(null, 204);
 });
 
@@ -1433,14 +1700,15 @@ app.get('/orders/:id', requireAuth, async (c) => {
   const user = c.get('user');
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
-  const [items, shipment, overview] = await Promise.all([
+  const [items, shipment, overview, shipmentPhotos] = await Promise.all([
     all<OrderItemRow>(c.env.DB, `SELECT order_items.id, order_items.product_id AS productId, order_items.product_name_snapshot AS name, order_items.sku_snapshot AS sku,
       products.product_version AS productVersion, products.specification, order_items.quantity, order_items.unit_price_cents AS unitPriceCents
       FROM order_items LEFT JOIN products ON products.id = order_items.product_id WHERE order_items.order_id = ?`, order.id),
     one<{ id: string; trackingNumber: string; carrier: string; status: string; shippedAt: string }>(c.env.DB, `SELECT id, CASE WHEN tracking_number LIKE 'NO-TRACKING-%' THEN '' ELSE tracking_number END AS trackingNumber, carrier, status, shipped_at AS shippedAt FROM shipments WHERE order_id = ?`, order.id),
     one<{ storeName: string; createdByName: string; reviewedByName: string | null }>(c.env.DB, `SELECT stores.name AS storeName, creator.name AS createdByName, reviewer.name AS reviewedByName
       FROM orders JOIN stores ON stores.id = orders.store_id JOIN users AS creator ON creator.id = orders.created_by
-      LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id)
+      LEFT JOIN users AS reviewer ON reviewer.id = orders.reviewed_by WHERE orders.id = ?`, order.id),
+    all<{ category: string; fileName: string; contentType: string; dataUrl: string }>(c.env.DB, `SELECT category, original_filename AS fileName, content_type AS contentType, data_url AS dataUrl FROM shipment_photos WHERE order_id = ? ORDER BY created_at ASC`, order.id)
   ]);
   const serials = await all<{ id: string; productId: string; serialNumber: string; state: string; orderItemId: string }>(c.env.DB,
     `SELECT id, product_id AS productId, serial_number AS serialNumber, state, order_item_id AS orderItemId FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`, order.id);
@@ -1450,7 +1718,24 @@ app.get('/orders/:id', requireAuth, async (c) => {
     ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
     ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
   ];
-  return c.json({ order: { ...orderForViewer(user, order), ...overview }, items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })), serials, shipment, timeline });
+  return c.json({
+    order: { ...orderForViewer(user, order), ...overview },
+    items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })),
+    serials,
+    shipment,
+    shipmentPhotos: shipmentPhotos.map((photo) => {
+      const requirement = shipmentPhotoRequirements.find((item) => item.category === photo.category);
+      return {
+        category: photo.category,
+        label: requirement?.label ?? '出库照片',
+        help: requirement?.help ?? '已提交的出库照片。',
+        fileName: photo.fileName,
+        contentType: photo.contentType,
+        dataUrl: photo.dataUrl
+      };
+    }),
+    timeline
+  });
 });
 
 app.get('/orders/:id/available-serials', requireAuth, async (c) => {
@@ -1511,9 +1796,6 @@ app.post('/orders/:id/submit', requireAuth, async (c) => {
   assertOrderAccess(user, order);
   const dealer = await one<{ id: string }>(c.env.DB, "SELECT id FROM dealers WHERE id = ? AND status = 'active'", order.dealerId);
   if (!dealer) throw forbidden('所属经销商已停用，无法提交订单');
-  if (!order.screenshotDataUrl || order.salePriceCents === null || order.salePriceCents <= 0 || !order.shippingAddress || !order.customerProfile) {
-    throw badRequest('提交审核前请补充订单截图、售卖价格、收货地址和用户画像');
-  }
   if ((!canTransitionOrder(user, order.status, 'submitted') && order.status !== 'rejected') || !canAccessStore(user, order.storeId)) throw conflict('该订单暂时不能提交审核');
   const unavailable = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM order_items
     JOIN inventory ON inventory.product_id = order_items.product_id WHERE order_items.order_id = ? AND order_items.quantity > inventory.quantity`, order.id);
@@ -1676,9 +1958,12 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   const user = c.get('user');
   if (!can(user, 'order:fulfill') && !can(user, 'order:review')) throw forbidden();
   const input = await parseBody(c.req.raw, shipmentSchema);
+  const shipmentPhotos = input.photos ?? [];
   const order = await getOrder(c.env.DB, c.req.param('id'));
   assertOrderAccess(user, order);
   if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('该订单暂时不能发货');
+  const existingShipment = await one<{ id: string }>(c.env.DB, 'SELECT id FROM shipments WHERE order_id = ?', order.id);
+  if (existingShipment) throw conflict('该订单已经确认发货，请刷新页面查看物流信息');
   const shipmentId = id();
   const trackingNumber = (input.trackingNumber ?? '').trim();
   const storedTrackingNumber = trackingNumber || `NO-TRACKING-${order.id}`;
@@ -1731,20 +2016,37 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
         .bind(id(), assetId, order.id, user.id));
     }
   }
-  await c.env.DB.batch([
-    ...allocation.statements,
-    c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
-    c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
-      WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
-      .bind(shipmentId, user.id, order.id),
-    c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`).bind(input.carrier, trackingNumber, user.id, order.id),
-    ...items.map((item) => c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by) VALUES (?, ?, ?, ?, 'order_shipped', 0, ?, ?, ?)`).bind(id(), item.inventoryId, item.productId, order.id, -item.quantity, `订单 ${order.orderNo} 已发货，预留库存正式出库`, user.id)),
-    c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
-    ...assetStatements,
-    dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), createdAssets } })
-  ]);
+  const inventoryShipStatements = items.map((item) => {
+    const reservedToRelease = Math.min(item.reservedQuantity, item.quantity);
+    const quantityDelta = reservedToRelease < item.quantity ? -(item.quantity - reservedToRelease) : 0;
+    const reservedDelta = -reservedToRelease;
+    return c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, order_id, transaction_type, quantity_delta, reserved_delta, note, created_by)
+      VALUES (?, ?, ?, ?, 'order_shipped', ?, ?, ?, ?)`)
+      .bind(id(), item.inventoryId, item.productId, order.id, quantityDelta, reservedDelta, `订单 ${order.orderNo} 已发货，库存正式出库`, user.id);
+  });
+  try {
+    await c.env.DB.batch([
+      ...allocation.statements,
+      c.env.DB.prepare(`INSERT INTO shipments (id, order_id, carrier, tracking_number, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?)`)
+        .bind(shipmentId, order.id, input.carrier, storedTrackingNumber, user.id, user.id),
+      ...shipmentPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO shipment_photos (id, shipment_id, order_id, category, data_url, original_filename, content_type, uploaded_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).bind(id(), shipmentId, order.id, photo.category, photo.dataUrl, photo.originalFilename, photo.contentType, user.id)),
+      c.env.DB.prepare(`UPDATE serial_numbers SET state = 'shipped', shipment_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ?
+        WHERE state = 'allocated' AND order_item_id IN (SELECT id FROM order_items WHERE order_id = ?)`)
+        .bind(shipmentId, user.id, order.id),
+      c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status IN ('approved','picking','packed')`).bind(input.carrier, trackingNumber, user.id, order.id),
+      ...inventoryShipStatements,
+      c.env.DB.prepare('INSERT INTO notifications (id, dealer_id, store_id, type, title, body, link) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .bind(id(), order.dealerId, order.storeId, 'order_shipped', '订单已发货', trackingNumber ? `${input.carrier}运单号：${trackingNumber}` : '订单已确认发货，运单号暂未填写。', `/system/orders/${order.id}`),
+      ...assetStatements,
+      dbAudit(c.env.DB, { actorId: user.id, action: 'warehouse.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), before: { status: order.status }, after: { status: 'shipped', trackingNumber, serialNumbers: serials.map((serial) => serial.serialNumber), shipmentPhotoCategories: shipmentPhotos.map((photo) => photo.category), createdAssets } })
+    ]);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes('Inventory cannot be negative')) throw conflict('库存不足，无法确认发货。请先核对库存或释放异常预留。');
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed: serial_numbers.serial_number')) throw conflict('该 SN 已存在，请刷新页面后重新选择或扫描。');
+    if (error instanceof Error && error.message.includes('UNIQUE constraint failed: shipments')) throw conflict('该订单已经存在物流记录，请刷新页面查看最新状态。');
+    throw error;
+  }
   return c.json({ id: order.id, status: 'shipped', trackingNumber });
 });
 
@@ -1908,13 +2210,16 @@ app.get('/after-sales', requireAuth, async (c) => {
 app.get('/after-sales/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:read');
-  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; orderNo: string | null; productId: string | null; productName: string | null; productVersion: string | null; materialCode: string | null; serialNumber: string | null; assetId: string | null; caseType: string; subject: string; description: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; inboundRecordedAt: string | null; status: string; workflowStage: string; serviceStage: string; sourceRole: string; sourceServiceCenterId: string | null; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string }>(c.env.DB,
+  const serviceCase = await one<{ id: string; caseNo: string; dealerId: string; dealerName: string; storeId: string | null; storeName: string | null; orderId: string | null; orderNo: string | null; productId: string | null; productName: string | null; productVersion: string | null; materialCode: string | null; serialNumber: string | null; assetId: string | null; caseType: string; subject: string; description: string; customerNote: string; internalNote: string; contactName: string | null; contactPhone: string | null; contactEmail: string; contactAddress: string; inboundCarrier: string; inboundTrackingNumber: string; inboundNote: string; inboundRecordedAt: string | null; outboundCarrier: string; outboundTrackingNumber: string; outboundSerialNumber: string; outboundShippedAt: string | null; outboundRecordedAt: string | null; outboundMailStatus: string; outboundMailFailureReason: string; status: string; workflowStage: string; serviceStage: string; sourceRole: string; sourceServiceCenterId: string | null; serviceCenterId: string | null; serviceCenterName: string | null; assignedAt: string | null; adminReviewNote: string; finalDecision: string; createdAt: string; updatedAt: string }>(c.env.DB,
     `SELECT after_sales_cases.id, case_no AS caseNo, after_sales_cases.dealer_id AS dealerId, dealers.name AS dealerName, after_sales_cases.store_id AS storeId, stores.name AS storeName,
       after_sales_cases.order_id AS orderId, orders.order_no AS orderNo, after_sales_cases.product_id AS productId, products.name AS productName, products.product_version AS productVersion, products.sku AS materialCode,
       after_sales_cases.serial_number AS serialNumber, after_sales_cases.asset_id AS assetId, after_sales_cases.case_type AS caseType, after_sales_cases.subject AS subject, after_sales_cases.description AS description,
       after_sales_cases.customer_note AS customerNote, after_sales_cases.internal_note AS internalNote, after_sales_cases.contact_name AS contactName, after_sales_cases.contact_phone AS contactPhone, after_sales_cases.customer_email AS contactEmail,
       after_sales_cases.customer_address AS contactAddress, after_sales_cases.inbound_carrier AS inboundCarrier, after_sales_cases.inbound_tracking_number AS inboundTrackingNumber, after_sales_cases.inbound_note AS inboundNote,
-      after_sales_cases.inbound_recorded_at AS inboundRecordedAt, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.service_stage AS serviceStage,
+      after_sales_cases.inbound_recorded_at AS inboundRecordedAt, after_sales_cases.outbound_carrier AS outboundCarrier, after_sales_cases.outbound_tracking_number AS outboundTrackingNumber,
+      after_sales_cases.outbound_serial_number AS outboundSerialNumber, after_sales_cases.outbound_shipped_at AS outboundShippedAt, after_sales_cases.outbound_recorded_at AS outboundRecordedAt,
+      after_sales_cases.outbound_mail_status AS outboundMailStatus, after_sales_cases.outbound_mail_failure_reason AS outboundMailFailureReason,
+      after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.service_stage AS serviceStage,
       after_sales_cases.source_role AS sourceRole, after_sales_cases.source_service_center_id AS sourceServiceCenterId, asa.service_center_id AS serviceCenterId, service_centers.name AS serviceCenterName, asa.assigned_at AS assignedAt,
       after_sales_cases.admin_review_note AS adminReviewNote, after_sales_cases.final_decision AS finalDecision, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt
      FROM after_sales_cases JOIN dealers ON dealers.id = after_sales_cases.dealer_id LEFT JOIN stores ON stores.id = after_sales_cases.store_id LEFT JOIN products ON products.id = after_sales_cases.product_id
@@ -1927,15 +2232,15 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
     all(c.env.DB, 'SELECT result, details, assessed_at AS assessedAt, users.name AS actorName FROM after_sales_assessments JOIN users ON users.id = after_sales_assessments.assessed_by WHERE case_id = ? ORDER BY assessed_at DESC', serviceCase.id),
     all(c.env.DB, 'SELECT recommendation, details, recommended_at AS recommendedAt, users.name AS actorName FROM after_sales_recommendations JOIN users ON users.id = after_sales_recommendations.recommended_by WHERE case_id = ? ORDER BY recommended_at DESC', serviceCase.id),
     all(c.env.DB, 'SELECT outcome, resolution, note, approved_at AS approvedAt, users.name AS actorName FROM after_sales_approvals JOIN users ON users.id = after_sales_approvals.approved_by WHERE case_id = ? ORDER BY approved_at DESC', serviceCase.id),
-    all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
+    all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, data_url AS dataUrl, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
     all(c.env.DB, `SELECT event_type AS eventType, title, description, metadata_json AS metadataJson, users.name AS actorName, after_sales_timeline.created_at AS createdAt FROM after_sales_timeline LEFT JOIN users ON users.id = after_sales_timeline.actor_id WHERE case_id = ? ORDER BY after_sales_timeline.created_at ASC`, serviceCase.id),
     all(c.env.DB, `SELECT received_items_json AS receivedItemsJson, packaging_intact AS packagingIntact, packaging_note AS packagingNote, items_match AS itemsMatch, missing_items_note AS missingItemsNote, receipt_note AS receiptNote, users.name AS receivedByName, received_at AS receivedAt FROM after_sales_receipts JOIN users ON users.id = after_sales_receipts.received_by WHERE case_id = ? ORDER BY received_at DESC`, serviceCase.id),
-    all(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
+    all<{ submittedByName: string }>(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
       reproduction_process AS reproductionProcess, test_result AS testResult, fault_parts_json AS faultPartsJson, damage_types_json AS damageTypesJson, derived_symptoms_json AS derivedSymptomsJson,
       conclusion, fault_cause AS faultCause, affected_parts AS affectedParts, suggested_action AS suggestedAction, suggested_parts AS suggestedParts,
       recommend_warranty AS recommendWarranty, recommend_charge AS recommendCharge, engineer_note AS engineerNote, difficulty, estimated_days AS estimatedDays,
       accidental_damage AS accidentalDamage, accidental_damage_type AS accidentalDamageType, accidental_damage_note AS accidentalDamageNote, material_suggested_total_cents AS materialSuggestedTotalCents,
-      status, users.name AS submittedByName, submitted_at AS submittedAt, review_note AS reviewNote
+      status, users.email AS submittedByName, submitted_at AS submittedAt, review_note AS reviewNote
       FROM after_sales_inspections_v2 JOIN users ON users.id = after_sales_inspections_v2.submitted_by WHERE case_id = ? ORDER BY version DESC`, serviceCase.id),
     all(c.env.DB, `SELECT after_sales_fault_chains.id, inspection_id AS inspectionId, chain_index AS chainIndex, fault_part AS faultPart, damage_type AS damageType, cause_type AS causeType,
       derived_symptoms_json AS derivedSymptomsJson, evidence, related_photo_ids_json AS relatedPhotoIdsJson, severity, repairability, recommended_action AS recommendedAction, engineer_note AS engineerNote
@@ -1956,7 +2261,11 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
       (SELECT failure_reason FROM after_sales_quote_emails WHERE quote_id = after_sales_quotes.id ORDER BY created_at DESC LIMIT 1) AS emailFailureReason
       FROM after_sales_quotes WHERE case_id = ? ORDER BY version DESC`, serviceCase.id)
   ]);
-  return c.json({ case: serviceCase, assessments, recommendations, approvals, attachments, timeline, receipts, inspections, faultChains, inspectionMaterials, adminDamageReviews, quotes });
+  const inspectionRows = inspections.map((inspection) => ({
+    ...inspection,
+    submittedByName: employeeNumberFromEmail(inspection.submittedByName) || inspection.submittedByName || ''
+  }));
+  return c.json({ case: serviceCase, assessments, recommendations, approvals, attachments, timeline, receipts, inspections: inspectionRows, faultChains, inspectionMaterials, adminDamageReviews, quotes });
 });
 
 app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
@@ -1975,16 +2284,84 @@ app.post('/after-sales/:id/attachments', requireAuth, async (c) => {
   if (category === 'customer_problem_photo' && await countAttachments(c.env.DB, serviceCase.id, category) >= 5) throw conflict('问题照片最多上传 5 张');
   if (category === 'accidental_damage' && await countAttachments(c.env.DB, serviceCase.id, category) >= 10) throw conflict('意外损坏照片最多上传 10 张');
   if (category !== 'customer_problem_photo' && category !== 'accidental_damage' && !canOperateAssignedCase(user, serviceCase.serviceCenterId) && !can(user, 'data:read:all')) throw forbidden('只有管理员或被分配服务中心可以上传该阶段照片');
-  const key = attachmentObjectKey(serviceCase.id, category, file.name || 'photo');
-  await c.env.ASSETS.put(key, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+  const fileBuffer = await file.arrayBuffer();
+  const dataUrl = `data:${file.type};base64,${arrayBufferToBase64(fileBuffer)}`;
+  const key = c.env.ASSETS
+    ? attachmentObjectKey(serviceCase.id, category, file.name || 'photo')
+    : `local-placeholder://${serviceCase.id}/${category}/${id()}-${file.name || 'photo'}`;
+  if (c.env.ASSETS) {
+    await c.env.ASSETS.put(key, fileBuffer, { httpMetadata: { contentType: file.type }, customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+  }
   const attachmentId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, original_filename, content_type, file_size, uploaded_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(attachmentId, serviceCase.id, category, photoSlot, key, file.name || 'photo', file.type, file.size, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, data_url, original_filename, content_type, file_size, uploaded_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(attachmentId, serviceCase.id, category, photoSlot, key, dataUrl, file.name || 'photo', file.type, file.size, user.id),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_uploaded', '上传售后图片', ?, ?)`).bind(id(), serviceCase.id, `${category}${photoSlot ? ` / ${photoSlot}` : ''}`, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_upload', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { category, photoSlot, key } })
   ]);
-  return c.json({ id: attachmentId, objectKey: key, category, photoSlot }, 201);
+  return c.json({ id: attachmentId, objectKey: key, dataUrl, category, photoSlot }, 201);
+});
+
+app.get('/after-sales/:id/attachments/:attachmentId/content', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const attachment = await one<{ id: string; objectKey: string; dataUrl: string; contentType: string; originalFilename: string }>(
+    c.env.DB,
+    'SELECT id, object_key AS objectKey, data_url AS dataUrl, content_type AS contentType, original_filename AS originalFilename FROM after_sales_attachments WHERE id = ? AND case_id = ?',
+    c.req.param('attachmentId'),
+    serviceCase.id
+  );
+  if (!attachment) throw notFound('未找到该图片');
+  if (attachment.dataUrl) {
+    const match = attachment.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
+    if (!match) throw notFound('该图片内容不可用');
+    const bytes = Uint8Array.from(atob(match[2]), (char) => char.charCodeAt(0));
+    return new Response(bytes, {
+      headers: {
+        'Content-Type': match[1] || attachment.contentType || 'application/octet-stream',
+        'Cache-Control': 'private, max-age=300',
+        'Content-Disposition': `inline; filename="${encodeURIComponent(attachment.originalFilename || 'photo')}"`
+      }
+    });
+  }
+  if (c.env.ASSETS && attachment.objectKey && !attachment.objectKey.startsWith('local-placeholder://')) {
+    const object = await c.env.ASSETS.get(attachment.objectKey);
+    if (object) {
+      return new Response(object.body, {
+        headers: {
+          'Content-Type': object.httpMetadata?.contentType || attachment.contentType || 'application/octet-stream',
+          'Cache-Control': 'private, max-age=300',
+          'Content-Disposition': `inline; filename="${encodeURIComponent(attachment.originalFilename || 'photo')}"`
+        }
+      });
+    }
+  }
+  throw notFound('该图片缺少可查看内容，请重新上传');
+});
+
+app.delete('/after-sales/:id/attachments/:attachmentId', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:read');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const attachment = await one<{ id: string; objectKey: string; category: string; uploadedBy: string }>(
+    c.env.DB,
+    'SELECT id, object_key AS objectKey, category, uploaded_by AS uploadedBy FROM after_sales_attachments WHERE id = ? AND case_id = ?',
+    c.req.param('attachmentId'),
+    serviceCase.id
+  );
+  if (!attachment) throw notFound('未找到该图片');
+  const canDelete = can(user, 'data:read:all') || canOperateAssignedCase(user, serviceCase.serviceCenterId) || attachment.uploadedBy === user.id;
+  if (!canDelete) throw forbidden('你无权删除该图片');
+  if (c.env.ASSETS && attachment.objectKey && !attachment.objectKey.startsWith('local-placeholder://')) {
+    await c.env.ASSETS.delete(attachment.objectKey);
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM after_sales_attachments WHERE id = ?').bind(attachment.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'attachment_deleted', '删除售后图片', ?, ?)`).bind(id(), serviceCase.id, attachment.category, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.attachment_delete', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), before: { attachmentId: attachment.id, category: attachment.category, objectKey: attachment.objectKey } })
+  ]);
+  return c.body(null, 204);
 });
 
 app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
@@ -1994,9 +2371,16 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能进行初审');
   const statements: D1PreparedStatement[] = [];
+  const contactUpdates: string[] = [];
+  const contactParams: unknown[] = [];
+  if (input.contactName !== undefined) { contactUpdates.push('contact_name = ?'); contactParams.push(input.contactName); }
+  if (input.contactPhone !== undefined) { contactUpdates.push('contact_phone = ?'); contactParams.push(input.contactPhone); }
+  if (input.contactEmail !== undefined) { contactUpdates.push('customer_email = ?'); contactParams.push(input.contactEmail); }
+  if (input.contactAddress !== undefined) { contactUpdates.push('customer_address = ?'); contactParams.push(input.contactAddress); }
+  const contactSql = contactUpdates.length ? `${contactUpdates.join(', ')}, ` : '';
   if (!input.accepted) {
     statements.push(
-      c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.reason, user.id, user.id, serviceCase.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, input.reason, user.id, user.id, serviceCase.id),
       c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_rejected', '管理员退回售后工单', ?, ?)`).bind(id(), serviceCase.id, input.reason, user.id)
     );
   } else {
@@ -2008,7 +2392,7 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
         ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
     }
     statements.push(
-      c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, internal_note = CASE WHEN ? <> '' THEN ? ELSE internal_note END, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(nextStage, Number(input.requiresShipment), input.internalNote, user.id, input.internalNote, input.internalNote, user.id, serviceCase.id),
+      c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, nextStage, Number(input.requiresShipment), input.internalNote, user.id, user.id, serviceCase.id),
       c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'admin_accepted', '管理员受理售后工单', ?, ?)`).bind(id(), serviceCase.id, input.requiresShipment ? '等待客户寄修' : '无需寄修，进入报价流程', user.id)
     );
   }
@@ -2038,17 +2422,12 @@ app.post('/after-sales/:id/receipt', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
   if (!['WAITING_SERVICE_CENTER_RECEIPT', 'IN_TRANSIT', 'WAITING_CUSTOMER_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能确认收货');
-  await requireAttachments(c.env.DB, serviceCase.id, [
-    { category: 'package_label', label: '外包装及面单照片' },
-    { category: 'received_items_front', label: '全部物品正面照片' },
-    { category: 'received_items_back', label: '全部物品反面照片' }
-  ]);
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO after_sales_receipts (id, case_id, received_items_json, packaging_intact, packaging_note, items_match, missing_items_note, receipt_note, received_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .bind(id(), serviceCase.id, JSON.stringify(input.receivedItems), Number(input.packagingIntact), input.packagingNote, Number(input.itemsMatch), input.missingItemsNote, input.receiptNote, user.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'received', service_stage = 'WAITING_INSPECTION', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'received', '服务中心确认收货', ?, ?)`).bind(id(), serviceCase.id, input.receiptNote || '已完成固定三项收货照片和物品核对', user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'received', '服务中心确认收货', ?, ?)`).bind(id(), serviceCase.id, input.receiptNote || '已确认收货', user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.receipt_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: serviceCase.id, serviceStage: 'WAITING_INSPECTION' });
@@ -2075,18 +2454,6 @@ app.post('/after-sales/:id/inspections', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!canOperateAssignedCase(user, serviceCase.serviceCenterId)) throw forbidden('该工单未分配给你的授权服务中心');
   if (!['INSPECTION_IN_PROGRESS', 'INSPECTION_RETURNED', 'WAITING_INSPECTION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能提交检测结果');
-  await requireAttachments(c.env.DB, serviceCase.id, [
-    { category: 'package_label', label: '外包装及面单照片' },
-    { category: 'received_items_front', label: '全部物品正面照片' },
-    { category: 'received_items_back', label: '全部物品反面照片' },
-    { category: 'product_front', label: '产品正面照片' },
-    { category: 'product_back', label: '产品背面照片' },
-    { category: 'product_left', label: '产品左侧照片' },
-    { category: 'product_right', label: '产品右侧照片' },
-    { category: 'product_top', label: '产品顶部照片' },
-    { category: 'product_bottom', label: '产品底部照片' }
-  ]);
-  if (input.accidentalDamage && await countAttachments(c.env.DB, serviceCase.id, 'accidental_damage') < 1) throw conflict('存在意外损坏时，请至少上传 1 张损坏照片');
   const latest = await one<{ version: number }>(c.env.DB, 'SELECT COALESCE(MAX(version), 0) AS version FROM after_sales_inspections_v2 WHERE case_id = ?', serviceCase.id);
   const version = (latest?.version ?? 0) + 1;
   const inspectionId = id();
@@ -2143,11 +2510,11 @@ app.post('/after-sales/:id/inspections', requireAuth, async (c) => {
         JSON.stringify(chain.relatedPhotoIds), chain.severity, chain.repairability, chain.recommendedAction, chain.engineerNote)),
     ...materialStatements,
     c.env.DB.prepare('INSERT INTO after_sales_assessments (id, case_id, result, details, assessed_by) VALUES (?, ?, ?, ?, ?)').bind(id(), serviceCase.id, input.conclusion, input.engineerNote || input.faultCause || input.suggestedAction, user.id),
-    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'assessed', service_stage = 'PENDING_ADMIN_INSPECTION_REVIEW', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_submitted', '提交检测结果', ?, ?)`).bind(id(), serviceCase.id, `检测版本 ${version}：${input.conclusion}`, user.id),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'assessed', service_stage = 'PENDING_QUOTE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_submitted', '提交检测结果', ?, ?)`).bind(id(), serviceCase.id, `检测版本 ${version}：${input.conclusion || input.testResult || '待管理员确认最终方案和报价'}`, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inspection_submit', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { ...input, version, materialSuggestedTotal } })
   ]);
-  return c.json({ id: serviceCase.id, version, serviceStage: 'PENDING_ADMIN_INSPECTION_REVIEW' }, 201);
+  return c.json({ id: serviceCase.id, version, serviceStage: 'PENDING_QUOTE' }, 201);
 });
 
 app.post('/after-sales/:id/inspection-review', requireAuth, async (c) => {
@@ -2288,11 +2655,12 @@ app.get('/after-sales-quotes/:quoteId', requireAuth, async (c) => {
   const storedSnapshot = JSON.parse(String(quote.snapshotJson || '{}')) as QuoteSnapshot;
   const previewSnapshot = { ...storedSnapshot, caseNumber: String(quote.caseNo || storedSnapshot.caseNumber) };
   const isEditablePreview = ['DRAFT', 'READY_FOR_REVIEW'].includes(String(quote.workflowStatus));
+  const editableMailContent = isEditablePreview ? await quoteMailContent(c.env.DB, previewSnapshot, mailSubject('after_sales_quote', mailEnvironment(c.env), String(quote.caseNo || previewSnapshot.caseNumber))) : null;
   return c.json({
     quote: {
       ...quote,
-      htmlContent: isEditablePreview ? quoteHtml(previewSnapshot) : quote.htmlContent,
-      emailText: isEditablePreview ? quoteText(previewSnapshot) : quote.emailText,
+      htmlContent: editableMailContent ? editableMailContent.html : quote.htmlContent,
+      emailText: editableMailContent ? editableMailContent.text : quote.emailText,
       snapshot: isEditablePreview ? previewSnapshot : storedSnapshot
     },
     items,
@@ -2352,38 +2720,131 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
   if (!quote) throw notFound('未找到该报价');
   const serviceCase = await getCaseForAccess(c.env.DB, user, quote.caseId);
   if (!['READY_FOR_REVIEW', 'SEND_FAILED'].includes(quote.workflowStatus)) throw conflict(quote.workflowStatus === 'SENT' || quote.workflowStatus === 'SUPERSEDED' ? '该报价版本已发送并锁定' : '该报价当前不能发送');
-  if (!quote.customerEmail) throw conflict('该工单缺少客户邮箱，不能发送报价');
+  const recipientEmail = input.recipientEmail ?? quote.customerEmail;
+  if (!recipientEmail) throw conflict('请先填写本次收件邮箱，再发送产品服务报告书');
   const locked = await c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SENDING', status = 'created', confirmed_by = COALESCE(confirmed_by, ?),
     confirmed_at = COALESCE(confirmed_at, CURRENT_TIMESTAMP), locked_at = COALESCE(locked_at, CURRENT_TIMESTAMP), updated_at = CURRENT_TIMESTAMP
     WHERE id = ? AND workflow_status IN ('READY_FOR_REVIEW','SEND_FAILED')`).bind(user.id, quote.id).run();
   if ((locked.meta.changes ?? 0) !== 1) throw conflict('报价正在发送，请勿重复提交');
   const sender = notificationSender(c.env);
-  const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo };
-  const deliveryHtml = quoteHtml(deliverySnapshot);
-  const deliveryText = quoteText(deliverySnapshot);
-  const subject = `【请勿回复】MaxCINE产品服务报告书 ${serviceCase.caseNo}`;
-  const delivery = await sendEmail(c.env, { from: sender.address, fromName: sender.name, replyTo: sender.replyTo, replyToName: sender.replyToName, to: quote.customerEmail, subject, html: deliveryHtml, text: deliveryText }, input.idempotencyKey);
+  const deliverySnapshot = { ...(JSON.parse(quote.snapshotJson) as QuoteSnapshot), caseNumber: serviceCase.caseNo, customerEmail: recipientEmail };
+  const defaultSubject = mailSubject('after_sales_quote', mailEnvironment(c.env), serviceCase.caseNo);
+  const mailContent = await quoteMailContent(c.env.DB, deliverySnapshot, defaultSubject);
+  const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: recipientEmail, subject: mailContent.subject, html: mailContent.html, text: mailContent.text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
   const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
+  const nextCaseStage = delivery.sent
+    ? quote.totalCents <= 0
+      ? 'READY_FOR_PROCESSING'
+      : 'WAITING_PAYMENT_CONFIRMATION'
+    : 'PENDING_QUOTE';
+  const nextCaseStageText = nextCaseStage === 'READY_FOR_PROCESSING'
+    ? '产品服务报告书已发送，报价为 0 元，工单已进入等待维修与发货流程'
+    : nextCaseStage === 'WAITING_PAYMENT_CONFIRMATION'
+      ? '产品服务报告书已发送，等待管理员确认收款'
+      : '产品服务报告书发送失败，仍需重新处理报价';
   const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
   const emailId = id();
   const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(`INSERT INTO after_sales_quote_emails (id, quote_id, to_email, from_email, reply_to_email, subject, status, failure_reason, provider,
       provider_message_id, attempt_no, idempotency_key, email_html, email_text, sent_by, sent_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CASE WHEN ? = 'sent' THEN CURRENT_TIMESTAMP ELSE NULL END)`)
-      .bind(emailId, quote.id, quote.customerEmail, sender.address, sender.replyTo, subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
-        delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, deliveryHtml, deliveryText, user.id, delivery.sent ? 'sent' : 'failed'),
+      .bind(emailId, quote.id, recipientEmail, sender.address, sender.replyTo, mailContent.subject, delivery.sent ? 'sent' : 'failed', delivery.failureReason,
+        delivery.provider, delivery.providerMessageId, (attempt?.count ?? 0) + 1, input.idempotencyKey, mailContent.html, mailContent.text, user.id, delivery.sent ? 'sent' : 'failed'),
     c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = ?, status = ?, sent_at = CASE WHEN ? = 'SENT' THEN CURRENT_TIMESTAMP ELSE sent_at END,
-      html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, deliveryHtml, deliveryText, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
+      customer_email = ?, html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, recipientEmail, mailContent.html, mailContent.text, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
-      .bind(delivery.sent ? 'WAITING_CUSTOMER_CONFIRMATION' : 'PENDING_QUOTE', user.id, quote.caseId),
+      .bind(nextCaseStage, user.id, quote.caseId),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? `${serviceCase.caseNo} 产品服务报告书已发送至客户邮箱` : delivery.failureReason, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1 } })
+      .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? nextCaseStageText : delivery.failureReason, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, recipientEmail, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1, serviceStage: nextCaseStage, totalCents: quote.totalCents } })
   ];
   if (delivery.sent && quote.supersedesQuoteId) statements.push(c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SUPERSEDED', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_status = 'SENT'`).bind(quote.supersedesQuoteId));
   await c.env.DB.batch(statements);
   return c.json({ id: quote.id, quoteNo: quote.quoteNo, version: quote.version, workflowStatus: nextWorkflowStatus, emailStatus: delivery.sent ? 'sent' : 'failed', providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason });
+});
+
+app.post('/after-sales/:id/payment/confirm', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!['WAITING_PAYMENT_CONFIRMATION', 'WAITING_CUSTOMER_CONFIRMATION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不需要确认收款');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'WAITING_REPAIR_SHIPMENT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'payment_confirmed', '管理员已确认收款', '工单已进入等待维修与发货流程', ?)`).bind(id(), serviceCase.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.payment_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { serviceStage: 'WAITING_REPAIR_SHIPMENT' } })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'WAITING_REPAIR_SHIPMENT' });
+});
+
+app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, afterSalesOutboundShipmentSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!['READY_FOR_PROCESSING', 'WAITING_REPAIR_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前还不能发货');
+  const recipientEmail = input.recipientEmail || serviceCase.contactEmail;
+  if (!recipientEmail) throw conflict('请先填写本次收件邮箱，再发送发货通知');
+  const previous = await one<{ id: string }>(c.env.DB, "SELECT id FROM after_sales_cases WHERE id = ? AND service_stage = 'RETURN_SHIPPED'", serviceCase.id);
+  if (previous) throw conflict('该工单已完成售后发货，请勿重复提交');
+  const uploadedPhotos = await Promise.all(input.photos.map(async (photo) => {
+    const parsed = dataUrlToBytes(photo.dataUrl);
+    const key = c.env.ASSETS
+      ? attachmentObjectKey(serviceCase.id, 'inspection_other', photo.originalFilename)
+      : `local-placeholder://${serviceCase.id}/inspection_other/${id()}-${photo.originalFilename}`;
+    if (c.env.ASSETS) {
+      await c.env.ASSETS.put(key, parsed.bytes, {
+        httpMetadata: { contentType: parsed.contentType },
+        customMetadata: { caseId: serviceCase.id, uploadedBy: user.id, originalFilename: photo.originalFilename, photoSlot: photo.slot }
+      });
+    }
+    return { ...photo, id: id(), key, fileSize: parsed.bytes.byteLength };
+  }));
+  const shippedAt = new Date().toISOString();
+  const mailData: MailTemplateData = {
+    title: '售后发货通知',
+    preheader: `您的 MaxCINE 售后工单 ${serviceCase.caseNo} 已安排发货。`,
+    logoUrl: `${c.env.APP_ORIGIN || 'https://maxcine-web-staging.pages.dev'}/assets/quote-logo.png`,
+    reference: `案例号 ${serviceCase.caseNo}`,
+    fields: [
+      ['案例号', serviceCase.caseNo],
+      ['客户', serviceCase.contactName || '客户'],
+      ['产品', serviceCase.productName || 'MaxCINE 产品'],
+      ['产品 SN', input.serialNumber || serviceCase.serialNumber || '暂无数据'],
+      ['快递公司', input.carrier || '顺丰速运'],
+      ['快递单号', input.trackingNumber || '暂无数据'],
+      ['发货时间', shippedAt]
+    ],
+    sections: [
+      { heading: '发货说明', body: '您的售后产品已由 MaxCINE 安排寄出。请根据快递单号关注物流进度；如信息暂未更新，请稍后再查询。' },
+      { heading: '温馨提示', body: '发货照片仅用于 MaxCINE 内部留档，不会随邮件发送给客户。' }
+    ]
+  };
+  const mailContent = { subject: mailSubject('shipment_notice', mailEnvironment(c.env), serviceCase.caseNo), html: renderMailHtml(mailData), text: renderMailText(mailData) };
+  const mailResult = await sendViaMailCenter(c, {
+    template: 'shipment_notice',
+    to: recipientEmail,
+    subject: mailContent.subject,
+    html: mailContent.html,
+    text: mailContent.text,
+    idempotencyKey: `after-sales-outbound-${serviceCase.id}-${input.trackingNumber || shippedAt}`,
+    actorId: user.id,
+    relatedEntityType: 'after_sales_case',
+    relatedEntityId: serviceCase.id
+  });
+  const description = `${input.carrier}${input.trackingNumber ? ` ${input.trackingNumber}` : ''}${input.serialNumber ? `；SN ${input.serialNumber}` : ''}；邮件${mailResult.sent ? '已发送' : `发送失败：${mailResult.failureReason || '请检查邮件配置'}`}`;
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'RETURN_SHIPPED', outbound_carrier = ?, outbound_tracking_number = ?, outbound_serial_number = ?,
+      outbound_shipped_at = ?, outbound_recorded_at = CURRENT_TIMESTAMP, outbound_recorded_by = ?, outbound_mail_status = ?, outbound_mail_failure_reason = ?,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.carrier, input.trackingNumber, input.serialNumber, shippedAt, user.id, mailResult.sent ? 'sent' : 'failed', mailResult.failureReason, user.id, serviceCase.id),
+    ...uploadedPhotos.map((photo) => c.env.DB.prepare(`INSERT INTO after_sales_attachments (id, case_id, category, photo_slot, object_key, data_url, original_filename, content_type, file_size, uploaded_by)
+      VALUES (?, ?, 'inspection_other', ?, ?, ?, ?, ?, ?, ?)`).bind(photo.id, serviceCase.id, photo.slot, photo.key, photo.dataUrl, photo.originalFilename, photo.contentType, photo.fileSize, user.id)),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id, metadata_json) VALUES (?, ?, 'outbound_shipped', '售后产品已发货', ?, ?, ?)`)
+      .bind(id(), serviceCase.id, description, user.id, JSON.stringify({ carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, photoSlots: uploadedPhotos.map((photo) => photo.slot), mailStatus: mailResult.sent ? 'sent' : 'failed' })),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.outbound_shipment', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, recipientEmail, photoCount: uploadedPhotos.length, mailStatus: mailResult.sent ? 'sent' : 'failed', providerMessageId: mailResult.providerMessageId } })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'RETURN_SHIPPED', mailStatus: mailResult.sent ? 'sent' : 'failed', failureReason: mailResult.failureReason, providerMessageId: mailResult.providerMessageId });
 });
 
 app.post('/after-sales-quotes/:quoteId/new-version', requireAuth, async (c) => {
@@ -2713,7 +3174,12 @@ app.get('/assets/:id', requireAuth, async (c) => {
     throw forbidden('未找到该资产或你无权查看');
   }
   const visibility = eventVisibilityScope(user);
-  const [identifiers, events, serviceCases, notes, sales, audit] = await Promise.all([
+  const assetSnValues = [asset.currentSn, asset.originalSn].filter((value): value is string => Boolean(value)).map((value) => value.toUpperCase());
+  const snPlaceholders = assetSnValues.map(() => '?').join(', ');
+  const afterSalesPhotoWhere = assetSnValues.length
+    ? `(after_sales_cases.asset_id = ? OR UPPER(after_sales_cases.serial_number) IN (${snPlaceholders}))`
+    : `after_sales_cases.asset_id = ?`;
+  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
     all(c.env.DB, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.subject, after_sales_cases.description, service_centers.name AS serviceCenterName, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt,
@@ -2725,9 +3191,15 @@ app.get('/assets/:id', requireAuth, async (c) => {
       WHERE after_sales_cases.asset_id = ? ORDER BY after_sales_cases.updated_at DESC`, asset.id),
     hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? ORDER BY created_at DESC`, asset.id) : all(c.env.DB, `SELECT category, content, visibility, source, created_at AS createdAt, created_at AS updatedAt FROM asset_notes WHERE asset_id = ? AND visibility <> 'admin_private' ORDER BY created_at DESC`, asset.id),
     hasGlobalAssetAccess(user) ? all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, purchase_date_annotation AS purchaseDateAnnotation, purchase_price_raw AS purchasePriceRaw, unit_price_cents AS unitPriceCents, quantity, total_price_cents AS totalPriceCents, payment_status AS paymentStatus, payment_amount_cents AS paymentAmountCents, payment_raw AS paymentRaw, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id) : all(c.env.DB, `SELECT source_channel AS sourceChannel, purchase_date AS purchaseDate, tracking_number AS trackingNumber, shipping_warehouse AS shippingWarehouse FROM asset_sales JOIN asset_sale_assets ON asset_sale_assets.sale_id = asset_sales.id WHERE asset_sale_assets.asset_id = ? ORDER BY purchase_date DESC`, asset.id),
-    hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([])
+    hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? all(c.env.DB, `SELECT audit_logs.action, audit_logs.created_at AS createdAt, users.name AS actorName FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id WHERE entity_type = 'asset' AND entity_id = ? ORDER BY audit_logs.created_at DESC LIMIT 100`, asset.id) : Promise.resolve([]),
+    all(c.env.DB, `SELECT shipment_photos.id, 'shipment' AS source, shipment_photos.category, shipment_photos.data_url AS dataUrl, shipment_photos.original_filename AS originalFilename, shipment_photos.content_type AS contentType, users.name AS uploadedByName, shipment_photos.created_at AS createdAt, orders.order_no AS relatedNo, shipments.tracking_number AS trackingNumber
+      FROM shipment_photos LEFT JOIN users ON users.id = shipment_photos.uploaded_by LEFT JOIN orders ON orders.id = shipment_photos.order_id LEFT JOIN shipments ON shipments.id = shipment_photos.shipment_id
+      WHERE shipment_photos.order_id = ? ORDER BY shipment_photos.created_at DESC`, asset.latestOrderId || ''),
+    all(c.env.DB, `SELECT after_sales_attachments.id, 'after_sales' AS source, after_sales_attachments.category, after_sales_attachments.photo_slot AS photoSlot, after_sales_attachments.data_url AS dataUrl, after_sales_attachments.original_filename AS originalFilename, after_sales_attachments.content_type AS contentType, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt, after_sales_cases.case_no AS relatedNo
+      FROM after_sales_attachments JOIN after_sales_cases ON after_sales_cases.id = after_sales_attachments.case_id LEFT JOIN users ON users.id = after_sales_attachments.uploaded_by
+      WHERE ${afterSalesPhotoWhere} ORDER BY after_sales_attachments.created_at DESC`, asset.id, ...assetSnValues)
   ]);
-  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit });
+  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit, photos: [...shipmentPhotos, ...afterSalesPhotos] });
 });
 
 app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
@@ -3015,6 +3487,77 @@ app.patch('/admin/dealers/:id', requireAuth, async (c) => {
 app.get('/admin/audit-logs', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'audit:read');
   return c.json({ logs: await all(c.env.DB, `SELECT audit_logs.id, audit_logs.action, audit_logs.entity_type AS entityType, audit_logs.entity_id AS entityId, audit_logs.created_at AS createdAt, users.email AS actorEmail FROM audit_logs LEFT JOIN users ON users.id = audit_logs.actor_id ORDER BY audit_logs.created_at DESC LIMIT 200`) });
+});
+
+app.get('/admin/mail-center/status', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'system:manage');
+  const sender = notificationSender(c.env);
+  const domain = await resendDomainStatus(c.env);
+  const templateOverrides = await all<{ templateKey: string; updatedAt: string }>(c.env.DB, 'SELECT template_key AS templateKey, updated_at AS updatedAt FROM mail_center_templates');
+  const overrideMap = new Map(templateOverrides.map((item) => [item.templateKey, item.updatedAt]));
+  const recent = await all(c.env.DB, `SELECT id, provider, template_key AS templateKey, subject, to_email AS toEmail, from_email AS fromEmail,
+    reply_to_email AS replyToEmail, status, failure_reason AS failureReason, provider_message_id AS providerMessageId, created_at AS createdAt, sent_at AS sentAt
+    FROM mail_center_messages ORDER BY created_at DESC LIMIT 20`);
+  return c.json({
+    provider: c.env.EMAIL_PROVIDER || 'mock',
+    environment: mailEnvironment(c.env),
+    resendConfigured: Boolean(c.env.RESEND_API_KEY),
+    from: { name: sender.name, address: sender.address },
+    replyTo: { name: sender.replyToName, address: sender.replyTo },
+    domain,
+    templates: Object.entries(mailTemplates).map(([key, value]) => ({ key, ...value, isCustomized: overrideMap.has(key), updatedAt: overrideMap.get(key) ?? null })),
+    recent
+  });
+});
+
+app.post('/admin/mail-center/preview', requireAuth, async (c) => {
+  assertPermission(c.get('user'), 'system:manage');
+  const input = await parseBody(c.req.raw, mailPreviewSchema);
+  const template = input.template as MailTemplateKey;
+  return c.json(await resolvedMailTemplate(c.env.DB, c.env, template));
+});
+
+app.patch('/admin/mail-center/templates/:template', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const template = c.req.param('template') as MailTemplateKey;
+  if (!(template in mailTemplates)) throw notFound('未找到该邮件模板');
+  const input = await parseBody(c.req.raw, updateMailTemplateSchema);
+  const previous = await one<{ subject: string; html: string; text: string }>(c.env.DB, 'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', template);
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO mail_center_templates (template_key, subject, html_content, text_content, updated_by, updated_at)
+      VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+      ON CONFLICT(template_key) DO UPDATE SET subject = excluded.subject, html_content = excluded.html_content, text_content = excluded.text_content, updated_by = excluded.updated_by, updated_at = CURRENT_TIMESTAMP`)
+      .bind(template, input.subject, input.html, input.text, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'mail_template.update', entityType: 'mail_center_template', entityId: template, requestId: c.get('requestId'), before: previous, after: { subject: input.subject, html: input.html, text: input.text } })
+  ]);
+  return c.json({ template, subject: input.subject, html: input.html, text: input.text, isCustomized: true });
+});
+
+app.delete('/admin/mail-center/templates/:template', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const template = c.req.param('template') as MailTemplateKey;
+  if (!(template in mailTemplates)) throw notFound('未找到该邮件模板');
+  const previous = await one<{ subject: string; html: string; text: string }>(c.env.DB, 'SELECT subject, html_content AS html, text_content AS text FROM mail_center_templates WHERE template_key = ?', template);
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM mail_center_templates WHERE template_key = ?').bind(template),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'mail_template.reset', entityType: 'mail_center_template', entityId: template, requestId: c.get('requestId'), before: previous, after: { resetToDefault: true } })
+  ]);
+  return c.json(await resolvedMailTemplate(c.env.DB, c.env, template));
+});
+
+app.post('/admin/mail-center/test-send', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'system:manage');
+  const input = await parseBody(c.req.raw, mailTestSchema);
+  const recent = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM mail_center_messages
+    WHERE sent_by = ? AND template_key = 'system_test' AND created_at >= datetime('now', '-60 seconds')`, user.id);
+  if ((recent?.count ?? 0) >= 3) throw conflict('测试邮件发送过于频繁，请一分钟后再试');
+  const template = input.template as MailTemplateKey;
+  const resolved = await resolvedMailTemplate(c.env.DB, c.env, template);
+  const result = await sendViaMailCenter(c, { template, to: input.recipient, subject: resolved.subject, html: resolved.html, text: resolved.text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'mail_center_test', relatedEntityId: user.id });
+  return c.json({ ...result, status: result.sent ? 'sent' : 'failed', subject: resolved.subject });
 });
 
 app.get('/admin/dashboard', requireAuth, async (c) => {

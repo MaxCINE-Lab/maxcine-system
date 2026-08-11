@@ -14,7 +14,7 @@ if (!password || !persistence) throw new Error('请通过浏览器验收脚本�
 
 async function login(page, email) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill(email);
+  await page.getByLabel('AD账号').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');
@@ -76,7 +76,7 @@ function watchUnexpectedBrowserErrors(page) {
 
 test('核心导航可进入且没有明显空路由或未捕获异常', async ({ page }) => {
   const errors = watchUnexpectedBrowserErrors(page);
-  const accounts = ['yukyinchew@maxcine.cn', 'ziyuesun@maxcine.cn', 'warehouse@maxcine.cn'];
+  const accounts = ['9353xuyan@maxcine.cn', '8016sun@maxcine.cn', '8982warehouse@maxcine.cn'];
   for (const email of accounts) {
     await login(page, email);
     const hrefs = await page.locator('.system-nav a[href^="#/system"]').evaluateAll((links) => Array.from(new Set(links.map((link) => link.getAttribute('href')).filter(Boolean))));
@@ -115,7 +115,7 @@ test('历史保修 Excel 只进入预检查，不写入正式资产或 SN 数据
     notes: tableCount('asset_notes')
   };
 
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   await page.goto('/#/system/admin/assets/import');
   await page.locator('input[type=file]').setInputFiles(source);
   await expect(page.getByText('预检查完成，请查看警告和错误后确认导入。')).toBeVisible();
@@ -142,7 +142,7 @@ test('历史保修 Excel 只进入预检查，不写入正式资产或 SN 数据
   await expect(page.getByText(/该文件已有预检查记录|预检查完成/)).toBeVisible();
   await logout(page);
 
-  await login(page, 'ziyuesun@maxcine.cn');
+  await login(page, '8016sun@maxcine.cn');
   const dealerResponse = await page.evaluate(async ({ base, body }) => {
     const response = await fetch(`${base}/admin/gsx/imports/precheck`, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     return response.status;
@@ -150,7 +150,7 @@ test('历史保修 Excel 只进入预检查，不写入正式资产或 SN 数据
   expect(dealerResponse).toBe(403);
   await logout(page);
 
-  await login(page, 'warehouse@maxcine.cn');
+  await login(page, '8982warehouse@maxcine.cn');
   const warehouseResponse = await page.evaluate(async ({ base, body }) => {
     const response = await fetch(`${base}/admin/gsx/imports/precheck`, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     return response.status;

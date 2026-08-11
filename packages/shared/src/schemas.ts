@@ -51,7 +51,41 @@ const afterSalesCaseTypeSchema = z.enum([
 export const shipmentSchema = z.object({
   carrier: z.string().trim().min(2).max(40).default('顺丰速运'),
   trackingNumber: optionalTrackingSchema.default(''),
-  serialNumbers: z.array(serialInputSchema).min(1, '确认发货前必须录入产品 SN').max(100)
+  serialNumbers: z.array(serialInputSchema).min(1, '确认发货前必须录入产品 SN').max(100),
+  photos: z.array(z.object({
+    category: z.enum(['box_sn', 'packed_photo_1', 'packed_photo_2']),
+    originalFilename: z.string().trim().min(1).max(180),
+    contentType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+    dataUrl: z.string().max(750000).refine(
+      (value) => /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+      '出库照片仅支持 PNG、JPG 或 WebP 图片'
+    )
+  })).max(3).default([])
+});
+
+const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'outbound_product_back', 'outbound_all_items']);
+
+export const afterSalesOutboundShipmentSchema = z.object({
+  carrier: z.string().trim().min(2, '请填写快递公司').max(40).default('顺丰速运'),
+  trackingNumber: optionalTrackingSchema.default(''),
+  recipientEmail: z.string().trim().email('请填写正确的收件邮箱').max(254).transform((value) => value.toLowerCase()).optional(),
+  serialNumber: z.string().transform((value) => value.replace(/[\r\n\t]/g, '').trim().toUpperCase()).pipe(
+    z.string().max(100).regex(/^[A-Z0-9._\-/]*$/, 'SN 只能包含字母、数字和常用连接符')
+  ).default(''),
+  photos: z.array(z.object({
+    slot: afterSalesOutboundPhotoSlotSchema,
+    originalFilename: z.string().trim().min(1).max(180),
+    contentType: z.enum(['image/png', 'image/jpeg', 'image/webp']),
+    dataUrl: z.string().max(750000).refine(
+      (value) => /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
+      '发货照片仅支持 PNG、JPG 或 WebP 图片'
+    )
+  })).length(3, '请上传三张发货照片：产品正面、产品背面、全部物品')
+}).superRefine((value, context) => {
+  const slots = new Set(value.photos.map((photo) => photo.slot));
+  for (const slot of afterSalesOutboundPhotoSlotSchema.options) {
+    if (!slots.has(slot)) context.addIssue({ code: z.ZodIssueCode.custom, path: ['photos'], message: '请上传三张发货照片：产品正面、产品背面、全部物品' });
+  }
 });
 
 export const orderFulfillmentSchema = z.object({
@@ -74,13 +108,13 @@ export const createAfterSalesSchema = z.object({
   serialNumber: z.string().trim().max(100).optional().nullable(),
   caseType: afterSalesCaseTypeSchema,
   subject: z.string().trim().min(2).max(160).optional().default('售后申请'),
-  description: z.string().trim().min(10).max(5000),
+  description: z.string().trim().max(5000).default(''),
   customerNote: z.string().trim().max(1000).default(''),
   internalNote: z.string().trim().max(2000).default(''),
-  contactName: z.string().trim().min(2).max(80),
-  contactPhone: z.string().trim().min(6).max(32),
-  contactEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
-  contactAddress: z.string().trim().min(5).max(500),
+  contactName: z.string().trim().max(80).default(''),
+  contactPhone: z.string().trim().max(32).default(''),
+  contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).default(''),
+  contactAddress: z.string().trim().max(500).default(''),
   isProxySubmission: z.boolean().default(false)
 });
 
@@ -253,7 +287,11 @@ export const adminReviewAfterSalesSchema = z.object({
   reason: z.string().trim().max(1000).default(''),
   serviceCenterId: z.string().uuid().optional().nullable(),
   requiresShipment: z.boolean().default(true),
-  internalNote: z.string().trim().max(2000).default('')
+  internalNote: z.string().trim().max(2000).default(''),
+  contactName: z.string().trim().max(80).optional(),
+  contactPhone: z.string().trim().max(32).optional(),
+  contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).optional(),
+  contactAddress: z.string().trim().max(500).optional()
 }).superRefine((value, context) => {
   if (!value.accepted && !value.reason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: '不受理时必须填写原因' });
   if (value.accepted && value.requiresShipment && !value.serviceCenterId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['serviceCenterId'], message: '需要寄修时必须分配授权服务中心' });
@@ -266,15 +304,12 @@ export const inboundShipmentSchema = z.object({
 });
 
 export const receiptSchema = z.object({
-  packagingIntact: z.boolean(),
+  packagingIntact: z.boolean().default(true),
   packagingNote: z.string().trim().max(1000).default(''),
-  receivedItems: z.array(z.enum(['产品主体', '安装配件', '包装盒', '保护盒', '配重模块', '其他附件', '其他'])).min(1),
-  itemsMatch: z.boolean(),
+  receivedItems: z.array(z.enum(['产品主体', '全套包装', '收纳盒', '平衡模块', '其他非官方附件'])).default([]),
+  itemsMatch: z.boolean().default(true),
   missingItemsNote: z.string().trim().max(1000).default(''),
   receiptNote: z.string().trim().max(1000).default('')
-}).superRefine((value, context) => {
-  if (!value.packagingIntact && !value.packagingNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['packagingNote'], message: '包装异常时必须填写备注' });
-  if (!value.itemsMatch && !value.missingItemsNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['missingItemsNote'], message: '缺件或不一致时必须填写说明' });
 });
 
 export const inspectionSchema = z.object({
@@ -286,7 +321,7 @@ export const inspectionSchema = z.object({
   faultParts: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   damageTypes: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
   derivedSymptoms: z.array(z.string().trim().min(1).max(80)).max(30).default([]),
-  conclusion: z.string().trim().min(2).max(1000),
+  conclusion: z.string().trim().max(1000).default(''),
   faultCause: z.string().trim().max(1000).default(''),
   affectedParts: z.string().trim().max(500).default(''),
   suggestedAction: z.enum(['无故障', '使用指导', '重新安装', '清洁处理', '维修', '更换部件', '整机更换建议', '拒绝保修建议', '单独销售部件', '无法维修', '其他']),
@@ -322,10 +357,6 @@ export const inspectionSchema = z.object({
     compatibilityOverrideReason: z.string().trim().max(500).default(''),
     engineerNote: z.string().trim().max(1000).default('')
   })).max(50).default([])
-}).superRefine((value, context) => {
-  if (value.accidentalDamage && !value.accidentalDamageType) context.addIssue({ code: z.ZodIssueCode.custom, path: ['accidentalDamageType'], message: '存在意外损坏时必须选择损坏类型' });
-  if (value.accidentalDamage && !value.accidentalDamageNote) context.addIssue({ code: z.ZodIssueCode.custom, path: ['accidentalDamageNote'], message: '存在意外损坏时必须填写说明' });
-  if (!value.faultChains.length) context.addIssue({ code: z.ZodIssueCode.custom, path: ['faultChains'], message: '请至少填写一条故障链' });
 });
 
 export const inspectionReviewSchema = z.object({
@@ -364,7 +395,26 @@ export const quoteDraftSchema = quoteSchema.extend({
 });
 
 export const confirmQuoteSendSchema = z.object({
+  idempotencyKey: z.string().uuid(),
+  recipientEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()).optional()
+});
+
+export const mailTemplateKeySchema = z.enum(['system_test', 'after_sales_quote', 'service_report', 'shipment_notice', 'password_reset']);
+
+export const mailTestSchema = z.object({
+  template: mailTemplateKeySchema.default('system_test'),
+  recipient: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
   idempotencyKey: z.string().uuid()
+});
+
+export const mailPreviewSchema = z.object({
+  template: mailTemplateKeySchema.default('system_test')
+});
+
+export const updateMailTemplateSchema = z.object({
+  subject: z.string().trim().min(1, '请填写邮件主题').max(200, '邮件主题过长'),
+  html: z.string().trim().min(20, '请填写 HTML 内容').max(200000, 'HTML 内容过长'),
+  text: z.string().trim().max(30000, '纯文本内容过长').default('')
 });
 
 export const adminDamageReviewSchema = z.object({

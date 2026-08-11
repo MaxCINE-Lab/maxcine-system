@@ -16,13 +16,64 @@ const roleDisplayName: Record<Role, string> = {
 };
 
 const employeeNumberByEmail: Readonly<Record<string, string>> = {
-  'yukyinchew@maxcine.cn': '9353',
-  'warehouse@maxcine.cn': '9612',
-  'ziyuesun@maxcine.cn': '8043',
-  'finestormray@maxcine.cn': '2056',
-  'yuxiangchen@maxcine.cn': '0938',
-  'ericzhu@maxcine.cn': '6583'
+  '9353xuyan@maxcine.cn': '9353',
+  '8982warehouse@maxcine.cn': '8982',
+  '8016sun@maxcine.cn': '8016',
+  '0982chen@maxcine.cn': '0982',
+  '9527rui@maxcine.cn': '9527',
+  '3086zhu@maxcine.cn': '3086'
 };
+
+const dealerNameById: Readonly<Record<string, string>> = {
+  '10000000-0000-4000-8000-000000000001': 'MaxCINE 直营渠道',
+  '10000000-0000-4000-8000-000000000002': '辽宁省经销商',
+  '10000000-0000-4000-8000-000000000003': '安徽省经销商',
+  '10000000-0000-4000-8000-000000000004': '江苏省经销商',
+  '10000000-0000-4000-8000-000000000005': '浙江省经销商'
+};
+
+const serviceCenterNameById: Readonly<Record<string, string>> = {
+  '22000000-0000-4000-8000-000000000001': '辽宁省授权服务中心',
+  '22000000-0000-4000-8000-000000000002': '安徽省授权服务中心',
+  '22000000-0000-4000-8000-000000000003': '山东省高级服务中心'
+};
+
+const dealerNameByEmail: Readonly<Record<string, string>> = {
+  '8016sun@maxcine.cn': '辽宁省经销商',
+  '0982chen@maxcine.cn': '安徽省经销商',
+  '9527rui@maxcine.cn': '江苏省经销商',
+  '3086zhu@maxcine.cn': '浙江省经销商'
+};
+
+const serviceCenterNameByEmail: Readonly<Record<string, string>> = {
+  '9353xuyan@maxcine.cn': '山东省高级服务中心',
+  '8016sun@maxcine.cn': '辽宁省授权服务中心',
+  '0982chen@maxcine.cn': '安徽省授权服务中心'
+};
+
+export function employeeNumberForUser(user: SessionUser): string | null {
+  return employeeNumberByEmail[user.email.trim().toLowerCase()] ?? null;
+}
+
+export function captureWatermarkLines(user: SessionUser, context?: 'dealer' | 'service_center' | 'warehouse'): string[] {
+  const employeeNumber = employeeNumberForUser(user);
+  const email = user.email.trim().toLowerCase();
+  const organization =
+    context === 'warehouse'
+      ? '山东云仓'
+      : context === 'dealer'
+        ? dealerNameByEmail[email] ?? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+        : context === 'service_center'
+          ? serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+          : user.roles.includes('warehouse_manager')
+            ? '山东云仓'
+            : user.roles.includes('authorized_service_center')
+              ? serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+              : user.roles.includes('dealer')
+                ? dealerNameByEmail[email] ?? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+                : serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? 'MaxCINE 管理中心';
+  return [organization, `工号 ${employeeNumber ?? '未登记'}`];
+}
 
 const hasAnyPermission = (user: SessionUser, permissions: Permission[]) => permissions.some((permission) => user.permissions.includes(permission));
 
@@ -85,7 +136,8 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
         ['经销商与店铺', '/system/admin/dealers'],
         ['售后管理', '/system/admin/after-sales'],
         ['用户与权限', '/system/admin/users'],
-        ['审计记录', '/system/admin/audit']
+        ['审计记录', '/system/admin/audit'],
+        ['系统设置', '/system/admin/mail-center']
       ]
     });
   }
@@ -119,6 +171,7 @@ export function systemNavActive(path: string, href: string): boolean {
     || (href === '/system/admin/products' && path.startsWith('/system/admin/inventory'))
     || (href === '/system/admin/dealers' && (path.startsWith('/system/admin/dealers') || path.startsWith('/system/admin/stores')))
     || (href === '/system/admin/orders' && path.startsWith('/system/admin/order/'))
+    || (href === '/system/admin/mail-center' && path.startsWith('/system/admin/mail-center'))
     || (href === '/system/warehouse' && path.startsWith('/system/warehouse'))
     || (href === '/system/customer-risk' && path.startsWith('/system/customer-risk'))
     || (href === '/system/orders' && path.startsWith('/system/orders/'))

@@ -5,7 +5,7 @@ if (!password) throw new Error('请设置 E2E_PASSWORD 后再运行浏览器端�
 
 async function login(page, email) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill(email);
+  await page.getByLabel('AD账号').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');
@@ -20,7 +20,7 @@ async function searchRisk(page, value) {
 }
 
 test('Customer Risk Center supports fast lookup, consultation append and duplicate guard', async ({ page }) => {
-  await login(page, 'ziyuesun@maxcine.cn');
+  await login(page, '8016sun@maxcine.cn');
   await page.goto('/#/system/customer-risk');
   await expect(page.getByRole('button', { name: '模糊查询' })).toBeVisible();
   await expect(page.getByRole('button', { name: '新建黑名单' })).toBeVisible();
@@ -52,7 +52,7 @@ test('Customer Risk Center supports fast lookup, consultation append and duplica
   await expect(page.getByRole('button', { name: '创建黑名单档案' })).toBeDisabled();
 
   await page.goto('/#/login');
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   await searchRisk(page, 'tbNick_91xpa');
   await expect(page.getByRole('button', { name: '编辑档案' })).toBeVisible();
   await page.getByRole('button', { name: '编辑档案' }).click();

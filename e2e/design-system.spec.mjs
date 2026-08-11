@@ -5,7 +5,7 @@ if (!password) throw new Error('请设置 E2E_PASSWORD 后再运行浏览器端�
 
 async function login(page, email) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill(email);
+  await page.getByLabel('AD账号').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');
@@ -19,7 +19,7 @@ async function expectStandardField(field, minimumHeight = '44px') {
 
 test('设计系统：后台表单、导航与移动布局保持统一', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 1040 });
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   await page.goto('/#/system/admin/products');
   await expect(page.getByRole('heading', { name: '产品管理' })).toBeVisible();
   await expectStandardField(page.getByPlaceholder('搜索产品名称或 SKU'));
@@ -50,7 +50,7 @@ test('设计系统：后台表单、导航与移动布局保持统一', async ({
 
 test('设计系统：经销商、仓库与服务中心使用一致的系统外壳', async ({ page }, testInfo) => {
   await page.setViewportSize({ width: 1440, height: 980 });
-  await login(page, 'ziyuesun@maxcine.cn');
+  await login(page, '8016sun@maxcine.cn');
   await expect(page.getByRole('heading', { name: '仪表盘' })).toBeVisible();
   await expect(page.getByRole('link', { name: '打开订单查询' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('dealer-dashboard-desktop.png'), fullPage: true });
@@ -61,7 +61,7 @@ test('设计系统：经销商、仓库与服务中心使用一致的系统外�
   await page.screenshot({ path: testInfo.outputPath('service-center-desktop.png'), fullPage: true });
 
   await page.goto('/#/login');
-  await login(page, 'warehouse@maxcine.cn');
+  await login(page, '8982warehouse@maxcine.cn');
   await expect(page.getByRole('heading', { name: '发货' })).toBeVisible();
   await expect(page.getByRole('link', { name: '搜索待发货订单' })).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath('warehouse-desktop.png'), fullPage: true });

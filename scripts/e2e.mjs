@@ -9,7 +9,7 @@ const root = resolve(import.meta.dirname, '..');
 const persistence = mkdtempSync(join(tmpdir(), 'maxcine-e2e-'));
 const sessionSecret = process.env.SESSION_SECRET || 'ci-local-session-secret-for-e2e-only-please-change';
 const emailProvider = process.env.EMAIL_PROVIDER || 'mock';
-if (!process.env.E2E_PASSWORD) { console.error('请通过环境变量 E2E_PASSWORD 提供仅限本机的演示账户密码。'); process.exit(1); }
+if (!process.env.E2E_PASSWORD) { console.error('请通过环境变量 E2E_PASSWORD 提供仅限本机的验收账户密码。'); process.exit(1); }
 function run(command, args, cwd = root, env = process.env) {
   const result = spawnSync(command, args, { cwd, env, stdio: 'inherit' });
   if (result.status !== 0) throw new Error(`${command} ${args.join(' ')} 执行失败（退出码 ${result.status ?? 1}）`);

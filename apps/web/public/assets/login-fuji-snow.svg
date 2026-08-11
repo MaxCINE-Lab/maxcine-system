@@ -1,0 +1,51 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1920 1080" role="img" aria-label="雪景富士山">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#dfe9f3"/>
+      <stop offset="0.48" stop-color="#f6f8fb"/>
+      <stop offset="1" stop-color="#e6ebf1"/>
+    </linearGradient>
+    <linearGradient id="fuji" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f7f9fc"/>
+      <stop offset="0.38" stop-color="#b7c1cf"/>
+      <stop offset="1" stop-color="#5f6b7b"/>
+    </linearGradient>
+    <linearGradient id="shadow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7f8b9b" stop-opacity=".46"/>
+      <stop offset="1" stop-color="#2f3846" stop-opacity=".74"/>
+    </linearGradient>
+    <radialGradient id="sun" cx=".78" cy=".16" r=".32">
+      <stop offset="0" stop-color="#fff8ec" stop-opacity=".9"/>
+      <stop offset=".42" stop-color="#fff8ec" stop-opacity=".32"/>
+      <stop offset="1" stop-color="#fff8ec" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft">
+      <feGaussianBlur stdDeviation="22"/>
+    </filter>
+  </defs>
+  <rect width="1920" height="1080" fill="url(#sky)"/>
+  <rect width="1920" height="1080" fill="url(#sun)"/>
+  <g opacity=".45" filter="url(#soft)">
+    <ellipse cx="420" cy="790" rx="520" ry="115" fill="#c9d3df"/>
+    <ellipse cx="1420" cy="805" rx="560" ry="120" fill="#d2dae4"/>
+  </g>
+  <path d="M0 712 C260 655 440 655 650 708 C825 752 1018 752 1190 704 C1435 636 1684 648 1920 720 L1920 1080 L0 1080 Z" fill="#eef2f6"/>
+  <path d="M116 785 C300 736 468 754 622 786 C812 824 1006 828 1174 786 C1412 728 1666 732 1920 808 L1920 1080 L116 1080 Z" fill="#f8fafc"/>
+  <path d="M400 862 L960 292 L1518 862 Z" fill="url(#fuji)"/>
+  <path d="M960 292 L1518 862 L1045 862 C1015 710 1004 553 960 292 Z" fill="url(#shadow)" opacity=".72"/>
+  <path d="M827 428 L960 292 L1094 429 C1054 418 1020 437 995 463 C969 426 924 425 888 461 C871 438 852 428 827 428 Z" fill="#fff"/>
+  <path d="M400 862 L678 578 C730 650 805 700 900 735 C781 753 660 800 560 862 Z" fill="#f6f8fb" opacity=".55"/>
+  <path d="M1378 862 C1258 800 1142 758 1045 744 C1168 706 1251 648 1299 590 L1518 862 Z" fill="#3d4755" opacity=".18"/>
+  <g fill="#ffffff" opacity=".82">
+    <circle cx="146" cy="137" r="3"/>
+    <circle cx="300" cy="238" r="2"/>
+    <circle cx="506" cy="166" r="2.5"/>
+    <circle cx="748" cy="114" r="2"/>
+    <circle cx="1230" cy="170" r="3"/>
+    <circle cx="1532" cy="230" r="2"/>
+    <circle cx="1740" cy="136" r="2.5"/>
+    <circle cx="1640" cy="406" r="2"/>
+    <circle cx="218" cy="444" r="2"/>
+    <circle cx="1372" cy="510" r="2.5"/>
+  </g>
+</svg>

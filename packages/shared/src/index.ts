@@ -4,3 +4,4 @@ export * from './policy.js';
 export * from './errors.js';
 export * from './gsx.js';
 export * from './warranty.js';
+export * from './scanner.js';

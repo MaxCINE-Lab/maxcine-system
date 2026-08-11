@@ -40,7 +40,7 @@ npm run dev:status
 npm run dev:stop
 ```
 
-Vite 会把 `/api` 代理到 `http://localhost:8787`。演示数据只用于隔离的本地数据库；本地开发账户的初始化说明仅保留在受控开发流程中，绝不可在共享环境、预发布环境或生产环境应用该种子数据。
+Vite 会把 `/api` 代理到 `http://localhost:8787`。验收数据只用于隔离的本地数据库；本地开发账户的初始化说明仅保留在受控开发流程中，绝不可在共享环境、预发布环境或生产环境应用该种子数据。
 
 本地浏览器始终访问 `http://localhost:5173`，不要直接在页面中使用 Worker 的 `8787` 端口；开发代理会去除 `/api` 前缀并转发请求。登录密码最少 8 位；真实账户与密码不得加入本地种子数据。
 
@@ -64,7 +64,7 @@ Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret p
 
 ## D1 迁移和 R2
 
-本地 D1：`npm run db:apply:local`，然后可用 `npm run db:seed:local`。演示数据位于 `apps/api/seed/`，故不会随生产迁移执行。远程测试库应先创建独立、免费的测试 D1 数据库，再把实际 `database_id` 填入一个不提交的测试 Wrangler 配置；运行 `wrangler d1 migrations apply <测试库名> --remote` 前需人工确认目标。
+本地 D1：`npm run db:apply:local`，然后可用 `npm run db:seed:local`。验收数据位于 `apps/api/seed/`，故不会随生产迁移执行。远程测试库应先创建独立、免费的测试 D1 数据库，再把实际 `database_id` 填入一个不提交的测试 Wrangler 配置；运行 `wrangler d1 migrations apply <测试库名> --remote` 前需人工确认目标。
 
 `apps/api/wrangler.toml` 中的 D1 ID 与 R2 bucket 名称均为占位符。R2 仅用于产品图、下载资料等非敏感资产；上传必须校验 MIME、大小、对象键命名和授权。请勿使用公共 bucket 存放订单导出或客户材料。
 
@@ -72,7 +72,7 @@ Cloudflare 的 D1、R2 和机密变量应通过 Dashboard 或 `wrangler secret p
 
 已接入本地 D1 的经销商页面包括：仪表盘、共享库存、库存详情、授权店铺、新建订单、草稿编辑、订单筛选/分页/详情、站内通知及已读状态、售后工单列表/详情/新建申请。后端根据用户 ID 的角色、权限、店铺授权及服务中心授权强制数据隔离；不以姓名或邮箱判断权限。
 
-本地种子数据包括功能邮箱、六个指定演示账户、经销商、授权服务中心和店铺归属。报价自动邮件固定使用 `notification@maxcine.cn`，客户回复进入 `support@maxcine.cn`。所有邮箱均以小写保存和显示；种子不含真实密码、手机号、身份证号、地址或客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
+本地种子数据包括功能邮箱、六个指定验收账户、经销商、授权服务中心和店铺归属。报价自动邮件固定使用 `notification@maxcine.cn`，客户回复进入 `support@maxcine.cn`。所有邮箱均以小写保存和显示；种子不含真实密码、手机号、身份证号、地址或客户资料。产品示例为 W101、W102、W103、W124 四个 MaxCINE MAVIC 4 Pro 增广镜套装，仅用于本机验证。
 
 ## GSX 资产与保修中心（本地第一版）
 
@@ -110,10 +110,10 @@ npm test
 npm run build
 ```
 
-浏览器端验收使用隔离临时 D1，不会改写日常本地演示数据。为避免把测试密码写入仓库，运行时由本机环境变量提供：
+浏览器端验收使用隔离临时 D1，不会改写日常验收数据。为避免把测试密码写入仓库，运行时由本机环境变量提供：
 
 ```bash
-E2E_PASSWORD='<仅限本机的演示密码>' npm run test:e2e
+E2E_PASSWORD='<仅限本机的验收密码>' npm run test:e2e
 ```
 
 该脚本固定使用 `5175`（Web）和 `8791`（API）；任一端口被占用时会停止并提示，不会切换到其他端口。

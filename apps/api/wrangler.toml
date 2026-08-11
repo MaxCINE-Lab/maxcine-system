@@ -16,3 +16,33 @@ bucket_name = "maxcine-assets"
 [vars]
 APP_ORIGIN = "http://localhost:5173"
 EMAIL_PROVIDER = "mock"
+
+[env.staging]
+name = "maxcine-api-staging"
+workers_dev = true
+
+[[env.staging.d1_databases]]
+binding = "DB"
+database_name = "maxcine-staging-db"
+database_id = "d64b8ac9-4e83-4a63-a1af-7bcbccf9087b"
+migrations_dir = "migrations"
+
+[env.staging.vars]
+APP_ORIGIN = "https://maxcine-web-staging.pages.dev"
+COOKIE_SAMESITE = "None"
+EMAIL_PROVIDER = "resend"
+
+[env.production]
+name = "maxcine-api"
+workers_dev = true
+
+[[env.production.d1_databases]]
+binding = "DB"
+database_name = "maxcine-production-db"
+database_id = "f89d68f9-4d92-41e0-ac77-5e6492153759"
+migrations_dir = "migrations"
+
+[env.production.vars]
+APP_ORIGIN = "https://maxcine-web.pages.dev"
+COOKIE_SAMESITE = "None"
+EMAIL_PROVIDER = "mock"

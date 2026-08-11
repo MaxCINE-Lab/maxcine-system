@@ -2,10 +2,11 @@ import type { SessionUser } from '@maxcine/shared';
 
 export type Env = {
   DB: D1Database;
-  ASSETS: R2Bucket;
+  ASSETS?: R2Bucket;
   SESSION_SECRET: string;
   APP_ORIGIN: string;
-  EMAIL_PROVIDER: 'mock' | 'resend' | 'ses';
+  COOKIE_SAMESITE?: 'Lax' | 'None' | 'Strict';
+  EMAIL_PROVIDER: 'mock' | 'resend';
   RESEND_API_KEY?: string;
   NOTIFICATION_EMAIL_FROM?: string;
   NOTIFICATION_EMAIL_NAME?: string;

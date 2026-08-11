@@ -1,10 +1,11 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
-import type { OrderStatus, SessionUser } from '@maxcine/shared';
+import { normalizeScannerValue, parseScannedValue, type OrderStatus, type SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { AdminManagementPortal } from './AdminManagementPortal';
 import { GsxPortal } from './GsxPortal';
-import { AccountMenu, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess } from './systemNavigation';
+import { AccountMenu, SystemNavigation, captureWatermarkLines, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess } from './systemNavigation';
+import { CameraPhotoButton } from './CameraPhotoButton';
 
 type Notice = { tone: 'error' | 'success'; text: string } | null;
 type Order = { id: string; orderNo: string; dealerName?: string; storeName: string; status: OrderStatus; totalCents: number; itemCount: number; itemSummary?: string; serialSummary?: string; fulfillmentCarrier?: string; fulfillmentTrackingNumber?: string; createdAt: string };
@@ -13,6 +14,7 @@ type OrderDetail = {
   items: Array<{ id: string; productId: string; name: string; sku: string; productVersion?: string; specification?: string; materialCode?: string; warrantyDays?: number | null; quantity: number; unitPriceCents: number }>;
   serials: Array<{ id: string; productId: string; serialNumber: string }>;
   shipment: { carrier: string; trackingNumber: string; shippedAt: string } | null;
+  shipmentPhotos?: ShipmentPhotoDraft[];
 };
 type AvailableSerialGroup = {
   productId: string;
@@ -22,6 +24,8 @@ type AvailableSerialGroup = {
   quantity: number;
   serials: Array<{ assetId: string; serialNumber: string; originalSn: string | null; assetStatus: string; dataQualityStatus: string; sourceChannel: string; shippingWarehouse: string; productNote: string; assetNote: string | null; allocatedToThisOrder: number; updatedAt: string }>;
 };
+type ShipmentPhotoCategory = 'box_sn' | 'packed_photo_1' | 'packed_photo_2';
+type ShipmentPhotoDraft = { category: ShipmentPhotoCategory; label: string; help: string; fileName: string; contentType: 'image/png' | 'image/jpeg' | 'image/webp'; dataUrl: string };
 
 type Props = { user: SessionUser; route: string; logout: () => void };
 type InventoryRow = { id: string; sku: string; name: string; availableQuantity: number; reservedQuantity: number; reorderLevel: number };
@@ -32,7 +36,39 @@ const packageOptions = ['顺丰f1纸箱', '顺丰f2纸箱', '普通纸箱', '定
 const money = (value: number) => `¥${(value / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`;
 const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${value.replace(' ', 'T')}Z`)) : '—';
 const errorText = (error: unknown) => error instanceof ApiClientError ? error.message : '操作未完成，请稍后重试。';
-const splitLines = (value: string) => value.split(/[\n\r,，、\s]+/).map((item) => item.trim()).filter(Boolean);
+const splitLines = (value: string) => value.split(/[\n\r,，、\s]+/).map((item) => normalizeScannerValue(item)).filter(Boolean);
+const shipmentPhotoRequirements: Array<{ category: ShipmentPhotoCategory; label: string; help: string }> = [
+  { category: 'box_sn', label: '产品盒面 SN 照片', help: '请拍到产品盒子表面和清晰 SN。' },
+  { category: 'packed_photo_1', label: '打包完成照片 1', help: '请拍摄打包完成后的外观。' },
+  { category: 'packed_photo_2', label: '打包完成照片 2', help: '请从另一个角度拍摄打包完成状态。' }
+];
+function fileToShipmentPhoto(file: File, requirement: { category: ShipmentPhotoCategory; label: string; help: string }): Promise<ShipmentPhotoDraft> {
+  if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return Promise.reject(new Error('出库照片仅支持 PNG、JPG 或 WebP。'));
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('照片读取失败，请重新选择。'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('照片格式无法识别，请重新选择。'));
+      img.onload = () => {
+        const maxSide = 1200;
+        const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.max(1, Math.round(img.width * scale));
+        canvas.height = Math.max(1, Math.round(img.height * scale));
+        const context = canvas.getContext('2d');
+        if (!context) return reject(new Error('照片处理失败，请重新选择。'));
+        context.drawImage(img, 0, 0, canvas.width, canvas.height);
+        const outputType = file.type === 'image/png' ? 'image/png' : 'image/jpeg';
+        const dataUrl = canvas.toDataURL(outputType, 0.78);
+        if (dataUrl.length > 750000) return reject(new Error('照片过大，请重新拍摄或压缩后上传。'));
+        resolve({ ...requirement, fileName: file.name || requirement.label, contentType: outputType, dataUrl });
+      };
+      img.src = String(reader.result);
+    };
+    reader.readAsDataURL(file);
+  });
+}
 function Button({ children, onClick, href, secondary = false, danger = false, disabled = false, type = 'button' }: { children: ReactNode; onClick?: () => void; href?: string; secondary?: boolean; danger?: boolean; disabled?: boolean; type?: 'button' | 'submit' }) { const className = `button ${secondary ? 'button--secondary' : ''} ${danger ? 'button--danger' : ''}`; return href ? <a className={className} href={href}>{children}</a> : <button type={type} className={className} disabled={disabled} onClick={onClick}>{children}</button>; }
 function Alert({ notice }: { notice: Notice }) { return notice ? <div className={`notice notice--${notice.tone === 'error' ? 'error' : 'info'}`}>{notice.text}</div> : null; }
 
@@ -41,7 +77,7 @@ export function Shell({ user, route, title, subtitle, children, logout }: { user
   const path = route.split('?')[0];
   const warehouse = path.startsWith('/system/warehouse') && user.permissions.includes('order:fulfill');
   const serviceCenter = path.startsWith('/system/service-center');
-  return <div className="system"><header className="system-top"><img className="system-light-logo" src="/assets/maxcine-logo-on-light.png" alt="MaxCINE" /><button className="menu-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>菜单</button><a className="global-search" href={`#${warehouse ? '/system/warehouse' : serviceCenter ? '/system/service-center/assets' : '/system/admin/assets'}`}>{warehouse ? '搜索待发货订单' : '搜索资产或订单'}</a><a className="top-notifications" href="#/system/notifications">通知</a><AccountMenu user={user} logout={logout} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><img className="system-dark-logo" src="/assets/maxcine-logo-on-dark.png" alt="MaxCINE" /><SystemNavigation user={user} route={route} onNavigate={() => setOpen(false)} /><a href="#/" className="nav-exit">返回官网</a></aside><main className="system-main"><header className="page-title"><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1><p>{subtitle}</p></header>{children}</main></div>;
+  return <div className="system"><header className="system-top"><img className="system-light-logo" src="/assets/maxcine-logo-on-light.png" alt="MaxCINE" /><button className="menu-toggle" onClick={() => setOpen(!open)} aria-expanded={open}>菜单</button><a className="global-search" href={`#${warehouse ? '/system/warehouse' : serviceCenter ? '/system/service-center/assets' : '/system/admin/assets'}`}>{warehouse ? '搜索待发货订单' : '搜索资产或订单'}</a><a className="top-notifications" href="#/system/notifications">通知</a><AccountMenu user={user} logout={logout} /></header><aside className={`system-nav ${open ? 'is-open' : ''}`}><img className="system-dark-logo" src="/assets/maxcine-logo-on-dark.png" alt="MaxCINE" /><SystemNavigation user={user} route={route} onNavigate={() => setOpen(false)} /></aside><main className="system-main"><header className="page-title"><span className="eyebrow">MAXCINE / {displayRoleText(user)}</span><h1>{title}</h1><p>{subtitle}</p></header>{children}</main></div>;
 }
 
 function AdminDashboard({ user, route, logout }: Props) {
@@ -57,7 +93,7 @@ function Orders({ user, route, logout, warehouse = false }: Props & { warehouse?
   const [orders, setOrders] = useState<Order[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
   useEffect(() => { api<{ orders: Order[] }>(`/orders?limit=100${status === 'all' ? '' : `&status=${status}`}`).then((value) => setOrders(value.orders)).catch((error) => setNotice({ tone: 'error', text: errorText(error) })); }, [status]);
-  const tabs: Array<[string, string]> = warehouse ? [['pending_shipment', '待处理'], ['shipped', '已发货']] : [['submitted', '待审核'], ['pending_shipment', '待发货'], ['shipped', '已发货'], ['rejected', '已驳回'], ['all', '全部']];
+  const tabs: Array<[string, string]> = warehouse ? [['pending_shipment', '待处理'], ['shipped', '已发货']] : [['all', '全部'], ['submitted', '待审核'], ['pending_shipment', '待发货'], ['shipped', '已发货'], ['rejected', '已驳回']];
   return <Shell user={user} route={route} title={warehouse ? '发货' : '订单管理'} subtitle={warehouse ? '核对订单、扫描产品 SN，然后一次确认发货。' : '审核订单并安排 SN、包装和快递信息。'} logout={logout}><Alert notice={notice} /><div className="filter-row">{tabs.map(([value, label]) => <button className={`filter ${status === value ? 'active' : ''}`} onClick={() => setStatus(value)} key={value}>{label}</button>)}</div><div className="table-wrap"><table><thead><tr>{warehouse ? <><th>订单编号</th><th>产品</th><th>数量</th><th>经销商</th><th>快递单号</th><th>已预留 SN</th><th>操作</th></> : <><th>订单编号</th><th>店铺</th><th>商品</th><th>订单金额</th><th>状态</th><th>创建时间</th><th>操作</th></>}</tr></thead><tbody>{orders.map((order) => <tr key={order.id}>{warehouse ? <><td>{order.orderNo}</td><td>{order.itemSummary || '—'}</td><td>{order.itemCount}</td><td>{order.dealerName || '—'}</td><td>{order.fulfillmentTrackingNumber || '可发货后补'}</td><td>{order.serialSummary || '待扫描'}</td><td><a href={`#/system/warehouse/order/${order.id}`}>去发货</a></td></> : <><td>{order.orderNo}</td><td>{order.storeName}</td><td>{order.itemSummary || `${order.itemCount} 件`}</td><td>{money(order.totalCents)}</td><td><span className={`status status--${order.status}`}>{statusName[order.status]}</span></td><td>{date(order.createdAt)}</td><td><a href={`#/system/admin/order/${order.id}`}>查看详情</a></td></>}</tr>)}</tbody></table>{!orders.length && <div className="empty-state"><h2>{warehouse ? '暂无待处理订单。' : '暂无符合条件的订单。'}</h2></div>}</div></Shell>;
 }
 
@@ -91,6 +127,8 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
   const [carrier, setCarrier] = useState('顺丰速运');
   const [allocationMode, setAllocationMode] = useState<'none' | 'random' | 'manual'>('none');
   const [packageMaterials, setPackageMaterials] = useState<string[]>([]);
+  const [shipmentPhotos, setShipmentPhotos] = useState<ShipmentPhotoDraft[]>([]);
+  const [photoViewer, setPhotoViewer] = useState<ShipmentPhotoDraft | null>(null);
   const scanner = useMemo(() => new BrowserBarcodeScanner(), []);
   const canReview = user.permissions.includes('order:review');
   const canFulfill = user.permissions.includes('order:fulfill') || canReview;
@@ -138,20 +176,67 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
     if (allocationMode === 'manual' && !selectedSerials.length) return setNotice({ tone: 'error', text: '请选择要分配的 SN。' });
     await action(`/orders/${orderId}/fulfillment`, { packageMaterials, carrier, trackingNumber: tracking, allocationMode, serialNumbers: allocationMode === 'manual' ? selectedSerials : [] }, '履约安排已保存。');
   };
-  const useCamera = async () => {
+  const scanTrackingNumber = async () => {
     try {
-      await scanner.start((result) => setSerialText((value) => `${value}${value ? '\n' : ''}${result.value.trim()}`));
-    } catch {
-      setNotice({ tone: 'error', text: '无法启用摄像头，请改用扫描枪或手动输入。' });
+      await scanner.start((result) => setTracking(result.value.trim()), {
+        validate: (result) => {
+          if (result.kind === 'text') throw new Error('已识别内容，但不是可用的快递单号或订单数据。');
+        }
+      });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : '无法启用摄像头，请改用扫描枪或手动输入。' });
+    }
+  };
+  const scanSerialNumber = async () => {
+    try {
+      await scanner.start((result) => {
+        setSerialText((current) => {
+          const values = splitLines(current);
+          if (values.includes(result.value)) return values.join('\n');
+          return [...values, result.value].join('\n');
+        });
+        setNotice({ tone: 'success', text: `已录入 ${result.value}，可继续扫描下一件。` });
+      }, {
+        continuous: true,
+        validate: (result) => {
+          if (!['serial', 'text'].includes(result.kind)) throw new Error('已识别内容，但不是可用的产品 SN。');
+          const values = splitLines(serialText);
+          if (values.includes(result.value)) throw new Error('该 SN 已在当前列表中，请勿重复录入。');
+          const expectedCount = data?.items.reduce((sum, item) => sum + item.quantity, 0) ?? 0;
+          if (expectedCount && values.length >= expectedCount) throw new Error(`本订单应扫描 ${expectedCount} 个 SN，数量已满。`);
+        }
+      });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : '无法启用摄像头，请改用扫描枪或手动输入。' });
+    }
+  };
+  const handleSerialInput = (value: string) => {
+    const parsed = value.split(/[\n\r,，、\s]+/).map((item) => parseScannedValue(item)).filter((item) => item.ok).map((item) => item.value);
+    setSerialText(Array.from(new Set(parsed)).join('\n'));
+  };
+  const selectShipmentPhoto = async (requirement: { category: ShipmentPhotoCategory; label: string; help: string }, file: File | undefined) => {
+    if (!file) return;
+    try {
+      const photo = await fileToShipmentPhoto(file, requirement);
+      setShipmentPhotos((current) => [...current.filter((item) => item.category !== photo.category), photo]);
+      setNotice({ tone: 'success', text: `${requirement.label}已添加。` });
+    } catch (error) {
+      setNotice({ tone: 'error', text: error instanceof Error ? error.message : '照片处理失败，请重新选择。' });
     }
   };
   const ship = async () => {
     if (!selectedSerials.length) return setNotice({ tone: 'error', text: warehouse ? '确认发货前必须录入产品 SN。' : '确认发货前请先选择或分配产品 SN。' });
     if (!window.confirm('确认发货吗？系统会绑定订单、SN 和保修日期。')) return;
-    await action(`/orders/${orderId}/ship`, { carrier, trackingNumber: tracking, serialNumbers: selectedSerials }, '订单已确认发货。');
+    await action(`/orders/${orderId}/ship`, {
+      carrier,
+      trackingNumber: tracking,
+      serialNumbers: selectedSerials,
+      photos: shipmentPhotos.map((photo) => ({ category: photo.category, originalFilename: photo.fileName, contentType: photo.contentType, dataUrl: photo.dataUrl }))
+    }, '订单已确认发货。');
   };
   const canShip = Boolean(data && ['approved', 'picking', 'packed'].includes(data.order.status));
   const serialCountFor = (group: AvailableSerialGroup) => group.serials.filter((item) => selectedSet.has(item.serialNumber.toUpperCase())).length;
+  const cameraWatermarkLines = captureWatermarkLines(user, 'warehouse');
   return <Shell user={user} route={route} title={warehouse ? '发货订单' : '订单详情'} subtitle={data?.order.orderNo ?? '正在加载订单'} logout={logout}>
     <Alert notice={notice} />
     {!data ? <p>正在加载…</p> : <div className="order-layout">
@@ -165,10 +250,12 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
       </section>
       {!warehouse && <section className="panel"><div className="panel-title"><h2>销售信息</h2></div><dl className="detail-grid"><dt>售卖价格</dt><dd>{data.order.salePriceCents === null ? '—' : money(data.order.salePriceCents)}</dd><dt>收货地址</dt><dd>{data.order.shippingAddress || '—'}</dd><dt>用户画像</dt><dd>{data.order.customerProfile || '—'}</dd><dt>经销商备注</dt><dd>{data.order.note || '—'}</dd><dt>审核意见</dt><dd>{data.order.reviewNote || '—'}</dd></dl>{data.order.screenshotDataUrl && <div className="order-screenshot-preview"><span>订单截图</span><img src={data.order.screenshotDataUrl} alt="订单截图" /></div>}</section>}
       <section className="panel"><div className="panel-title"><h2>商品与 SN</h2></div><div className="table-wrap"><table><thead><tr><th>产品</th><th>版本</th><th>SKU / 物料编码</th><th>数量</th>{!warehouse && <th>单价</th>}<th>保修天数</th><th>已绑定 SN</th></tr></thead><tbody>{data.items.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.productVersion || item.specification || '—'}</td><td>{item.materialCode || item.sku}</td><td>{item.quantity}</td>{!warehouse && <td>{money(item.unitPriceCents)}</td>}<td>{item.warrantyDays ? `${item.warrantyDays} 天` : '待确认'}</td><td>{data.serials.filter((value) => value.productId === item.productId).map((value) => value.serialNumber).join('、') || '—'}</td></tr>)}</tbody></table></div></section>
-      {!warehouse && canReview && ['approved', 'picking', 'packed'].includes(data.order.status) && <section className="panel"><div className="panel-title"><h2>履约安排</h2><span>管理员选择 SN、包装和快递信息；随机分配仍由系统按可用库存选择。</span></div><label>快递包装<div className="checkbox-grid">{packageOptions.map((item) => <label key={item}><input type="checkbox" checked={packageMaterials.includes(item)} onChange={(event) => setPackageMaterials((current) => event.target.checked ? [...current, item] : current.filter((value) => value !== item))} />{item}</label>)}</div></label><label>SN 分配方式<select value={allocationMode} onChange={(event) => setAllocationMode(event.target.value as typeof allocationMode)}><option value="none">暂不分配</option><option value="random">随机分配可用 SN</option><option value="manual">手动指定可用 SN</option></select></label>{allocationMode === 'manual' && <section className="panel panel--nested"><h3>选择可用 SN</h3>{availableSerialGroups.map((group) => <div key={group.productId}><p className="hint">{group.productName} / {group.productVersion || group.sku}：需选择 {group.quantity} 个，已选 {serialCountFor(group)} 个。</p><div className="table-wrap"><table><thead><tr><th>选择</th><th>SN</th><th>资产状态</th><th>来源 / 仓库</th><th>备注</th><th>更新时间</th></tr></thead><tbody>{group.serials.map((serial) => <tr key={serial.assetId}><td><input type="checkbox" checked={selectedSet.has(serial.serialNumber.toUpperCase())} onChange={(event) => toggleSerial(serial.serialNumber, event.target.checked)} /></td><td>{serial.serialNumber}{serial.originalSn && serial.originalSn !== serial.serialNumber && <><br /><small>原 SN：{serial.originalSn}</small></>}</td><td>{serial.assetStatus} / {serial.dataQualityStatus}</td><td>{serial.sourceChannel || '—'} / {serial.shippingWarehouse || '—'}</td><td>{serial.assetNote || serial.productNote || '—'}</td><td>{date(serial.updatedAt)}</td></tr>)}</tbody></table>{!group.serials.length && <div className="empty-state"><h2>暂无可用 SN。</h2></div>}</div></div>)}</section>}<label>快递公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} /></label><label>快递单号<input value={tracking} onChange={(event) => setTracking(event.target.value)} placeholder="可先留空，仓库或管理员确认发货时可补充" /></label><Button onClick={() => void saveFulfillment()}>保存履约安排</Button></section>}
-      {canFulfill && canShip && <section className="panel"><div className="panel-title"><h2>确认发货</h2><span>{warehouse ? '快递单号可为空，产品 SN 必填。' : '管理员也可以在审核通过后直接确认发货。'}</span></div><dl className="detail-grid"><dt>收货信息</dt><dd>{data.order.shippingAddress || '—'}</dd><dt>包装材料</dt><dd>{packageMaterials.join('、') || data.order.packageMaterials || '—'}</dd></dl><label>快递公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} /></label><label>快递单号<input value={tracking} onChange={(event) => setTracking(event.target.value)} placeholder="可扫描或手动填写，非必填" /></label>{warehouse ? <label>产品 SN<textarea value={serialText} onChange={(event) => setSerialText(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.stopPropagation(); }} placeholder="一行一个 SN，扫描枪回车会自动换行" /></label> : <dl className="detail-grid"><dt>本次发货 SN</dt><dd>{selectedSerials.join('、') || '请先在履约安排中选择或随机分配 SN。'}</dd></dl>}<div className="action-list">{warehouse && <Button secondary onClick={useCamera}>使用摄像头扫码</Button>}<Button onClick={ship}>确认发货</Button></div></section>}
+      {!warehouse && canReview && ['approved', 'picking', 'packed'].includes(data.order.status) && <section className="panel"><div className="panel-title"><h2>履约安排</h2><span>管理员选择 SN、包装和快递信息；随机分配仍由系统按可用库存选择。</span></div><label>快递包装<div className="checkbox-grid">{packageOptions.map((item) => <label key={item}><input type="checkbox" checked={packageMaterials.includes(item)} onChange={(event) => setPackageMaterials((current) => event.target.checked ? [...current, item] : current.filter((value) => value !== item))} />{item}</label>)}</div></label><label>SN 分配方式<select value={allocationMode} onChange={(event) => setAllocationMode(event.target.value as typeof allocationMode)}><option value="none">暂不分配</option><option value="random">随机分配可用 SN</option><option value="manual">手动指定可用 SN</option></select></label>{allocationMode === 'manual' && <section className="panel panel--nested"><h3>选择可用 SN</h3>{availableSerialGroups.map((group) => <div key={group.productId}><p className="hint">{group.productName} / {group.productVersion || group.sku}：需选择 {group.quantity} 个，已选 {serialCountFor(group)} 个。</p><div className="table-wrap"><table><thead><tr><th>选择</th><th>SN</th><th>资产状态</th><th>来源 / 仓库</th><th>备注</th><th>更新时间</th></tr></thead><tbody>{group.serials.map((serial) => <tr key={serial.assetId}><td><input type="checkbox" checked={selectedSet.has(serial.serialNumber.toUpperCase())} onChange={(event) => toggleSerial(serial.serialNumber, event.target.checked)} /></td><td>{serial.serialNumber}{serial.originalSn && serial.originalSn !== serial.serialNumber && <><br /><small>原 SN：{serial.originalSn}</small></>}</td><td>{serial.assetStatus} / {serial.dataQualityStatus}</td><td>{serial.sourceChannel || '—'} / {serial.shippingWarehouse || '—'}</td><td>{serial.assetNote || serial.productNote || '—'}</td><td>{date(serial.updatedAt)}</td></tr>)}</tbody></table>{!group.serials.length && <div className="empty-state"><h2>暂无可用 SN。</h2></div>}</div></div>)}</section>}<label>快递公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} /></label><label>快递单号<div className="scan-field"><input value={tracking} onChange={(event) => setTracking(event.target.value)} placeholder="可先留空，仓库或管理员确认发货时可补充" /><Button secondary onClick={() => void scanTrackingNumber()}>扫描快递单号</Button></div></label><Button onClick={() => void saveFulfillment()}>保存履约安排</Button></section>}
+      {canFulfill && canShip && <section className="panel"><div className="panel-title"><h2>确认发货</h2><span>{warehouse ? '快递单号和出库照片可为空，产品 SN 必填。' : '管理员也可以在审核通过后直接确认发货。'}</span></div><dl className="detail-grid"><dt>收货信息</dt><dd>{data.order.shippingAddress || '—'}</dd><dt>包装材料</dt><dd>{packageMaterials.join('、') || data.order.packageMaterials || '—'}</dd></dl><label>快递公司<input value={carrier} onChange={(event) => setCarrier(event.target.value)} /></label><label>快递单号<div className="scan-field"><input value={tracking} onChange={(event) => setTracking(normalizeScannerValue(event.target.value))} placeholder="可扫描或手动填写，非必填" /><Button secondary onClick={() => void scanTrackingNumber()}>摄像头扫码</Button></div></label>{warehouse ? <label>产品 SN<div className="scan-field scan-field--stacked"><textarea value={serialText} onChange={(event) => handleSerialInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') event.stopPropagation(); }} placeholder="摄像头、扫描枪或手动输入；一行一个 SN，扫码枪回车自动换行" /><div className="scanner-entry-actions"><Button secondary onClick={() => void scanSerialNumber()}>摄像头扫码</Button><span>也可直接使用扫描枪或手动输入，系统会统一校验格式和去重。</span></div></div></label> : <dl className="detail-grid"><dt>本次发货 SN</dt><dd>{selectedSerials.join('、') || '请先在履约安排中选择或随机分配 SN。'}</dd></dl>}<div className="panel-title"><h2>出库照片</h2><span>可选上传：盒面 SN 照片和打包完成照片。</span></div><div className="shipment-photo-grid">{shipmentPhotoRequirements.map((requirement) => { const photo = shipmentPhotos.find((item) => item.category === requirement.category); return <article className="shipment-photo-card" key={requirement.category}><strong>{requirement.label}</strong><small>{requirement.help}</small>{photo ? <figure className="shipment-photo-preview"><img src={photo.dataUrl} alt={requirement.label} /><figcaption>{photo.fileName || requirement.label}</figcaption></figure> : <span>可选择本地图片，也可调用电脑摄像头拍照。</span>}<div className="photo-upload-actions">{photo && <Button secondary onClick={() => setPhotoViewer(photo)}>查看预览</Button>}<label className="button button--secondary">{photo ? '重新选择图片' : '选择图片'}<input hidden type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => { void selectShipmentPhoto(requirement, event.target.files?.[0]); event.currentTarget.value = ''; }} /></label><CameraPhotoButton label={photo ? '重新拍照' : '摄像头拍照'} fileNamePrefix={requirement.category} watermarkLines={cameraWatermarkLines} onCapture={(file) => selectShipmentPhoto(requirement, file)} onError={(text) => setNotice({ tone: 'error', text })} /></div></article>; })}</div><div className="action-list"><Button onClick={ship}>确认发货</Button></div></section>}
       {data.shipment && <section className="panel"><div className="panel-title"><h2>物流信息</h2></div><p>{data.shipment.carrier} · {data.shipment.trackingNumber || '未填写运单号'} · {date(data.shipment.shippedAt)}</p></section>}
+      {!!data.shipmentPhotos?.length && <section className="panel"><div className="panel-title"><h2>已提交出库照片</h2><span>这些照片也会同步显示在对应 SN 的资产详情中。</span></div><div className="shipment-photo-grid">{data.shipmentPhotos.map((photo) => <article className="shipment-photo-card" key={`${photo.category}-${photo.fileName}`}><strong>{photo.label}</strong><small>{photo.help}</small><figure className="shipment-photo-preview"><img src={photo.dataUrl} alt={photo.label} /><figcaption>{photo.fileName || photo.label}</figcaption></figure><div className="photo-upload-actions"><Button secondary onClick={() => setPhotoViewer(photo)}>查看预览</Button></div></article>)}</div></section>}
     </div>}
+    {photoViewer && <div className="service-photo-viewer" role="dialog" aria-modal="true" aria-label="照片预览" onClick={() => setPhotoViewer(null)}><div className="service-photo-viewer__dialog" onClick={(event) => event.stopPropagation()}><header><strong>{photoViewer.label}</strong><button type="button" onClick={() => setPhotoViewer(null)} aria-label="关闭预览">×</button></header><img src={photoViewer.dataUrl} alt={photoViewer.label} /></div></div>}
   </Shell>;
 }
 
@@ -193,7 +280,7 @@ export function OperationsPortal({ user, route, logout }: Props) {
     return <Orders user={user} route={warehouseRoute} logout={logout} warehouse />;
   }
   if (path.startsWith('/system/admin/assets')) return <GsxPortal user={user} route={route} logout={logout} />;
-  if (path === '/system/admin/products' || path === '/system/admin/dealers' || path === '/system/admin/stores' || path === '/system/admin/users' || path === '/system/admin/after-sales') return <AdminManagementPortal user={user} route={route} logout={logout} />;
+  if (path === '/system/admin/products' || path === '/system/admin/dealers' || path === '/system/admin/stores' || path === '/system/admin/users' || path === '/system/admin/after-sales' || path === '/system/admin/mail-center') return <AdminManagementPortal user={user} route={route} logout={logout} />;
   if (path === '/system/admin/inventory') return <Inventory user={user} route={route} logout={logout} />;
   if (path === '/system/notifications') return <Notifications user={user} route={route} logout={logout} />;
   if (path === '/system/admin') return <AdminDashboard user={user} route={route} logout={logout} />;

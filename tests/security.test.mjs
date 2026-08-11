@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -45,7 +45,7 @@ test('order transitions are enforced by permissions, not a single role field', (
 });
 
 test('input normalizes account emails to lowercase', () => {
-  assert.equal(loginSchema.parse({ email: 'YUKYINCHEW@MAXCINE.CN', password: 'DemoOnly-ChangeMe-2026' }).email, 'yukyinchew@maxcine.cn');
+  assert.equal(loginSchema.parse({ email: '9353XUYAN@MAXCINE.CN', password: 'MaxCINE2026!' }).email, '9353xuyan@maxcine.cn');
 });
 
 test('watermark preference only accepts an explicit boolean switch', () => {
@@ -64,7 +64,7 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
     status: 'blacklist',
     riskLevel: 'high',
     riskReasons: ['反复砍价', '其他'],
-    otherReason: '本地测试补充原因',
+    otherReason: '验收补充原因',
     consultationResult: '未成交',
     note: '只记录本次咨询，不覆盖其他经销商记录。'
   });
@@ -77,10 +77,10 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
 
 test('quote workflow requires explicit preview state and a unique send idempotency key', () => {
   const quote = quoteDraftSchema.parse({
-    inspectionSummary: '本地测试检测结论',
+    inspectionSummary: '验收检测结论',
     finalDecision: '保外收费维修',
     validUntil: '2026-08-05',
-    items: [{ itemName: '本地测试服务费', itemType: '服务费', quantity: 1, unitPriceCents: 8000 }],
+    items: [{ itemName: '验收服务费', itemType: '服务费', quantity: 1, unitPriceCents: 8000 }],
     workflowStatus: 'READY_FOR_REVIEW'
   });
   assert.equal(quote.workflowStatus, 'READY_FOR_REVIEW');
@@ -100,34 +100,46 @@ test('quote delivery uses a locked snapshot, notification sender and support rep
   assert.match(source, /support@maxcine\.cn/);
   assert.match(source, /function escapeHtml/);
   assert.match(source, /escapeHtml\(snapshot\.customerDescription/);
-  assert.match(source, /【请勿回复】MaxCINE产品服务报告书/);
-  assert.match(source, /此邮件由 MaxCINE 系统自动发送，请勿回复/);
+  assert.match(source, /sendViaMailCenter/);
+  assert.match(source, /mailSubject\('after_sales_quote'/);
+  assert.match(source, /此邮件为系统自动发送，请勿直接回复/);
+  assert.match(source, /https:\/\/qr\.alipay\.com\/fkx13048tsi5aspx4dbzq72/);
+  assert.match(source, /使用支付宝付款/);
+  assert.match(source, /请您付款时添加备注您的案例号/);
+  assert.match(source, /snapshot\.grandTotalCents > 0/);
+  assert.match(source, /ensurePaidQuotePaymentAction/);
   assert.match(dbSource, /CAS-\$\{token\.slice\(0, 5\)\}-\$\{token\.slice\(5, 10\)\}/);
   assert.doesNotMatch(adminUiSource, /打印 \/ 保存 PDF/);
   assert.doesNotMatch(adminUiSource, /PDF 附件/);
   assert.match(emailSource, /Idempotency-Key/);
   assert.match(emailSource, /reply_to/);
   assert.match(emailSource, /邮件服务未配置/);
+  assert.match(emailSource, /【STAGING】/);
+  assert.match(source, /【请勿回复】MaxCINE 服务中心/);
   assert.match(migration, /READY_FOR_REVIEW/);
   assert.match(migration, /SEND_FAILED/);
   assert.match(migration, /idx_after_sales_quote_email_idempotency/);
 });
 
-test('order schema accepts drafts while after-sales requires asset and customer contact snapshot', () => {
+test('order schema accepts drafts while after-sales allows optional notes and contact snapshot', () => {
   const valid = createOrderSchema.parse({ storeId: '30000000-0000-4000-8000-000000000001', items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }] });
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
-  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '验收问题', description: '这是满足最短长度的验收问题描述。' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({
+    assetId: '99000000-0000-4000-8000-000000000001',
+    caseType: 'QUALITY_ISSUE'
+  }).success, true);
   assert.equal(createAfterSalesSchema.safeParse({
     assetId: '99000000-0000-4000-8000-000000000001',
     storeId: valid.storeId,
     caseType: 'QUALITY_ISSUE',
-    subject: '本地演示问题',
-    description: '这是满足最短长度的本地演示问题描述。',
-    contactName: '本地测试客户',
+    subject: '验收问题',
+    description: '这是满足最短长度的验收问题描述。',
+    contactName: '验收客户',
     contactPhone: '13800000000',
     contactEmail: 'local-test@example.test',
-    contactAddress: '本地测试地址，不是真实客户资料'
+    contactAddress: '验收地址，不是真实客户资料'
   }).success, true);
 });
 
@@ -136,12 +148,31 @@ test('submitted-order fields accept bounded image data and reject unsafe screens
     storeId: '30000000-0000-4000-8000-000000000001',
     items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }],
     salePriceCents: 129900,
-    shippingAddress: '本地演示收货地址',
+    shippingAddress: '验收收货地址',
     customerProfile: '专业飞手',
     screenshotDataUrl: 'data:image/png;base64,aGVsbG8='
   });
   assert.equal(input.salePriceCents, 129900);
   assert.equal(createOrderSchema.safeParse({ ...input, screenshotDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }).success, false);
+});
+
+test('shipment confirmation accepts optional categorized outbound photos and still rejects unsafe image data', () => {
+  const parsed = shipmentSchema.parse({
+    carrier: '顺丰速运',
+    trackingNumber: 'SF1234567890',
+    serialNumbers: ['STAGE-GSX-W101-0102'],
+    photos: [
+      { category: 'box_sn', originalFilename: 'box-sn.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
+      { category: 'packed_photo_1', originalFilename: 'packed-1.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
+      { category: 'packed_photo_2', originalFilename: 'packed-2.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' }
+    ]
+  });
+  assert.equal(parsed.photos.length, 3);
+  assert.equal(shipmentSchema.safeParse({ ...parsed, photos: [{ ...parsed.photos[0], dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }] }).success, false);
+  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', serialNumbers: ['STAGE-GSX-W101-0102'] }).photos.length, 0);
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /确认发货前请上传/);
+  assert.match(source, /shipment_photos/);
 });
 
 test('super administrators receive the same effective workflow permissions as warehouse and service center roles', () => {

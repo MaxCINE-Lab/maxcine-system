@@ -1,12 +1,9 @@
-// Functional addresses are configuration defaults. Delivery remains disabled
-// unless an explicit provider and its secret are configured.
 export const FUNCTIONAL_EMAILS = {
   support: 'support@maxcine.cn',
-  notifications: 'notification@maxcine.cn',
-  noreply: 'noreply@maxcine.cn'
+  notifications: 'notification@maxcine.cn'
 } as const;
 
-export type EmailKind = 'order_submitted' | 'order_approved' | 'order_rejected' | 'order_shipped' | 'after_sales_created' | 'after_sales_updated' | 'verification' | 'password_reset';
+export type MailTemplateKey = 'system_test' | 'after_sales_quote' | 'service_report' | 'shipment_notice' | 'password_reset';
 
 export type MailMessage = {
   from: string;
@@ -30,7 +27,7 @@ export class DisabledEmailAdapter implements EmailAdapter {
 }
 
 export type EmailDeliveryEnv = {
-  EMAIL_PROVIDER: 'mock' | 'resend' | 'ses';
+  EMAIL_PROVIDER: 'mock' | 'resend';
   RESEND_API_KEY?: string;
 };
 
@@ -59,7 +56,7 @@ export async function sendEmail(env: EmailDeliveryEnv, message: MailMessage, ide
         'Idempotency-Key': idempotencyKey
       },
       body: JSON.stringify({
-        from: `${message.fromName || 'MaxCINE 通知中心'} <${message.from}>`,
+      from: `${message.fromName || '【请勿回复】MaxCINE 服务中心'} <${message.from}>`,
         reply_to: message.replyTo ? `${message.replyToName || 'MaxCINE 客户支持'} <${message.replyTo}>` : undefined,
         to: [message.to],
         subject: message.subject,
@@ -77,25 +74,55 @@ export async function sendEmail(env: EmailDeliveryEnv, message: MailMessage, ide
   }
 }
 
-function escapeHtml(value: string): string {
-  return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
+export function escapeHtml(value: string | null | undefined): string {
+  return String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;').replaceAll("'", '&#39;');
 }
 
-export function emailTemplate(kind: EmailKind, data: { reference: string; status?: string; trackingNumber?: string; note?: string; logoUrl: string }): Pick<MailMessage, 'from' | 'subject' | 'html'> {
-  const content: Record<EmailKind, { from: MailMessage['from']; subject: string; heading: string; detail: string }> = {
-    order_submitted: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单已提交 · ${data.reference}`, heading: '订单已提交', detail: '您的订单已进入审核队列。' },
-    order_approved: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单审核通过 · ${data.reference}`, heading: '订单审核通过', detail: '订单已转入仓库处理流程。' },
-    order_rejected: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单审核结果 · ${data.reference}`, heading: '订单未获批准', detail: data.note || '请联系管理员了解详情。' },
-    order_shipped: { from: FUNCTIONAL_EMAILS.notifications, subject: `订单已发货 · ${data.reference}`, heading: '订单已发货', detail: `顺丰运单号：${data.trackingNumber ?? '待补充'}` },
-    after_sales_created: { from: FUNCTIONAL_EMAILS.support, subject: `售后工单已创建 · ${data.reference}`, heading: '售后工单已创建', detail: '我们已收到您的请求。' },
-    after_sales_updated: { from: FUNCTIONAL_EMAILS.notifications, subject: `售后工单状态更新 · ${data.reference}`, heading: '售后工单状态更新', detail: data.status ? `当前状态：${data.status}` : '工单已有更新。' },
-    verification: { from: FUNCTIONAL_EMAILS.noreply, subject: `验证码 · ${data.reference}`, heading: '验证码', detail: '此系统邮件不接受回复。' },
-    password_reset: { from: FUNCTIONAL_EMAILS.noreply, subject: `密码重置 · ${data.reference}`, heading: '密码重置', detail: '此系统邮件不接受回复。' }
-  };
-  const copy = content[kind];
-  return {
-    from: copy.from,
-    subject: copy.subject,
-    html: `<!doctype html><html lang="zh-CN"><body style="margin:0;background:#f5f5f7;color:#1d1d1f;font:16px -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif"><main style="max-width:600px;margin:0 auto;background:#fff;padding:36px 28px"><img src="${escapeHtml(data.logoUrl)}" alt="MaxCINE" width="150" style="display:block;background:#111;padding:10px;margin-bottom:32px"/><h1 style="font-size:24px;margin:0 0 12px">${escapeHtml(copy.heading)}</h1><p style="margin:0 0 24px;line-height:1.55">${escapeHtml(copy.detail)}</p><table style="border-collapse:collapse;width:100%;font-size:14px"><tr><td style="padding:12px 0;border-top:1px solid #d2d2d7;color:#6e6e73">参考编号</td><td style="padding:12px 0;border-top:1px solid #d2d2d7;text-align:right">${escapeHtml(data.reference)}</td></tr></table><p style="margin:32px 0 0;color:#6e6e73;font-size:12px">MaxCINE · 这是一封事务通知邮件。</p></main></body></html>`
-  };
+export type MailTemplateData = {
+  title: string;
+  preheader?: string;
+  logoUrl: string;
+  reference?: string;
+  fields?: Array<[string, string]>;
+  sections?: Array<{ heading: string; body: string }>;
+  actionText?: string;
+  actionUrl?: string;
+};
+
+export const mailTemplates: Record<MailTemplateKey, { name: string; subject: string; description: string }> = {
+  system_test: { name: '系统测试邮件', subject: '系统测试邮件', description: '用于验证 Resend、发件人、Reply-To 和模板渲染。' },
+  after_sales_quote: { name: '售后报价', subject: '售后报价通知', description: '发送售后报价或产品服务报告书。' },
+  service_report: { name: '售后服务报告', subject: '售后服务报告书', description: '发送检测结果、处理方式和审批结论。' },
+  shipment_notice: { name: '发货通知', subject: '发货通知', description: '通知经销商或客户订单已发货。' },
+  password_reset: { name: '密码重置', subject: '密码重置', description: '发送员工账号密码重置通知。' }
+};
+
+export function mailSubject(template: MailTemplateKey, envName: 'local' | 'staging' | 'production', suffix = ''): string {
+  const prefix = envName === 'staging' ? '【STAGING】' : '';
+  return `${prefix}【MaxCINE】${mailTemplates[template].subject}${suffix ? ` ${suffix}` : ''}`;
+}
+
+export function renderMailHtml(data: MailTemplateData): string {
+  const fields = (data.fields ?? []).map(([label, value]) => `<tr><td style="width:126px;padding:10px 0;color:#6b7280;vertical-align:top">${escapeHtml(label)}</td><td style="padding:10px 0;color:#111827">${escapeHtml(value || '暂无数据')}</td></tr>`).join('');
+  const sections = (data.sections ?? []).map((section) => `<section style="padding:0 0 22px"><h2 style="margin:0 0 10px;color:#111827;font-size:17px;line-height:1.35">${escapeHtml(section.heading)}</h2><p style="margin:0;color:#374151;line-height:1.75;white-space:pre-wrap">${escapeHtml(section.body || '暂无数据')}</p></section>`).join('');
+  const action = data.actionText && data.actionUrl ? `<p style="margin:24px 0 0"><a href="${escapeHtml(data.actionUrl)}" style="display:inline-block;padding:12px 18px;border-radius:999px;background:#121315;color:#fff;text-decoration:none;font-weight:700">${escapeHtml(data.actionText)}</a></p>` : '';
+  return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(data.title)}</title></head>
+  <body style="margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',Arial,sans-serif">
+  <div style="display:none;max-height:0;overflow:hidden;color:transparent">${escapeHtml(data.preheader || data.title)}</div>
+  <main style="max-width:720px;margin:0 auto;padding:28px 14px"><section style="overflow:hidden;border:1px solid #e5e7eb;border-radius:18px;background:#fff">
+  <header style="padding:30px 34px 24px;border-bottom:1px solid #e5e7eb"><img src="${escapeHtml(data.logoUrl)}" alt="MaxCINE" width="188" style="display:block;width:188px;max-width:54%;height:auto;margin-bottom:26px"><h1 style="margin:0;color:#111827;font-size:26px;line-height:1.25">${escapeHtml(data.title)}</h1>${data.reference ? `<p style="margin:8px 0 0;color:#6b7280;font-size:14px">${escapeHtml(data.reference)}</p>` : ''}</header>
+  <section style="padding:26px 34px">${fields ? `<table role="presentation" style="width:100%;border-collapse:collapse;margin:0 0 24px;font-size:14px">${fields}</table>` : ''}${sections}${action}</section>
+  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7">
+    <p style="margin:0">本邮件由 MaxCINE 系统自动发送。</p>
+    <p style="margin:0">请勿直接回复。</p>
+    <p style="margin:0">如需帮助：support@maxcine.cn</p>
+    <p style="margin:18px 0 0;color:#9ca3af">© ${new Date().getFullYear()} MaxCINE. All rights reserved.</p>
+  </footer>
+  </section></main></body></html>`;
+}
+
+export function renderMailText(data: MailTemplateData): string {
+  const fields = (data.fields ?? []).map(([label, value]) => `${label}：${value || '暂无数据'}`).join('\n');
+  const sections = (data.sections ?? []).map((section) => `${section.heading}\n${section.body || '暂无数据'}`).join('\n\n');
+  return `${data.title}\n${data.reference ? `${data.reference}\n` : ''}${fields}\n\n${sections}\n\n本邮件由 MaxCINE 系统自动发送。\n请勿直接回复。\n如需帮助：support@maxcine.cn`;
 }
