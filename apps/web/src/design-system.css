@@ -3069,6 +3069,11 @@ body:has(.system) {
   border-radius: var(--mc-radius-card);
 }
 
+.mail-center-preview.is-editing {
+  border-color: rgba(220, 38, 38, 0.5);
+  box-shadow: 0 0 0 4px rgba(220, 38, 38, 0.08), var(--mc-shadow-soft);
+}
+
 .mail-template-editor {
   display: grid;
   gap: var(--mc-space-3);
@@ -3079,15 +3084,14 @@ body:has(.system) {
   background: var(--mc-surface-muted);
 }
 
-.mail-template-editor textarea {
-  min-height: 180px;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
-  font-size: 12px;
-  line-height: 1.55;
+.mail-template-editor--inline {
+  grid-template-columns: minmax(260px, 1fr) auto;
+  align-items: end;
 }
 
-.mail-template-editor label:nth-of-type(2) textarea {
-  min-height: 360px;
+.mail-template-editor--inline .hint {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .service-progress {

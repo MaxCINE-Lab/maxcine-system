@@ -1,5 +1,5 @@
 /* eslint-disable react-hooks/exhaustive-deps */
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
 import { CameraPhotoButton } from './CameraPhotoButton';
@@ -61,6 +61,7 @@ function MailCenter({ user, route, logout }: Props) {
   const [draft, setDraft] = useState({ subject: '', html: '', text: '' });
   const [notice, setNotice] = useState<Notice>(null);
   const [busy, setBusy] = useState(false);
+  const previewFrameRef = useRef<HTMLIFrameElement | null>(null);
   const load = () => api<MailCenterStatus>('/admin/mail-center/status').then(setStatus).catch((error) => setNotice({ tone: 'error', text: errorText(error) }));
   useEffect(() => { void load(); }, []);
   const loadPreview = async (nextTemplate = template) => {
@@ -73,12 +74,37 @@ function MailCenter({ user, route, logout }: Props) {
     }
   };
   useEffect(() => { setEditing(false); void loadPreview(template); }, [template]);
+  const enablePreviewEditing = () => {
+    const doc = previewFrameRef.current?.contentDocument;
+    if (!doc) return;
+    doc.designMode = editing ? 'on' : 'off';
+    doc.body?.setAttribute('contenteditable', editing ? 'true' : 'false');
+    doc.getElementById('maxcine-template-edit-style')?.remove();
+    if (editing) {
+      const style = doc.createElement('style');
+      style.id = 'maxcine-template-edit-style';
+      style.textContent = 'body{cursor:text!important} h1,h2,p,td,a,span,li{outline:1px dashed rgba(220,38,38,.28);outline-offset:3px} h1:focus,h2:focus,p:focus,td:focus,a:focus,span:focus,li:focus{outline:2px solid rgba(220,38,38,.72)!important;background:rgba(254,226,226,.35)!important}';
+      doc.head.appendChild(style);
+    }
+  };
+  const currentPreviewHtml = () => {
+    const doc = previewFrameRef.current?.contentDocument;
+    if (!doc) return draft.html;
+    doc.getElementById('maxcine-template-edit-style')?.remove();
+    doc.designMode = 'off';
+    doc.body?.setAttribute('contenteditable', 'false');
+    return `<!doctype html>\n${doc.documentElement.outerHTML}`;
+  };
   const saveTemplate = async () => {
-    if (!draft.subject.trim() || !draft.html.trim()) return setNotice({ tone: 'error', text: '请填写邮件主题和 HTML 内容。' });
+    const nextHtml = currentPreviewHtml();
+    const nextText = previewFrameRef.current?.contentDocument?.body?.innerText || draft.text;
+    const payload = { subject: draft.subject, html: nextHtml, text: nextText };
+    if (!payload.subject.trim() || !payload.html.trim()) return setNotice({ tone: 'error', text: '请填写邮件主题和邮件内容。' });
     setBusy(true);
     try {
-      const result = await api<MailPreview>(`/admin/mail-center/templates/${template}`, { method: 'PATCH', body: JSON.stringify(draft) });
+      const result = await api<MailPreview>(`/admin/mail-center/templates/${template}`, { method: 'PATCH', body: JSON.stringify(payload) });
       setPreview(result);
+      setDraft({ subject: result.subject, html: result.html, text: result.text });
       setEditing(false);
       setNotice({ tone: 'success', text: '邮件模板已保存。' });
       await load();
@@ -119,7 +145,8 @@ function MailCenter({ user, route, logout }: Props) {
     }
   };
   const currentTemplate = status?.templates.find((item) => item.key === template);
-  return <Shell user={user} route={route} logout={logout} title="邮件中心" text="统一管理 MaxCINE 系统邮件模板、发送入口和发送记录。"><Feedback notice={notice} />{!status ? <p>正在加载邮件配置…</p> : <><section className="panel mail-center-overview"><div className="stats"><article className="stat"><p>当前 Provider</p><strong>{status.provider}</strong><span>{status.environment}</span></article><article className="stat"><p>Resend 状态</p><strong>{status.resendConfigured ? '已配置' : '缺少密钥'}</strong><span>{status.resendConfigured ? 'Cloudflare Secret 已存在' : '需要 RESEND_API_KEY'}</span></article><article className="stat"><p>域名验证</p><strong>{status.domain.status}</strong><span>{status.domain.detail}</span></article></div><dl className="detail-grid"><dt>From</dt><dd>{status.from.name} &lt;{status.from.address}&gt;</dd><dt>Reply-To</dt><dd>{status.replyTo.name} &lt;{status.replyTo.address}&gt;</dd></dl></section><section className="panel"><div className="panel-title"><h2>发送测试邮件</h2><span>一分钟最多三封</span></div><div className="form-layout"><label>模板<select value={template} onChange={(event) => setTemplate(event.target.value)}>{status.templates.map((item) => <option value={item.key} key={item.key}>{item.name}{item.isCustomized ? '（已编辑）' : ''}</option>)}</select><small>{currentTemplate?.description}</small>{currentTemplate?.updatedAt && <small>上次保存：{date(currentTemplate.updatedAt)}</small>}</label><label>收件人<input type="email" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="一次只填写一个邮箱" /></label></div><div className="action-list"><Button disabled={busy} onClick={() => void sendTest()}>{busy ? '正在发送…' : '发送测试邮件'}</Button><Button secondary onClick={() => void loadPreview()}>刷新预览</Button><Button secondary onClick={() => setEditing((value) => !value)}>{editing ? '收起编辑' : '编辑模板'}</Button><Button secondary danger disabled={busy || !currentTemplate?.isCustomized} onClick={() => void resetTemplate()}>恢复系统默认</Button></div></section>{preview && <section className="panel"><div className="panel-title"><h2>邮件预览</h2><span>{editing ? draft.subject : preview.subject}{preview.isCustomized ? ' · 已使用保存模板' : ' · 系统默认模板'}</span></div>{editing && <div className="mail-template-editor"><label>邮件主题<input value={draft.subject} onChange={(event) => setDraft({ ...draft, subject: event.target.value })} /></label><label>HTML 内容<textarea value={draft.html} onChange={(event) => setDraft({ ...draft, html: event.target.value })} /></label><label>纯文本内容<textarea value={draft.text} onChange={(event) => setDraft({ ...draft, text: event.target.value })} /></label><div className="action-list"><Button disabled={busy} onClick={() => void saveTemplate()}>{busy ? '正在保存…' : '保存模板'}</Button><Button secondary onClick={() => { setDraft({ subject: preview.subject, html: preview.html, text: preview.text }); setEditing(false); }}>取消</Button></div><p className="hint">{"保存后，邮件中心预览、测试发送和售后报价发送都会优先使用当前模板。售后报价模板可使用变量：{{caseNumber}}、{{serialNumber}}、{{customerName}}、{{productName}}、{{diagnosisSummary}}、{{finalSolution}}、{{quoteItemsHtml}}、{{grandTotal}}。"}</p></div>}<div className="quote-preview-content mail-center-preview"><iframe key={`${template}-${editing ? draft.html : preview.html}`} title="邮件模板预览" srcDoc={editing ? draft.html : preview.html} /></div></section>}<section className="panel"><div className="panel-title"><h2>发送记录</h2><span>{status.recent.length} 条</span></div><div className="table-wrap"><table><thead><tr><th>时间</th><th>模板</th><th>收件人</th><th>主题</th><th>Provider</th><th>状态</th><th>Provider ID / 失败原因</th></tr></thead><tbody>{status.recent.map((item) => <tr key={item.id}><td>{date(item.createdAt)}</td><td>{item.templateKey}</td><td>{item.toEmail}</td><td>{item.subject}</td><td>{item.provider}</td><td>{item.status === 'sent' ? '已发送' : '失败'}</td><td>{item.providerMessageId || item.failureReason || '—'}</td></tr>)}{!status.recent.length && <tr><td colSpan={7}>暂无发送记录。</td></tr>}</tbody></table></div></section></>}</Shell>;
+  const previewHtml = editing ? draft.html : preview?.html;
+  return <Shell user={user} route={route} logout={logout} title="邮件中心" text="统一管理 MaxCINE 系统邮件模板、发送入口和发送记录。"><Feedback notice={notice} />{!status ? <p>正在加载邮件配置…</p> : <><section className="panel mail-center-overview"><div className="stats"><article className="stat"><p>当前 Provider</p><strong>{status.provider}</strong><span>{status.environment}</span></article><article className="stat"><p>Resend 状态</p><strong>{status.resendConfigured ? '已配置' : '缺少密钥'}</strong><span>{status.resendConfigured ? 'Cloudflare Secret 已存在' : '需要 RESEND_API_KEY'}</span></article><article className="stat"><p>域名验证</p><strong>{status.domain.status}</strong><span>{status.domain.detail}</span></article></div><dl className="detail-grid"><dt>From</dt><dd>{status.from.name} &lt;{status.from.address}&gt;</dd><dt>Reply-To</dt><dd>{status.replyTo.name} &lt;{status.replyTo.address}&gt;</dd></dl></section><section className="panel"><div className="panel-title"><h2>发送测试邮件</h2><span>一分钟最多三封</span></div><div className="form-layout"><label>模板<select value={template} onChange={(event) => setTemplate(event.target.value)}>{status.templates.map((item) => <option value={item.key} key={item.key}>{item.name}{item.isCustomized ? '（已编辑）' : ''}</option>)}</select><small>{currentTemplate?.description}</small>{currentTemplate?.updatedAt && <small>上次保存：{date(currentTemplate.updatedAt)}</small>}</label><label>收件人<input type="email" value={recipient} onChange={(event) => setRecipient(event.target.value)} placeholder="一次只填写一个邮箱" /></label></div><div className="action-list"><Button disabled={busy} onClick={() => void sendTest()}>{busy ? '正在发送…' : '发送测试邮件'}</Button><Button secondary onClick={() => void loadPreview()}>刷新预览</Button><Button secondary onClick={() => setEditing((value) => !value)}>{editing ? '退出编辑' : '编辑模板'}</Button><Button secondary danger disabled={busy || !currentTemplate?.isCustomized} onClick={() => void resetTemplate()}>恢复系统默认</Button></div></section>{preview && <section className="panel"><div className="panel-title"><h2>邮件预览</h2><span>{editing ? draft.subject : preview.subject}{preview.isCustomized ? ' · 已使用保存模板' : ' · 系统默认模板'}</span></div>{editing && <div className="mail-template-editor mail-template-editor--inline"><label>邮件主题<input value={draft.subject} onChange={(event) => setDraft({ ...draft, subject: event.target.value })} /></label><div className="action-list"><Button disabled={busy} onClick={() => void saveTemplate()}>{busy ? '正在保存…' : '保存当前预览为模板'}</Button><Button secondary onClick={() => { setDraft({ subject: preview.subject, html: preview.html, text: preview.text }); setEditing(false); }}>取消</Button></div><p className="hint">可直接在下方预览中点击文字修改。保存后，测试邮件和售后报价发送会优先使用当前模板。售后报价可使用变量：{"{{caseNumber}}、{{serialNumber}}、{{customerName}}、{{productName}}、{{diagnosisSummary}}、{{finalSolution}}、{{quoteItemsHtml}}、{{grandTotal}}、{{paymentActionHtml}}"}。</p></div>}<div className={`quote-preview-content mail-center-preview ${editing ? 'is-editing' : ''}`}><iframe ref={previewFrameRef} key={`${template}-${editing ? 'editing' : 'preview'}-${previewHtml?.length ?? 0}`} title="邮件模板预览" srcDoc={previewHtml} onLoad={enablePreviewEditing} /></div></section>}<section className="panel"><div className="panel-title"><h2>发送记录</h2><span>{status.recent.length} 条</span></div><div className="table-wrap"><table><thead><tr><th>时间</th><th>模板</th><th>收件人</th><th>主题</th><th>Provider</th><th>状态</th><th>Provider ID / 失败原因</th></tr></thead><tbody>{status.recent.map((item) => <tr key={item.id}><td>{date(item.createdAt)}</td><td>{item.templateKey}</td><td>{item.toEmail}</td><td>{item.subject}</td><td>{item.provider}</td><td>{item.status === 'sent' ? '已发送' : '失败'}</td><td>{item.providerMessageId || item.failureReason || '—'}</td></tr>)}{!status.recent.length && <tr><td colSpan={7}>暂无发送记录。</td></tr>}</tbody></table></div></section></>}</Shell>;
 }
 
 function Users({ user, route, logout }: Props) {
