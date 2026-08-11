@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from "rea
 import type { SessionUser } from "@maxcine/shared";
 import { api, ApiClientError } from "./api";
 import { GsxPortal } from "./GsxPortal";
-import { AccountMenu, employeeNumberForUser, SystemNavigation } from "./systemNavigation";
+import { AccountMenu, captureWatermarkLines, SystemNavigation } from "./systemNavigation";
 import { CameraPhotoButton } from "./CameraPhotoButton";
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || "/api";
@@ -802,10 +802,7 @@ function CasePageV2({
       setNotice({ tone: "error", text: errorText(error) });
     }
   };
-  const cameraWatermarkLines = [
-    "山东省服务中心",
-    `工号 ${employeeNumberForUser(user) ?? "9353"}`,
-  ];
+  const cameraWatermarkLines = captureWatermarkLines(user, "service_center");
   const attachmentContentUrl = (attachmentId: string) =>
     `${apiBaseUrl}/after-sales/${id}/attachments/${attachmentId}/content`;
   const removeAttachment = async (category: string, attachmentId: string) => {

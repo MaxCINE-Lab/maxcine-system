@@ -4,7 +4,7 @@ import { api, ApiClientError } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { AdminManagementPortal } from './AdminManagementPortal';
 import { GsxPortal } from './GsxPortal';
-import { AccountMenu, SystemNavigation, displayRoleText, employeeNumberForUser, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess } from './systemNavigation';
+import { AccountMenu, SystemNavigation, captureWatermarkLines, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess } from './systemNavigation';
 import { CameraPhotoButton } from './CameraPhotoButton';
 
 type Notice = { tone: 'error' | 'success'; text: string } | null;
@@ -236,7 +236,7 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
   };
   const canShip = Boolean(data && ['approved', 'picking', 'packed'].includes(data.order.status));
   const serialCountFor = (group: AvailableSerialGroup) => group.serials.filter((item) => selectedSet.has(item.serialNumber.toUpperCase())).length;
-  const cameraWatermarkLines = ['山东省服务中心', `工号 ${employeeNumberForUser(user) ?? '9353'}`];
+  const cameraWatermarkLines = captureWatermarkLines(user, 'warehouse');
   return <Shell user={user} route={route} title={warehouse ? '发货订单' : '订单详情'} subtitle={data?.order.orderNo ?? '正在加载订单'} logout={logout}>
     <Alert notice={notice} />
     {!data ? <p>正在加载…</p> : <div className="order-layout">

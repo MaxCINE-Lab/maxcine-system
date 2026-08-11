@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'rea
 import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
 import { CameraPhotoButton } from './CameraPhotoButton';
-import { AccountMenu, SystemNavigation, displayRoleLabel, displayRoleText, employeeNumberForUser } from './systemNavigation';
+import { AccountMenu, SystemNavigation, captureWatermarkLines, displayRoleLabel, displayRoleText } from './systemNavigation';
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
 type Notice = { tone: 'error' | 'success'; text: string } | null;
@@ -421,7 +421,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const engineerSelectionPendingCount = selectedEngineerMaterials.filter((item) => item.suggestedTotalCents === null).length;
   const catalogSelectionTotalCents = selectedCatalogMaterials.reduce((sum, item) => sum + (item.outOfWarrantyPriceCents ?? 0) + (item.calculatedServiceFeeCents ?? 0), 0);
   const catalogSelectionPendingCount = selectedCatalogMaterials.filter((item) => item.outOfWarrantyPriceCents === null || (item.calculatedServiceFeeCents === null && item.calculatedServiceFeeStatus !== 'included')).length;
-  const cameraWatermarkLines = ['山东省服务中心', `工号 ${employeeNumberForUser(user) ?? '9353'}`];
+  const cameraWatermarkLines = captureWatermarkLines(user, 'service_center');
   const appendQuoteItems = (rows: QuoteItemDraft[]) => setQuoteItems((current) => {
     const nextIds = new Set(rows.map((item) => item.materialId).filter(Boolean));
     return [...current.filter((item) => !item.materialId || !nextIds.has(item.materialId)), ...rows];

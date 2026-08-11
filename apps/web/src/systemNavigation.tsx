@@ -24,8 +24,41 @@ const employeeNumberByEmail: Readonly<Record<string, string>> = {
   '3086zhu@maxcine.cn': '3086'
 };
 
+const dealerNameById: Readonly<Record<string, string>> = {
+  '10000000-0000-4000-8000-000000000001': 'MaxCINE 直营渠道',
+  '10000000-0000-4000-8000-000000000002': '辽宁省经销商',
+  '10000000-0000-4000-8000-000000000003': '安徽省经销商',
+  '10000000-0000-4000-8000-000000000004': '江苏省经销商',
+  '10000000-0000-4000-8000-000000000005': '浙江省经销商'
+};
+
+const serviceCenterNameById: Readonly<Record<string, string>> = {
+  '22000000-0000-4000-8000-000000000001': '辽宁省授权服务中心',
+  '22000000-0000-4000-8000-000000000002': '安徽省授权服务中心',
+  '22000000-0000-4000-8000-000000000003': '山东省高级服务中心'
+};
+
 export function employeeNumberForUser(user: SessionUser): string | null {
   return employeeNumberByEmail[user.email.trim().toLowerCase()] ?? null;
+}
+
+export function captureWatermarkLines(user: SessionUser, context?: 'dealer' | 'service_center' | 'warehouse'): string[] {
+  const employeeNumber = employeeNumberForUser(user);
+  const organization =
+    context === 'warehouse'
+      ? '山东云仓'
+      : context === 'dealer'
+        ? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+        : context === 'service_center'
+          ? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+          : user.roles.includes('warehouse_manager')
+            ? '山东云仓'
+            : user.roles.includes('authorized_service_center')
+              ? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+              : user.roles.includes('dealer')
+                ? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+                : serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? 'MaxCINE 管理中心';
+  return [organization, `工号 ${employeeNumber ?? '未登记'}`];
 }
 
 const hasAnyPermission = (user: SessionUser, permissions: Permission[]) => permissions.some((permission) => user.permissions.includes(permission));
