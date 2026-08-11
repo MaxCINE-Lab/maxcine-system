@@ -532,7 +532,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
       setOutboundBusy(false);
     }
   };
-  const quotePayload = (workflowStatus: 'DRAFT' | 'READY_FOR_REVIEW') => ({ inspectionSummary: quoteSummary, finalDecision, validUntil: quoteValidUntil, estimatedCycle: quoteCycle, paymentInstructions: '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。', note: '', workflowStatus, items: quoteItems.map((item) => ({ itemName: item.itemName, itemType: item.itemType, quantity: Number(item.quantity), unitPriceCents: centsFromYuan(item.unitPrice), serviceFeeCents: Math.max(0, centsFromYuan(item.serviceFee || '0')), discountCents: Math.max(0, centsFromYuan(item.discount || '0')), materialId: item.materialId, materialCode: item.materialCode || '', customerNote: item.customerNote, note: item.note })) });
+  const quotePayload = (workflowStatus: 'DRAFT' | 'READY_FOR_REVIEW') => ({ inspectionSummary: quoteSummary, finalDecision, validUntil: quoteValidUntil, estimatedCycle: quoteCycle, paymentInstructions: '', note: '', workflowStatus, items: quoteItems.map((item) => ({ itemName: item.itemName, itemType: item.itemType, quantity: Number(item.quantity), unitPriceCents: centsFromYuan(item.unitPrice), serviceFeeCents: Math.max(0, centsFromYuan(item.serviceFee || '0')), discountCents: Math.max(0, centsFromYuan(item.discount || '0')), materialId: item.materialId, materialCode: item.materialCode || '', customerNote: item.customerNote, note: item.note })) });
   const loadQuotePreview = async (quoteId: string, loadIntoForm = false) => {
     const detail = await api<QuotePreview>(`/after-sales-quotes/${quoteId}`);
     setQuotePreview(detail);

@@ -580,6 +580,37 @@ function moneyText(value: number): string {
 
 const ALIPAY_PAYMENT_URL = 'https://qr.alipay.com/fkx13048tsi5aspx4dbzq72';
 
+function quotePaymentNoticeHtml(snapshot: QuoteSnapshot): string {
+  return `<div style="border:1px solid #e5e7eb;border-radius:16px;background:#f9fafb;padding:18px 20px">
+    <p style="margin:0 0 14px;color:#111827;font-weight:700">本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方按钮进行付款。</p>
+    <a href="${ALIPAY_PAYMENT_URL}" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#121315;color:#fff;text-decoration:none;font-weight:700">使用支付宝付款</a>
+    <p style="margin:12px 0 14px;color:#111827;font-weight:700">请您付款时添加备注您的案例号：${escapeHtml(snapshot.caseNumber)}</p>
+    <ol style="margin:0;padding-left:20px;color:#4b5563;line-height:1.8">
+      <li>请确认报价明细无误后再付款，我们将在确认款项到账后为您提供维修服务；</li>
+      <li>MaxCINE 将按照您登记的收货地址寄回产品。如有变动，请及时联系我们更改，您可通过邮箱 support@maxcine.cn 或您的经销商联系 MaxCINE 技术支持；</li>
+      <li>MaxCINE 将给您退回全额付费维修更换后的零部件（任何享有折扣、减免或优惠的维修旧件，更换后将归 MaxCINE 所有）；</li>
+      <li>为保证维修质量，MaxCINE 可能会升级或更换产品模块，如若升级或更换，S/N 也可能发生变更，但不影响正常使用售后服务；</li>
+      <li>MaxCINE 默认使用陆运为您寄回产品，如需物流加急，您可通过 MaxCINE 技术支持补差价付费升级顺丰特快类物流产品；</li>
+      <li>请您在收到我们发出的维修报价通知后 30 日内及时支付维修费用以便于我们将修好的产品寄送至您指定地址。如果您在规定时间内仍未支付维修费用，我们可能将产品退回您登记的收货地址；</li>
+      <li>若您最终选择不维修直接退回，您将有可能被收取一定的服务费用。</li>
+    </ol>
+  </div>`;
+}
+
+function quotePaymentNoticeText(snapshot: QuoteSnapshot): string {
+  return `本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方链接进行付款。
+使用支付宝付款：${ALIPAY_PAYMENT_URL}
+请您付款时添加备注您的案例号：${snapshot.caseNumber}
+
+1. 请确认报价明细无误后再付款，我们将在确认款项到账后为您提供维修服务；
+2. MaxCINE 将按照您登记的收货地址寄回产品。如有变动，请及时联系我们更改，您可通过邮箱 support@maxcine.cn 或您的经销商联系 MaxCINE 技术支持；
+3. MaxCINE 将给您退回全额付费维修更换后的零部件（任何享有折扣、减免或优惠的维修旧件，更换后将归 MaxCINE 所有）；
+4. 为保证维修质量，MaxCINE 可能会升级或更换产品模块，如若升级或更换，S/N 也可能发生变更，但不影响正常使用售后服务；
+5. MaxCINE 默认使用陆运为您寄回产品，如需物流加急，您可通过 MaxCINE 技术支持补差价付费升级顺丰特快类物流产品；
+6. 请您在收到我们发出的维修报价通知后 30 日内及时支付维修费用以便于我们将修好的产品寄送至您指定地址。如果您在规定时间内仍未支付维修费用，我们可能将产品退回您登记的收货地址；
+7. 若您最终选择不维修直接退回，您将有可能被收取一定的服务费用。`;
+}
+
 function notificationSender(env: Env): { address: string; name: string; replyTo: string; replyToName: string; logoUrl: string } {
   return {
     address: env.NOTIFICATION_EMAIL_FROM || 'notification@maxcine.cn',
@@ -681,7 +712,7 @@ function quoteHtml(snapshot: QuoteSnapshot): string {
     <td style="padding:11px 8px;border-bottom:1px solid #e5e7eb">${escapeHtml(item.customerNote || '—')}</td>
   </tr>`).join('');
   const detailRow = (label: string, value: string) => `<tr><td style="width:120px;padding:7px 0;color:#6b7280;vertical-align:top">${escapeHtml(label)}</td><td style="padding:7px 0;color:#111827">${escapeHtml(value || '暂无数据')}</td></tr>`;
-  const paymentAction = snapshot.grandTotalCents > 0 ? `<section style="padding:0 34px 26px"><div style="border:1px solid #e5e7eb;border-radius:16px;background:#f9fafb;padding:18px 20px"><p style="margin:0 0 14px;color:#111827;font-weight:700">本次报告金额为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，可点击下方按钮使用支付宝付款。</p><a href="${ALIPAY_PAYMENT_URL}" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#121315;color:#fff;text-decoration:none;font-weight:700">立即支付（支付宝）</a><p style="margin:12px 0 0;color:#6b7280;font-size:13px">付款完成后请联系 MaxCINE 客户支持确认到账。</p></div></section>` : '';
+  const paymentAction = snapshot.grandTotalCents > 0 ? `<section style="padding:0 34px 26px">${quotePaymentNoticeHtml(snapshot)}</section>` : '';
   return `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>产品服务报告书 ${escapeHtml(snapshot.caseNumber)}</title></head>
   <body style="margin:0;background:#f3f4f6;color:#111827;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
   <main style="max-width:760px;margin:0 auto;padding:28px 14px"><section style="background:#fff;border:1px solid #e5e7eb;border-radius:18px;overflow:hidden">
@@ -691,7 +722,7 @@ function quoteHtml(snapshot: QuoteSnapshot): string {
   <section style="padding:24px 20px 28px"><h2 style="margin:0 14px 14px;font-size:17px">消耗物料和服务明细</h2><div style="overflow-x:auto"><table style="width:100%;min-width:680px;border-collapse:collapse;font-size:13px"><thead><tr style="background:#f9fafb;color:#4b5563"><th style="padding:10px 8px;text-align:left">料号</th><th style="padding:10px 8px;text-align:left">项目</th><th style="padding:10px 8px">数量</th><th style="padding:10px 8px;text-align:right">单价</th><th style="padding:10px 8px;text-align:right">服务费</th><th style="padding:10px 8px;text-align:right">折扣</th><th style="padding:10px 8px;text-align:right">小计</th><th style="padding:10px 8px;text-align:left">说明</th></tr></thead><tbody>${rows}</tbody></table></div>
   <table role="presentation" style="width:100%;max-width:360px;margin:22px 0 0 auto;border-collapse:collapse;font-size:14px">${detailRow('项目及服务合计', moneyText(snapshot.subtotalCents))}${detailRow('折扣', snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0))}${detailRow('运费', moneyText(snapshot.shippingFeeCents))}<tr><td style="padding:12px 0;border-top:1px solid #111827;font-weight:700">总金额</td><td style="padding:12px 0;border-top:1px solid #111827;text-align:right;font-size:20px;font-weight:750">${moneyText(snapshot.grandTotalCents)}</td></tr></table></section>
   ${paymentAction}
-  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7"><p style="margin:0 0 6px">报价有效期：${escapeHtml(snapshot.validUntil)}；预计处理周期：${escapeHtml(snapshot.estimatedCycle || '待确认')}</p><p style="margin:0 0 6px">${escapeHtml(snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。')}</p>${snapshot.customerNote ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.customerNote)}</p>` : ''}<p style="margin:18px 0 0">此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。</p></footer>
+  <footer style="padding:22px 34px 28px;background:#f9fafb;color:#4b5563;font-size:13px;line-height:1.7"><p style="margin:0 0 6px">报价有效期：${escapeHtml(snapshot.validUntil)}；预计处理周期：${escapeHtml(snapshot.estimatedCycle || '待确认')}</p>${snapshot.paymentInstructions ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.paymentInstructions)}</p>` : ''}${snapshot.customerNote ? `<p style="margin:0 0 6px">${escapeHtml(snapshot.customerNote)}</p>` : ''}<p style="margin:18px 0 0">此邮件为系统自动发送，请勿直接回复。</p><p style="margin:0">若您对报价单有任何疑问，可联系 MaxCINE 技术支持获取协助（人工服务时间为每日 09:00-21:00），感谢您的理解。</p></footer>
   </section></main></body></html>`;
 }
 
@@ -728,10 +759,11 @@ ${items}
 报价有效期：${snapshot.validUntil}
 预计处理周期：${snapshot.estimatedCycle || '待确认'}
 
-${snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。'}
-${snapshot.grandTotalCents > 0 ? `\n立即支付（支付宝）：${ALIPAY_PAYMENT_URL}\n付款完成后请联系 MaxCINE 客户支持确认到账。` : ''}
+${snapshot.paymentInstructions || ''}
+${snapshot.grandTotalCents > 0 ? `\n${quotePaymentNoticeText(snapshot)}` : ''}
 
-此邮件由 MaxCINE 系统自动发送，请勿回复。如需咨询，请直接发送邮件至 support@maxcine.cn。`;
+此邮件为系统自动发送，请勿直接回复。
+若您对报价单有任何疑问，可联系 MaxCINE 技术支持获取协助（人工服务时间为每日 09:00-21:00），感谢您的理解。`;
 }
 
 function quoteTemplateValues(snapshot: QuoteSnapshot): Record<string, string> {
@@ -768,8 +800,8 @@ function quoteTemplateValues(snapshot: QuoteSnapshot): Record<string, string> {
     finalSolution: snapshot.finalSolution,
     quoteItemsHtml,
     quoteItemsText,
-    paymentActionHtml: snapshot.grandTotalCents > 0 ? `<div style="border:1px solid #e5e7eb;border-radius:16px;background:#f9fafb;padding:18px 20px"><p style="margin:0 0 14px;color:#111827;font-weight:700">本次报告金额为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，可点击下方按钮使用支付宝付款。</p><a href="${ALIPAY_PAYMENT_URL}" target="_blank" rel="noopener" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#121315;color:#fff;text-decoration:none;font-weight:700">立即支付（支付宝）</a><p style="margin:12px 0 0;color:#6b7280;font-size:13px">付款完成后请联系 MaxCINE 客户支持确认到账。</p></div>` : '',
-    paymentActionText: snapshot.grandTotalCents > 0 ? `立即支付（支付宝）：${ALIPAY_PAYMENT_URL}` : '',
+    paymentActionHtml: snapshot.grandTotalCents > 0 ? quotePaymentNoticeHtml(snapshot) : '',
+    paymentActionText: snapshot.grandTotalCents > 0 ? quotePaymentNoticeText(snapshot) : '',
     subtotal: moneyText(snapshot.subtotalCents),
     discount: snapshot.discountCents ? `-${moneyText(snapshot.discountCents)}` : moneyText(0),
     shippingFee: moneyText(snapshot.shippingFeeCents),
@@ -778,17 +810,22 @@ function quoteTemplateValues(snapshot: QuoteSnapshot): Record<string, string> {
     validUntil: snapshot.validUntil,
     estimatedCycle: snapshot.estimatedCycle || '待确认',
     customerNote: snapshot.customerNote,
-    paymentInstructions: snapshot.paymentInstructions || '如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。',
+    paymentInstructions: snapshot.paymentInstructions,
     logoUrl: snapshot.logoUrl || 'https://maxcine-web-staging.pages.dev/assets/quote-logo.png'
   };
 }
 
 function ensurePaidQuotePaymentAction(html: string, snapshot: QuoteSnapshot): string {
-  if (snapshot.grandTotalCents <= 0 || html.includes(ALIPAY_PAYMENT_URL)) return html;
+  const normalized = html
+    .replace(/本次报告金额为\s*([^，<]+)，如确认处理方案，可点击下方按钮使用支付宝付款。/g, `本次案例为 ${moneyText(snapshot.grandTotalCents)}，如确认处理方案，您可点击下方按钮进行付款。`)
+    .replaceAll('立即支付（支付宝）', '使用支付宝付款')
+    .replaceAll('付款完成后请联系 MaxCINE 客户支持确认到账。', `请您付款时添加备注您的案例号：${escapeHtml(snapshot.caseNumber)}`)
+    .replaceAll('如需确认本报告，请通过 MaxCINE 客户支持渠道联系我们。', '');
+  if (snapshot.grandTotalCents <= 0 || normalized.includes(ALIPAY_PAYMENT_URL)) return normalized;
   const action = `<section style="padding:0 34px 26px">${quoteTemplateValues(snapshot).paymentActionHtml}</section>`;
-  if (html.includes('<footer')) return html.replace('<footer', `${action}<footer`);
-  if (html.includes('</body>')) return html.replace('</body>', `${action}</body>`);
-  return `${html}${action}`;
+  if (normalized.includes('<footer')) return normalized.replace('<footer', `${action}<footer`);
+  if (normalized.includes('</body>')) return normalized.replace('</body>', `${action}</body>`);
+  return `${normalized}${action}`;
 }
 
 function applyTemplateVariables(content: string, values: Record<string, string>, mode: 'html' | 'text'): string {

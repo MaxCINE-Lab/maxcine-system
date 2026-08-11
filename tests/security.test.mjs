@@ -102,9 +102,10 @@ test('quote delivery uses a locked snapshot, notification sender and support rep
   assert.match(source, /escapeHtml\(snapshot\.customerDescription/);
   assert.match(source, /sendViaMailCenter/);
   assert.match(source, /mailSubject\('after_sales_quote'/);
-  assert.match(source, /此邮件由 MaxCINE 系统自动发送，请勿回复/);
+  assert.match(source, /此邮件为系统自动发送，请勿直接回复/);
   assert.match(source, /https:\/\/qr\.alipay\.com\/fkx13048tsi5aspx4dbzq72/);
-  assert.match(source, /立即支付（支付宝）/);
+  assert.match(source, /使用支付宝付款/);
+  assert.match(source, /请您付款时添加备注您的案例号/);
   assert.match(source, /snapshot\.grandTotalCents > 0/);
   assert.match(source, /ensurePaidQuotePaymentAction/);
   assert.match(dbSource, /CAS-\$\{token\.slice\(0, 5\)\}-\$\{token\.slice\(5, 10\)\}/);
