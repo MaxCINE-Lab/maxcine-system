@@ -416,11 +416,11 @@ function CaseListV2({ user, route }: { user: SessionUser; route: string }) {
       </section>
       <div className="filter-row">
         {[
+          ["all", "全部"],
           ["WAITING_SERVICE_CENTER_RECEIPT", "待收货"],
           ["WAITING_INSPECTION", "待检测"],
           ["INSPECTION_IN_PROGRESS", "检测中"],
           ["PENDING_QUOTE", "已提交定损"],
-          ["all", "全部"],
         ].map(([value, label]) => (
           <button
             className={`filter ${tab === value ? "active" : ""}`}
