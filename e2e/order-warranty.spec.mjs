@@ -19,7 +19,7 @@ function execute(sql) {
 
 async function login(page, email) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill(email);
+  await page.getByLabel('AD账号').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');
@@ -39,7 +39,7 @@ async function request(page, path, method = 'GET', body) {
 
 test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产', async ({ page }) => {
   const unique = Date.now();
-  await login(page, 'ziyuesun@maxcine.cn');
+  await login(page, '8016sun@maxcine.cn');
   const stores = await request(page, '/stores');
   const inventory = await request(page, '/inventory');
   expect(stores.status).toBe(200);
@@ -62,7 +62,7 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   const submitted = await request(page, `/orders/${created.body.id}/submit`, 'POST');
   expect(submitted.status).toBe(200);
 
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   const approved = await request(page, `/orders/${created.body.id}/review`, 'POST', { approved: true, note: '浏览器验收通过' });
   expect(approved.status).toBe(200);
   const available = await request(page, `/orders/${created.body.id}/available-serials`);
@@ -77,7 +77,7 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   });
   expect(fulfilled.status).toBe(200);
 
-  await login(page, 'warehouse@maxcine.cn');
+  await login(page, '8982warehouse@maxcine.cn');
   const warehouseDetail = await request(page, `/orders/${created.body.id}`);
   expect(warehouseDetail.status).toBe(200);
   expect(warehouseDetail.body.order.salePriceCents).toBeNull();
@@ -85,7 +85,7 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   expect(warehouseDetail.body.order.screenshotDataUrl).toBe('');
   expect((await request(page, `/orders/${created.body.id}/ship`, 'POST', { carrier: '顺丰速运', trackingNumber: `SF-E2E-${unique}`, serialNumbers: [selectedSn] })).status).toBe(200);
 
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   const lookup = await request(page, `/gsx/search?q=${encodeURIComponent(selectedSn)}`);
   expect(lookup.status).toBe(200);
   expect(lookup.body.items).toHaveLength(1);

@@ -29,7 +29,7 @@ function execute(sql) {
 
 async function login(page) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill('yukyinchew@maxcine.cn');
+  await page.getByLabel('AD账号').fill('9353xuyan@maxcine.cn');
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');

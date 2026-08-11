@@ -24,7 +24,7 @@ function createFixture() {
 
 async function login(page, email) {
   await page.goto('/#/login');
-  await page.getByLabel('邮箱').fill(email);
+  await page.getByLabel('AD账号').fill(email);
   await page.getByLabel('密码').fill(password);
   await page.getByRole('button', { name: '登录' }).click();
   await page.waitForFunction(() => location.hash !== '#/login');
@@ -32,7 +32,7 @@ async function login(page, email) {
 
 test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离', async ({ page }) => {
   const fixture = createFixture();
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   await page.goto('/#/system/admin/assets/import');
   await expect(page.getByRole('heading', { name: '历史数据导入' })).toBeVisible();
   await page.locator('input[type=file]').setInputFiles(fixture);
@@ -85,7 +85,7 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
   expect(assigned.status).toBe(200);
 
   await page.goto('/#/login');
-  await login(page, 'ziyuesun@maxcine.cn');
+  await login(page, '8016sun@maxcine.cn');
   const serviceView = await page.evaluate(async ({ base, id }) => {
     const response = await fetch(`${base}/assets/${id}`, { credentials: 'include' });
     return { status: response.status, body: await response.json() };
@@ -95,7 +95,7 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
   expect(serviceView.body.events.some((event) => event.visibility === 'admin_private')).toBe(false);
 
   await page.goto('/#/login');
-  await login(page, 'ericzhu@maxcine.cn');
+  await login(page, '3086zhu@maxcine.cn');
   const dealerSearch = await page.evaluate(async (base) => {
     const response = await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' });
     const body = await response.json();
@@ -105,7 +105,7 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
   expect(dealerSearch.count).toBe(0);
 
   await page.goto('/#/login');
-  await login(page, 'warehouse@maxcine.cn');
+  await login(page, '8982warehouse@maxcine.cn');
   const warehouseSearch = await page.evaluate(async (base) => {
     const response = await fetch(`${base}/gsx/search?q=6900000000002`, { credentials: 'include' });
     const body = await response.json();
@@ -115,7 +115,7 @@ test('GSX 历史导入、SN 查询、生命周期、售后关联和权限隔离'
   expect(warehouseSearch.count).toBe(0);
 
   await page.goto('/#/login');
-  await login(page, 'yukyinchew@maxcine.cn');
+  await login(page, '9353xuyan@maxcine.cn');
   await page.goto('/#/system/admin/assets/import');
   await page.locator('input[type=file]').setInputFiles(fixture);
   await expect(page.getByText('该文件已有预检查记录，可继续确认导入。')).toBeVisible();
