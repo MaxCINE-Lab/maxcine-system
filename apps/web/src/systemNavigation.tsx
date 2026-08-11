@@ -16,12 +16,12 @@ const roleDisplayName: Record<Role, string> = {
 };
 
 const employeeNumberByEmail: Readonly<Record<string, string>> = {
-  'yukyinchew@maxcine.cn': '9353',
-  'warehouse@maxcine.cn': '9612',
-  'ziyuesun@maxcine.cn': '8043',
-  'finestormray@maxcine.cn': '2056',
-  'yuxiangchen@maxcine.cn': '0938',
-  'ericzhu@maxcine.cn': '6583'
+  '9353xuyan@maxcine.cn': '9353',
+  '8982warehouse@maxcine.cn': '8982',
+  '8016sun@maxcine.cn': '8016',
+  '0982chen@maxcine.cn': '0982',
+  '9527rui@maxcine.cn': '9527',
+  '3086zhu@maxcine.cn': '3086'
 };
 
 export function employeeNumberForUser(user: SessionUser): string | null {

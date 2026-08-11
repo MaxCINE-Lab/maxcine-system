@@ -77,7 +77,7 @@ function Contact() {
 
 function Legal({ type }: { type: 'privacy' | 'terms' }) {
   const privacy = type === 'privacy';
-  return <PublicLayout><article className="legal section"><span className="eyebrow">占位页面</span><h1>{privacy ? '隐私政策' : '服务条款'}</h1><p>此页面是第一版内容占位，不能视为正式法律文本。在上线前应由法务根据实际数据处理、客户关系和运营范围审阅并替换。</p><h2>当前原则</h2><p>系统仅收集完成登录、订单履约、售后和安全审计所必需的数据；不在演示数据、代码或静态页面中写入真实客户资料。</p></article></PublicLayout>;
+  return <PublicLayout><article className="legal section"><span className="eyebrow">占位页面</span><h1>{privacy ? '隐私政策' : '服务条款'}</h1><p>此页面是第一版内容占位，不能视为正式法律文本。在上线前应由法务根据实际数据处理、客户关系和运营范围审阅并替换。</p><h2>当前原则</h2><p>系统仅收集完成登录、订单履约、售后和安全审计所必需的数据；不在业务数据、代码或静态页面中写入真实客户资料。</p></article></PublicLayout>;
 }
 
 function PageHero({ eyebrow, title, text }: { eyebrow: string; title: string; text: string }) { return <section className="page-hero"><span className="eyebrow">{eyebrow}</span><h1>{title}</h1><p>{text}</p></section>; }
@@ -120,26 +120,26 @@ function Panel({ title, children }: { title: string; children: ReactNode }) { re
 function Timeline({ rows }: { rows: string[] }) { return <ul className="timeline">{rows.map((row) => <li key={row}><i />{row}</li>)}</ul>; }
 
 function Inventory({ user }: { user: SessionUser }) {
-  const rows = [['MC-REFERENCE-01', 'MaxCINE Reference Display', '—', '演示数据']];
-  return <SystemShell user={user} title="共享库存" subtitle="仅展示已授权范围内的可用库存。"><div className="notice">库存数量将由 D1 库存流水实时驱动；首版演示库未注入真实库存。</div><DataTable headings={['SKU', '产品', '可用数量', '状态']} rows={rows} /></SystemShell>;
+  const rows = [['MC-REFERENCE-01', 'MaxCINE 产品', '—', '业务数据']];
+  return <SystemShell user={user} title="共享库存" subtitle="仅展示已授权范围内的可用库存。"><div className="notice">库存数量将由 D1 库存流水实时驱动；首版业务库未注入真实库存。</div><DataTable headings={['SKU', '产品', '可用数量', '状态']} rows={rows} /></SystemShell>;
 }
 
 function NewOrder({ user }: { user: SessionUser }) {
   const [added, setAdded] = useState(false);
-  return <SystemShell user={user} title="新建订单" subtitle="订单以草稿开始，提交后才进入审核。"><div className="form-layout"><Panel title="订单信息"><label>所属店铺<select defaultValue=""><option value="" disabled>选择已授权店铺</option><option>Demo Shanghai Store（演示）</option></select></label><label>备注<textarea placeholder="可选：仅填写订单处理必要信息" /></label></Panel><Panel title="产品"><div className="line-item"><div><strong>MC-REFERENCE-01</strong><span>MaxCINE Reference Display</span></div><input aria-label="数量" type="number" min="1" defaultValue="1" /></div><Button secondary onClick={() => setAdded(!added)}>{added ? '已加入草稿' : '加入草稿'}</Button></Panel></div><div className="sticky-action"><span>总额将在服务端按产品快照计算</span><Button>保存草稿</Button><Button secondary>提交审核</Button></div></SystemShell>;
+  return <SystemShell user={user} title="新建订单" subtitle="订单以草稿开始，提交后才进入审核。"><div className="form-layout"><Panel title="订单信息"><label>所属店铺<select defaultValue=""><option value="" disabled>选择已授权店铺</option><option>上海店</option></select></label><label>备注<textarea placeholder="可选：仅填写订单处理必要信息" /></label></Panel><Panel title="产品"><div className="line-item"><div><strong>MC-REFERENCE-01</strong><span>MaxCINE 产品</span></div><input aria-label="数量" type="number" min="1" defaultValue="1" /></div><Button secondary onClick={() => setAdded(!added)}>{added ? '已加入草稿' : '加入草稿'}</Button></Panel></div><div className="sticky-action"><span>总额将在服务端按产品快照计算</span><Button>保存草稿</Button><Button secondary>提交审核</Button></div></SystemShell>;
 }
 
 function Orders({ user, detail = false }: { user: SessionUser; detail?: boolean }) {
   if (detail) return <OrderDetail user={user} />;
-  return <SystemShell user={user} title="订单" subtitle="按状态跟踪从草稿到交付的全过程。"><div className="filter-row"><button className="filter active">全部</button><button className="filter">待审核</button><button className="filter">处理中</button><button className="filter">已发货</button></div><DataTable headings={['订单编号', '店铺', '状态', '更新时间']} rows={[[<a href="#/system/orders/demo" key="order">MC-20260726-DEMO</a>, 'Demo Shanghai Store', <Status value="submitted" key="status" />, '演示数据']]}/></SystemShell>;
+  return <SystemShell user={user} title="订单" subtitle="按状态跟踪从草稿到交付的全过程。"><div className="filter-row"><button className="filter active">全部</button><button className="filter">待审核</button><button className="filter">处理中</button><button className="filter">已发货</button></div><DataTable headings={['订单编号', '店铺', '状态', '更新时间']} rows={[[<a href="#/system/orders/demo" key="order">MC-20260726-001</a>, '上海店', <Status value="submitted" key="status" />, '业务数据']]}/></SystemShell>;
 }
 
 function OrderDetail({ user }: { user: SessionUser }) {
-  return <SystemShell user={user} title="订单详情" subtitle="MC-20260726-DEMO"><div className="order-layout"><Panel title="状态"><div className="status-steps">{['草稿', '已提交', '已审核', '拣货', '已打包', '已发货'].map((item, index) => <div key={item} className={index < 2 ? 'done' : ''}><i>{index + 1}</i><span>{item}</span></div>)}</div></Panel><Panel title="产品"><DataTable headings={['产品', '数量', 'SN']} rows={[["MC-REFERENCE-01", '1', '待仓库录入']]}/></Panel><Panel title="发货信息"><p>顺丰运单号将在仓库确认发货后出现。</p></Panel></div></SystemShell>;
+  return <SystemShell user={user} title="订单详情" subtitle="MC-20260726-001"><div className="order-layout"><Panel title="状态"><div className="status-steps">{['草稿', '已提交', '已审核', '拣货', '已打包', '已发货'].map((item, index) => <div key={item} className={index < 2 ? 'done' : ''}><i>{index + 1}</i><span>{item}</span></div>)}</div></Panel><Panel title="产品"><DataTable headings={['产品', '数量', 'SN']} rows={[["MC-REFERENCE-01", '1', '待仓库录入']]}/></Panel><Panel title="发货信息"><p>顺丰运单号将在仓库确认发货后出现。</p></Panel></div></SystemShell>;
 }
 
 function Reviews({ user }: { user: SessionUser }) {
-  return <SystemShell user={user} title="订单审核" subtitle="审核动作会保留审计记录，并在库存不足时拒绝通过。"><DataTable headings={['订单编号', '经销商', '库存校验', '操作']} rows={[["MC-20260726-DEMO", 'Demo East Dealer', '待校验', <div className="inline-actions" key="actions"><Button>通过</Button><Button secondary>拒绝</Button></div>]]}/><p className="hint">正式审核通过将以原子批处理保留库存、更新订单、写入通知和审计日志。</p></SystemShell>;
+  return <SystemShell user={user} title="订单审核" subtitle="审核动作会保留审计记录，并在库存不足时拒绝通过。"><DataTable headings={['订单编号', '经销商', '库存校验', '操作']} rows={[["MC-20260726-001", 'East Dealer', '待校验', <div className="inline-actions" key="actions"><Button>通过</Button><Button secondary>拒绝</Button></div>]]}/><p className="hint">正式审核通过将以原子批处理保留库存、更新订单、写入通知和审计日志。</p></SystemShell>;
 }
 
 function Warehouse({ user, mode = 'orders' }: { user: SessionUser; mode?: 'orders' | 'serials' | 'tracking' | 'confirm' }) {
@@ -148,7 +148,7 @@ function Warehouse({ user, mode = 'orders' }: { user: SessionUser; mode?: 'order
   return <SystemShell user={user} title={titles[mode]} subtitle="仓库工作流 · 手机优先"><div className="warehouse-steps">{['拣货', 'SN', '运单', '确认'].map((name, index) => <div className={index + 1 <= step ? 'active' : ''} key={name}><span>{index + 1}</span>{name}</div>)}</div>{mode === 'orders' && <WarehouseOrders />}{mode === 'serials' && <SerialEntry />}{mode === 'tracking' && <TrackingEntry />}{mode === 'confirm' && <ShipmentConfirm />}</SystemShell>;
 }
 
-function WarehouseOrders() { return <div className="warehouse-card"><span className="tag">已审核</span><h2>MC-20260726-DEMO</h2><p>1 件 · MaxCINE Reference Display</p><div className="action-list"><Button href="#/system/warehouse/serials">开始拣货并录入 SN</Button><Button secondary href="#/system/orders/demo">查看订单</Button></div></div>; }
+function WarehouseOrders() { return <div className="warehouse-card"><span className="tag">已审核</span><h2>MC-20260726-001</h2><p>1 件 · MaxCINE 产品</p><div className="action-list"><Button href="#/system/warehouse/serials">开始拣货并录入 SN</Button><Button secondary href="#/system/orders/demo">查看订单</Button></div></div>; }
 
 function ScannerField({ label, placeholder, onValue }: { label: string; placeholder: string; onValue: (value: string) => void }) {
   const [error, setError] = useState<string | null>(null);
@@ -157,16 +157,16 @@ function ScannerField({ label, placeholder, onValue }: { label: string; placehol
   return <div className="scanner"><label>{label}<input placeholder={placeholder} onChange={(event) => onValue(event.target.value.trim())} /></label><Button secondary onClick={useCamera}>使用摄像头扫码</Button><p>摄像头不可用时，请使用手动输入或扫描枪。</p>{error && <div className="notice notice--error">{error}</div>}</div>;
 }
 
-function SerialEntry() { const [serial, setSerial] = useState(''); return <div className="warehouse-card"><span className="tag">第 1 / 1 件</span><h2>MaxCINE Reference Display</h2><ScannerField label="产品序列号（SN）" placeholder="扫描或手动输入 SN" onValue={setSerial} /><Button href="#/system/warehouse/tracking" disabled={!serial}>保存 SN，继续</Button></div>; }
+function SerialEntry() { const [serial, setSerial] = useState(''); return <div className="warehouse-card"><span className="tag">第 1 / 1 件</span><h2>MaxCINE 产品</h2><ScannerField label="产品序列号（SN）" placeholder="扫描或手动输入 SN" onValue={setSerial} /><Button href="#/system/warehouse/tracking" disabled={!serial}>保存 SN，继续</Button></div>; }
 function TrackingEntry() { const [tracking, setTracking] = useState(''); return <div className="warehouse-card"><h2>顺丰运单号</h2><ScannerField label="运单号" placeholder="扫描或手动输入运单号" onValue={setTracking} /><Button href="#/system/warehouse/confirm" disabled={!tracking}>保存运单号，查看摘要</Button></div>; }
-function ShipmentConfirm() { const [confirming, setConfirming] = useState(false); return <div className="warehouse-card"><h2>发货前确认</h2><dl className="summary"><dt>订单</dt><dd>MC-20260726-DEMO</dd><dt>产品</dt><dd>MaxCINE Reference Display × 1</dd><dt>SN</dt><dd>尚未连接演示数据</dd><dt>顺丰运单号</dt><dd>尚未连接演示数据</dd></dl><div className="danger-zone"><p>确认后订单会变更为“已发货”，且将生成通知与事务邮件任务。</p>{confirming ? <div className="confirm-box"><strong>此操作不可撤回。确认发货？</strong><Button>确认发货</Button><Button secondary onClick={() => setConfirming(false)}>返回</Button></div> : <Button onClick={() => setConfirming(true)}>确认发货</Button>}</div></div>; }
+function ShipmentConfirm() { const [confirming, setConfirming] = useState(false); return <div className="warehouse-card"><h2>发货前确认</h2><dl className="summary"><dt>订单</dt><dd>MC-20260726-001</dd><dt>产品</dt><dd>MaxCINE 产品 × 1</dd><dt>SN</dt><dd>尚未连接业务数据</dd><dt>顺丰运单号</dt><dd>尚未连接业务数据</dd></dl><div className="danger-zone"><p>确认后订单会变更为“已发货”，且将生成通知与事务邮件任务。</p>{confirming ? <div className="confirm-box"><strong>此操作不可撤回。确认发货？</strong><Button>确认发货</Button><Button secondary onClick={() => setConfirming(false)}>返回</Button></div> : <Button onClick={() => setConfirming(true)}>确认发货</Button>}</div></div>; }
 
 function Notifications({ user }: { user: SessionUser }) { return <SystemShell user={user} title="站内通知" subtitle="订单和售后关键状态会在此同步。"><div className="empty-state"><h2>暂无新通知</h2><p>通知由后端在订单审核、发货和售后状态变化时生成。</p></div></SystemShell>; }
 
-function AdminUsers({ user }: { user: SessionUser }) { return <SystemShell user={user} title="用户与角色" subtitle="权限由后端强制验证。"><DataTable headings={['用户', '角色', '所属经销商', '状态']} rows={[["admin@example.test", '管理员', '—', '演示'], ['dealer@example.test', '经销商', 'Demo East Dealer', '演示'], ['warehouse@example.test', '仓库', '—', '演示']]}/></SystemShell>; }
-function AdminDealers({ user }: { user: SessionUser }) { return <SystemShell user={user} title="经销商与店铺" subtitle="管理授权渠道资料；首版不展示任何真实客户信息。"><DataTable headings={['代码', '经销商', '店铺数', '状态']} rows={[["DEMO-EAST", 'Demo East Dealer', '1', '演示']]}/></SystemShell>; }
-function AdminProducts({ user }: { user: SessionUser }) { return <SystemShell user={user} title="产品与库存" subtitle="库存调整必须生成库存流水。"><DataTable headings={['SKU', '产品', '库存', '操作']} rows={[["MC-REFERENCE-01", 'MaxCINE Reference Display', '—', <Button secondary key="adjust">库存调整</Button>]]}/><p className="hint">生产管理界面应调用受保护的库存流水接口，不能直接修改库存数值。</p></SystemShell>; }
-function Audit({ user }: { user: SessionUser }) { return <SystemShell user={user} title="审计记录" subtitle="重要操作按操作者、对象和请求编号记录。"><DataTable headings={['时间', '操作', '对象', '操作者']} rows={[["—", '等待演示数据', '—', '—']]}/></SystemShell>; }
+function AdminUsers({ user }: { user: SessionUser }) { return <SystemShell user={user} title="用户与角色" subtitle="权限由后端强制验证。"><DataTable headings={['用户', '角色', '所属经销商', '状态']} rows={[["admin@example.test", '管理员', '—', '可用'], ['dealer@example.test', '经销商', 'East Dealer', '可用'], ['warehouse@example.test', '仓库', '—', '可用']]}/></SystemShell>; }
+function AdminDealers({ user }: { user: SessionUser }) { return <SystemShell user={user} title="经销商与店铺" subtitle="管理授权渠道资料；首版不展示任何真实客户信息。"><DataTable headings={['代码', '经销商', '店铺数', '状态']} rows={[["EAST", 'East Dealer', '1', '可用']]}/></SystemShell>; }
+function AdminProducts({ user }: { user: SessionUser }) { return <SystemShell user={user} title="产品与库存" subtitle="库存调整必须生成库存流水。"><DataTable headings={['SKU', '产品', '库存', '操作']} rows={[["MC-REFERENCE-01", 'MaxCINE 产品', '—', <Button secondary key="adjust">库存调整</Button>]]}/><p className="hint">生产管理界面应调用受保护的库存流水接口，不能直接修改库存数值。</p></SystemShell>; }
+function Audit({ user }: { user: SessionUser }) { return <SystemShell user={user} title="审计记录" subtitle="重要操作按操作者、对象和请求编号记录。"><DataTable headings={['时间', '操作', '对象', '操作者']} rows={[["—", '等待业务数据', '—', '—']]}/></SystemShell>; }
 function AfterSales({ user }: { user: SessionUser }) { return <SystemShell user={user} title="售后工单" subtitle="创建、处理和更新均保留服务状态。"><div className="toolbar"><Button>创建售后工单</Button></div><div className="empty-state"><h2>暂无工单</h2><p>工单将关联授权经销商和可选的订单参考编号。</p></div></SystemShell>; }
 
 function DataTable({ headings, rows }: { headings: string[]; rows: ReactNode[][] }) { return <div className="table-wrap"><table><thead><tr>{headings.map((heading) => <th key={heading}>{heading}</th>)}</tr></thead><tbody>{rows.map((row, rowIndex) => <tr key={rowIndex}>{row.map((value, index) => <td key={index}>{value}</td>)}</tr>)}</tbody></table></div>; }

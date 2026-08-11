@@ -45,7 +45,7 @@ test('order transitions are enforced by permissions, not a single role field', (
 });
 
 test('input normalizes account emails to lowercase', () => {
-  assert.equal(loginSchema.parse({ email: 'YUKYINCHEW@MAXCINE.CN', password: 'DemoOnly-ChangeMe-2026' }).email, 'yukyinchew@maxcine.cn');
+  assert.equal(loginSchema.parse({ email: '9353XUYAN@MAXCINE.CN', password: 'MaxCINE2026!' }).email, '9353xuyan@maxcine.cn');
 });
 
 test('watermark preference only accepts an explicit boolean switch', () => {
@@ -64,7 +64,7 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
     status: 'blacklist',
     riskLevel: 'high',
     riskReasons: ['反复砍价', '其他'],
-    otherReason: '本地测试补充原因',
+    otherReason: '验收补充原因',
     consultationResult: '未成交',
     note: '只记录本次咨询，不覆盖其他经销商记录。'
   });
@@ -77,10 +77,10 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
 
 test('quote workflow requires explicit preview state and a unique send idempotency key', () => {
   const quote = quoteDraftSchema.parse({
-    inspectionSummary: '本地测试检测结论',
+    inspectionSummary: '验收检测结论',
     finalDecision: '保外收费维修',
     validUntil: '2026-08-05',
-    items: [{ itemName: '本地测试服务费', itemType: '服务费', quantity: 1, unitPriceCents: 8000 }],
+    items: [{ itemName: '验收服务费', itemType: '服务费', quantity: 1, unitPriceCents: 8000 }],
     workflowStatus: 'READY_FOR_REVIEW'
   });
   assert.equal(quote.workflowStatus, 'READY_FOR_REVIEW');
@@ -125,7 +125,7 @@ test('order schema accepts drafts while after-sales allows optional notes and co
   const valid = createOrderSchema.parse({ storeId: '30000000-0000-4000-8000-000000000001', items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }] });
   assert.equal(valid.note, '');
   assert.equal(createOrderSchema.safeParse({ storeId: valid.storeId, items: [{ productId: valid.items[0].productId, quantity: 0 }] }).success, false);
-  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '本地演示问题', description: '这是满足最短长度的本地演示问题描述。' }).success, false);
+  assert.equal(createAfterSalesSchema.safeParse({ storeId: valid.storeId, caseType: '产品异常', subject: '验收问题', description: '这是满足最短长度的验收问题描述。' }).success, false);
   assert.equal(createAfterSalesSchema.safeParse({
     assetId: '99000000-0000-4000-8000-000000000001',
     caseType: 'QUALITY_ISSUE'
@@ -134,12 +134,12 @@ test('order schema accepts drafts while after-sales allows optional notes and co
     assetId: '99000000-0000-4000-8000-000000000001',
     storeId: valid.storeId,
     caseType: 'QUALITY_ISSUE',
-    subject: '本地演示问题',
-    description: '这是满足最短长度的本地演示问题描述。',
-    contactName: '本地测试客户',
+    subject: '验收问题',
+    description: '这是满足最短长度的验收问题描述。',
+    contactName: '验收客户',
     contactPhone: '13800000000',
     contactEmail: 'local-test@example.test',
-    contactAddress: '本地测试地址，不是真实客户资料'
+    contactAddress: '验收地址，不是真实客户资料'
   }).success, true);
 });
 
@@ -148,7 +148,7 @@ test('submitted-order fields accept bounded image data and reject unsafe screens
     storeId: '30000000-0000-4000-8000-000000000001',
     items: [{ productId: '40000000-0000-4000-8000-000000000001', quantity: 1 }],
     salePriceCents: 129900,
-    shippingAddress: '本地演示收货地址',
+    shippingAddress: '验收收货地址',
     customerProfile: '专业飞手',
     screenshotDataUrl: 'data:image/png;base64,aGVsbG8='
   });
