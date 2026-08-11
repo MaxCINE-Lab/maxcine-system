@@ -17,7 +17,7 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc -b",
     "test": "npm run build -w @maxcine/shared && node --test tests/security.test.mjs",
-    "test:scanner": "node scripts/test-barcode-scanner.mjs",
+    "test:scanner": "npm run build -w @maxcine/shared && node scripts/test-barcode-scanner.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api",
     "db:apply:local": "wrangler d1 migrations apply maxcine-db --local --persist-to work/gsx-d1 --config apps/api/wrangler.toml",
