@@ -2429,11 +2429,11 @@ app.post('/after-sales/:id/inspections', requireAuth, async (c) => {
         JSON.stringify(chain.relatedPhotoIds), chain.severity, chain.repairability, chain.recommendedAction, chain.engineerNote)),
     ...materialStatements,
     c.env.DB.prepare('INSERT INTO after_sales_assessments (id, case_id, result, details, assessed_by) VALUES (?, ?, ?, ?, ?)').bind(id(), serviceCase.id, input.conclusion, input.engineerNote || input.faultCause || input.suggestedAction, user.id),
-    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'assessed', service_stage = 'PENDING_ADMIN_INSPECTION_REVIEW', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_submitted', '提交检测结果', ?, ?)`).bind(id(), serviceCase.id, `检测版本 ${version}：${input.conclusion}`, user.id),
+    c.env.DB.prepare(`UPDATE after_sales_cases SET workflow_stage = 'assessed', service_stage = 'PENDING_QUOTE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inspection_submitted', '提交检测结果', ?, ?)`).bind(id(), serviceCase.id, `检测版本 ${version}：${input.conclusion || input.testResult || '待管理员确认最终方案和报价'}`, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.inspection_submit', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { ...input, version, materialSuggestedTotal } })
   ]);
-  return c.json({ id: serviceCase.id, version, serviceStage: 'PENDING_ADMIN_INSPECTION_REVIEW' }, 201);
+  return c.json({ id: serviceCase.id, version, serviceStage: 'PENDING_QUOTE' }, 201);
 });
 
 app.post('/after-sales/:id/inspection-review', requireAuth, async (c) => {
@@ -2651,6 +2651,16 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
   const mailContent = await quoteMailContent(c.env.DB, deliverySnapshot, defaultSubject);
   const delivery = await sendViaMailCenter(c, { template: 'after_sales_quote', to: recipientEmail, subject: mailContent.subject, html: mailContent.html, text: mailContent.text, idempotencyKey: input.idempotencyKey, actorId: user.id, relatedEntityType: 'after_sales_quote', relatedEntityId: quote.id });
   const nextWorkflowStatus = delivery.sent ? 'SENT' : 'SEND_FAILED';
+  const nextCaseStage = delivery.sent
+    ? quote.totalCents <= 0
+      ? 'READY_FOR_PROCESSING'
+      : 'WAITING_PAYMENT_CONFIRMATION'
+    : 'PENDING_QUOTE';
+  const nextCaseStageText = nextCaseStage === 'READY_FOR_PROCESSING'
+    ? '产品服务报告书已发送，报价为 0 元，工单已进入待处理流程'
+    : nextCaseStage === 'WAITING_PAYMENT_CONFIRMATION'
+      ? '产品服务报告书已发送，等待管理员确认收款'
+      : '产品服务报告书发送失败，仍需重新处理报价';
   const attempt = await one<{ count: number }>(c.env.DB, 'SELECT COUNT(*) AS count FROM after_sales_quote_emails WHERE quote_id = ?', quote.id);
   const emailId = id();
   const statements: D1PreparedStatement[] = [
@@ -2663,14 +2673,27 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
       customer_email = ?, html_content = ?, email_text = ?, case_number = ?, snapshot_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .bind(nextWorkflowStatus, delivery.sent ? 'sent' : 'send_failed', nextWorkflowStatus, recipientEmail, mailContent.html, mailContent.text, serviceCase.caseNo, JSON.stringify(deliverySnapshot), quote.id),
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
-      .bind(delivery.sent ? 'WAITING_CUSTOMER_CONFIRMATION' : 'PENDING_QUOTE', user.id, quote.caseId),
+      .bind(nextCaseStage, user.id, quote.caseId),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, ?, ?, ?, ?)`)
-      .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? `${serviceCase.caseNo} 产品服务报告书已发送至客户邮箱` : delivery.failureReason, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, recipientEmail, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1 } })
+      .bind(id(), quote.caseId, delivery.sent ? 'quote_sent' : 'quote_send_failed', delivery.sent ? '产品服务报告书已发送' : '产品服务报告书发送失败', delivery.sent ? nextCaseStageText : delivery.failureReason, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: delivery.sent ? 'after_sales.quote_send' : 'after_sales.quote_send_failed', entityType: 'after_sales_quote', entityId: quote.id, requestId: c.get('requestId'), after: { workflowStatus: nextWorkflowStatus, recipientEmail, provider: delivery.provider, providerMessageId: delivery.providerMessageId, attemptNo: (attempt?.count ?? 0) + 1, serviceStage: nextCaseStage, totalCents: quote.totalCents } })
   ];
   if (delivery.sent && quote.supersedesQuoteId) statements.push(c.env.DB.prepare(`UPDATE after_sales_quotes SET workflow_status = 'SUPERSEDED', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND workflow_status = 'SENT'`).bind(quote.supersedesQuoteId));
   await c.env.DB.batch(statements);
   return c.json({ id: quote.id, quoteNo: quote.quoteNo, version: quote.version, workflowStatus: nextWorkflowStatus, emailStatus: delivery.sent ? 'sent' : 'failed', providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason });
+});
+
+app.post('/after-sales/:id/payment/confirm', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (serviceCase.serviceStage !== 'WAITING_PAYMENT_CONFIRMATION') throw conflict('该工单当前不需要确认收款');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'WAITING_REPAIR_SHIPMENT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'payment_confirmed', '管理员已确认收款', '工单已进入待维修及发货流程', ?)`).bind(id(), serviceCase.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.payment_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { serviceStage: 'WAITING_REPAIR_SHIPMENT' } })
+  ]);
+  return c.json({ id: serviceCase.id, serviceStage: 'WAITING_REPAIR_SHIPMENT' });
 });
 
 app.post('/after-sales-quotes/:quoteId/new-version', requireAuth, async (c) => {

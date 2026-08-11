@@ -203,10 +203,13 @@ const serviceStageName: Record<string, string> = {
   WAITING_SERVICE_CENTER_RECEIPT: "待收货",
   WAITING_INSPECTION: "待检测",
   INSPECTION_IN_PROGRESS: "检测中",
-  PENDING_ADMIN_INSPECTION_REVIEW: "已提交检测",
+  PENDING_ADMIN_INSPECTION_REVIEW: "已提交定损",
   INSPECTION_RETURNED: "检测结果退回",
-  PENDING_QUOTE: "待出报价",
+  PENDING_QUOTE: "已提交定损",
   WAITING_CUSTOMER_CONFIRMATION: "等待客户确认",
+  READY_FOR_PROCESSING: "待处理",
+  WAITING_PAYMENT_CONFIRMATION: "等待确认收款",
+  WAITING_REPAIR_SHIPMENT: "待维修及发货",
   CLOSED: "已关闭",
 };
 const receivedItemOptions = [
@@ -397,7 +400,7 @@ function CaseListV2({ user, route }: { user: SessionUser; route: string }) {
       .catch((error) => setNotice({ tone: "error", text: errorText(error) }));
   }, []);
   const filtered =
-    rows?.filter((item) => tab === "all" || item.serviceStage === tab) ?? [];
+    rows?.filter((item) => tab === "all" || item.serviceStage === tab || (tab === "PENDING_QUOTE" && item.serviceStage === "PENDING_ADMIN_INSPECTION_REVIEW")) ?? [];
   return (
     <Shell user={user} route={route}>
       <Header
@@ -415,7 +418,7 @@ function CaseListV2({ user, route }: { user: SessionUser; route: string }) {
           ["WAITING_SERVICE_CENTER_RECEIPT", "待收货"],
           ["WAITING_INSPECTION", "待检测"],
           ["INSPECTION_IN_PROGRESS", "检测中"],
-          ["PENDING_ADMIN_INSPECTION_REVIEW", "已提交检测"],
+          ["PENDING_QUOTE", "已提交定损"],
           ["all", "全部"],
         ].map(([value, label]) => (
           <button
