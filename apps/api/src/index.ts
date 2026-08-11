@@ -621,6 +621,19 @@ function notificationSender(env: Env): { address: string; name: string; replyTo:
   };
 }
 
+const employeeNumberByEmail: Readonly<Record<string, string>> = {
+  '9353xuyan@maxcine.cn': '9353',
+  '8982warehouse@maxcine.cn': '8982',
+  '8016sun@maxcine.cn': '8016',
+  '0982chen@maxcine.cn': '0982',
+  '9527rui@maxcine.cn': '9527',
+  '3086zhu@maxcine.cn': '3086'
+};
+
+function employeeNumberFromEmail(email: string | null | undefined): string {
+  return employeeNumberByEmail[email?.trim().toLowerCase() ?? ''] ?? '';
+}
+
 function mailEnvironment(env: Env): 'local' | 'staging' | 'production' {
   if (env.APP_ORIGIN?.includes('staging') || env.APP_ORIGIN?.includes('pages.dev')) return 'staging';
   if (env.APP_ORIGIN?.includes('localhost') || env.APP_ORIGIN?.includes('127.0.0.1')) return 'local';
@@ -883,7 +896,7 @@ async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCa
     COALESCE(products.name, assets.product_name_snapshot, '') AS productName, COALESCE(products.product_version, assets.version_snapshot, '') AS productVersion,
     COALESCE(after_sales_cases.serial_number, assets.current_sn, '') AS serialNumber, assets.warranty_start_at AS warrantyStartAt,
     assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, COALESCE(service_centers.name, '') AS serviceCenter,
-    COALESCE(engineer.name, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt,
+    COALESCE(engineer.email, '') AS engineer, COALESCE(inspection.submitted_at, '') AS inspectedAt,
     COALESCE(inspection.engineer_note, '') AS engineerNote, COALESCE(inspection.test_result, '') AS testResult,
     COALESCE(inspection.fault_cause, '') AS faultCause, COALESCE(inspection.suggested_action, '') AS suggestedAction
     FROM after_sales_cases
@@ -899,6 +912,7 @@ async function quoteCaseContext(db: D1Database, caseId: string): Promise<QuoteCa
     LEFT JOIN users engineer ON engineer.id = inspection.submitted_by
     WHERE after_sales_cases.id = ?`, caseId);
   if (!value) throw notFound('未找到该售后工单');
+  value.engineer = employeeNumberFromEmail(value.engineer) || value.engineer;
   return value;
 }
 
@@ -2221,12 +2235,12 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
     all(c.env.DB, `SELECT after_sales_attachments.id, category, photo_slot AS photoSlot, object_key AS objectKey, data_url AS dataUrl, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt FROM after_sales_attachments JOIN users ON users.id = after_sales_attachments.uploaded_by WHERE case_id = ? ORDER BY after_sales_attachments.created_at DESC`, serviceCase.id),
     all(c.env.DB, `SELECT event_type AS eventType, title, description, metadata_json AS metadataJson, users.name AS actorName, after_sales_timeline.created_at AS createdAt FROM after_sales_timeline LEFT JOIN users ON users.id = after_sales_timeline.actor_id WHERE case_id = ? ORDER BY after_sales_timeline.created_at ASC`, serviceCase.id),
     all(c.env.DB, `SELECT received_items_json AS receivedItemsJson, packaging_intact AS packagingIntact, packaging_note AS packagingNote, items_match AS itemsMatch, missing_items_note AS missingItemsNote, receipt_note AS receiptNote, users.name AS receivedByName, received_at AS receivedAt FROM after_sales_receipts JOIN users ON users.id = after_sales_receipts.received_by WHERE case_id = ? ORDER BY received_at DESC`, serviceCase.id),
-    all(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
+    all<{ submittedByName: string }>(c.env.DB, `SELECT after_sales_inspections_v2.id, version, fault_reproduced AS faultReproduced, reproduction_status AS reproductionStatus, reproduction_condition AS reproductionCondition,
       reproduction_process AS reproductionProcess, test_result AS testResult, fault_parts_json AS faultPartsJson, damage_types_json AS damageTypesJson, derived_symptoms_json AS derivedSymptomsJson,
       conclusion, fault_cause AS faultCause, affected_parts AS affectedParts, suggested_action AS suggestedAction, suggested_parts AS suggestedParts,
       recommend_warranty AS recommendWarranty, recommend_charge AS recommendCharge, engineer_note AS engineerNote, difficulty, estimated_days AS estimatedDays,
       accidental_damage AS accidentalDamage, accidental_damage_type AS accidentalDamageType, accidental_damage_note AS accidentalDamageNote, material_suggested_total_cents AS materialSuggestedTotalCents,
-      status, users.name AS submittedByName, submitted_at AS submittedAt, review_note AS reviewNote
+      status, users.email AS submittedByName, submitted_at AS submittedAt, review_note AS reviewNote
       FROM after_sales_inspections_v2 JOIN users ON users.id = after_sales_inspections_v2.submitted_by WHERE case_id = ? ORDER BY version DESC`, serviceCase.id),
     all(c.env.DB, `SELECT after_sales_fault_chains.id, inspection_id AS inspectionId, chain_index AS chainIndex, fault_part AS faultPart, damage_type AS damageType, cause_type AS causeType,
       derived_symptoms_json AS derivedSymptomsJson, evidence, related_photo_ids_json AS relatedPhotoIdsJson, severity, repairability, recommended_action AS recommendedAction, engineer_note AS engineerNote
@@ -2247,7 +2261,11 @@ app.get('/after-sales/:id', requireAuth, async (c) => {
       (SELECT failure_reason FROM after_sales_quote_emails WHERE quote_id = after_sales_quotes.id ORDER BY created_at DESC LIMIT 1) AS emailFailureReason
       FROM after_sales_quotes WHERE case_id = ? ORDER BY version DESC`, serviceCase.id)
   ]);
-  return c.json({ case: serviceCase, assessments, recommendations, approvals, attachments, timeline, receipts, inspections, faultChains, inspectionMaterials, adminDamageReviews, quotes });
+  const inspectionRows = inspections.map((inspection) => ({
+    ...inspection,
+    submittedByName: employeeNumberFromEmail(inspection.submittedByName) || inspection.submittedByName || ''
+  }));
+  return c.json({ case: serviceCase, assessments, recommendations, approvals, attachments, timeline, receipts, inspections: inspectionRows, faultChains, inspectionMaterials, adminDamageReviews, quotes });
 });
 
 app.post('/after-sales/:id/attachments', requireAuth, async (c) => {

@@ -38,26 +38,40 @@ const serviceCenterNameById: Readonly<Record<string, string>> = {
   '22000000-0000-4000-8000-000000000003': '山东省高级服务中心'
 };
 
+const dealerNameByEmail: Readonly<Record<string, string>> = {
+  '8016sun@maxcine.cn': '辽宁省经销商',
+  '0982chen@maxcine.cn': '安徽省经销商',
+  '9527rui@maxcine.cn': '江苏省经销商',
+  '3086zhu@maxcine.cn': '浙江省经销商'
+};
+
+const serviceCenterNameByEmail: Readonly<Record<string, string>> = {
+  '9353xuyan@maxcine.cn': '山东省高级服务中心',
+  '8016sun@maxcine.cn': '辽宁省授权服务中心',
+  '0982chen@maxcine.cn': '安徽省授权服务中心'
+};
+
 export function employeeNumberForUser(user: SessionUser): string | null {
   return employeeNumberByEmail[user.email.trim().toLowerCase()] ?? null;
 }
 
 export function captureWatermarkLines(user: SessionUser, context?: 'dealer' | 'service_center' | 'warehouse'): string[] {
   const employeeNumber = employeeNumberForUser(user);
+  const email = user.email.trim().toLowerCase();
   const organization =
     context === 'warehouse'
       ? '山东云仓'
       : context === 'dealer'
-        ? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+        ? dealerNameByEmail[email] ?? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
         : context === 'service_center'
-          ? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+          ? serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
           : user.roles.includes('warehouse_manager')
             ? '山东云仓'
             : user.roles.includes('authorized_service_center')
-              ? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
+              ? serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? '授权服务中心'
               : user.roles.includes('dealer')
-                ? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
-                : serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? 'MaxCINE 管理中心';
+                ? dealerNameByEmail[email] ?? dealerNameById[user.dealerIds[0] ?? ''] ?? '经销商'
+                : serviceCenterNameByEmail[email] ?? serviceCenterNameById[user.serviceCenterIds[0] ?? ''] ?? 'MaxCINE 管理中心';
   return [organization, `工号 ${employeeNumber ?? '未登记'}`];
 }
 
