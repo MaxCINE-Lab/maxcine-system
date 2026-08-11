@@ -2738,7 +2738,7 @@ app.post('/after-sales-quotes/:quoteId/confirm-send', requireAuth, async (c) => 
       : 'WAITING_PAYMENT_CONFIRMATION'
     : 'PENDING_QUOTE';
   const nextCaseStageText = nextCaseStage === 'READY_FOR_PROCESSING'
-    ? '产品服务报告书已发送，报价为 0 元，工单已进入待处理流程'
+    ? '产品服务报告书已发送，报价为 0 元，工单已进入等待维修与发货流程'
     : nextCaseStage === 'WAITING_PAYMENT_CONFIRMATION'
       ? '产品服务报告书已发送，等待管理员确认收款'
       : '产品服务报告书发送失败，仍需重新处理报价';
@@ -2771,7 +2771,7 @@ app.post('/after-sales/:id/payment/confirm', requireAuth, async (c) => {
   if (!['WAITING_PAYMENT_CONFIRMATION', 'WAITING_CUSTOMER_CONFIRMATION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不需要确认收款');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'WAITING_REPAIR_SHIPMENT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'payment_confirmed', '管理员已确认收款', '工单已进入待维修及发货流程', ?)`).bind(id(), serviceCase.id, user.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'payment_confirmed', '管理员已确认收款', '工单已进入等待维修与发货流程', ?)`).bind(id(), serviceCase.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.payment_confirm', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { serviceStage: 'WAITING_REPAIR_SHIPMENT' } })
   ]);
   return c.json({ id: serviceCase.id, serviceStage: 'WAITING_REPAIR_SHIPMENT' });

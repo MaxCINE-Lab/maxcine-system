@@ -207,9 +207,9 @@ const serviceStageName: Record<string, string> = {
   INSPECTION_RETURNED: "检测结果退回",
   PENDING_QUOTE: "已提交定损",
   WAITING_CUSTOMER_CONFIRMATION: "等待客户确认",
-  READY_FOR_PROCESSING: "待处理",
+  READY_FOR_PROCESSING: "等待维修与发货",
   WAITING_PAYMENT_CONFIRMATION: "等待确认收款",
-  WAITING_REPAIR_SHIPMENT: "待维修及发货",
+  WAITING_REPAIR_SHIPMENT: "等待维修与发货",
   RETURN_SHIPPED: "售后已发货",
   CLOSED: "已关闭",
 };

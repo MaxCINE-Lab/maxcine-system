@@ -31,7 +31,7 @@ type AfterSalesAssetContext = {
 
 const statusNames: Record<OrderStatus, string> = { draft: '草稿', submitted: '待审核', approved: '审核通过', rejected: '审核未通过', picking: '配货中', packed: '已打包', shipped: '已发货', delivered: '已签收', cancelled: '已取消' };
 const afterSalesStatus: Record<string, string> = { open: '待受理', in_progress: '处理中', resolved: '已解决', closed: '已关闭' };
-const afterSalesStageNames: Record<string, string> = { PENDING_ADMIN_REVIEW: '待管理员审核', NEEDS_MORE_INFO: '已退回补充', WAITING_CUSTOMER_SHIPMENT: '待客户寄修', WAITING_SERVICE_CENTER_RECEIPT: '待服务中心收货', WAITING_INSPECTION: '待检测', INSPECTION_IN_PROGRESS: '检测中', PENDING_ADMIN_INSPECTION_REVIEW: '待出报价', INSPECTION_RETURNED: '检测结果退回', PENDING_QUOTE: '待出报价', WAITING_CUSTOMER_CONFIRMATION: '等待客户确认', READY_FOR_PROCESSING: '待处理', WAITING_PAYMENT_CONFIRMATION: '等待确认收款', WAITING_REPAIR_SHIPMENT: '待维修及发货', RETURN_SHIPPED: '售后已发货', CLOSED: '已关闭' };
+const afterSalesStageNames: Record<string, string> = { PENDING_ADMIN_REVIEW: '待管理员审核', NEEDS_MORE_INFO: '已退回补充', WAITING_CUSTOMER_SHIPMENT: '待客户寄修', WAITING_SERVICE_CENTER_RECEIPT: '待服务中心收货', WAITING_INSPECTION: '待检测', INSPECTION_IN_PROGRESS: '检测中', PENDING_ADMIN_INSPECTION_REVIEW: '待出报价', INSPECTION_RETURNED: '检测结果退回', PENDING_QUOTE: '待出报价', WAITING_CUSTOMER_CONFIRMATION: '等待客户确认', READY_FOR_PROCESSING: '等待维修与发货', WAITING_PAYMENT_CONFIRMATION: '等待确认收款', WAITING_REPAIR_SHIPMENT: '等待维修与发货', RETURN_SHIPPED: '售后已发货', CLOSED: '已关闭' };
 const afterSalesCaseTypes = [
   ['OUT_OF_WARRANTY_REPAIR', '保外维修类'],
   ['INSTALLATION_ISSUE', '安装异常类'],
