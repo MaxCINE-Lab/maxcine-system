@@ -68,10 +68,10 @@ const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'out
 export const afterSalesOutboundShipmentSchema = z.object({
   carrier: z.string().trim().min(2, '请填写快递公司').max(40).default('顺丰速运'),
   trackingNumber: optionalTrackingSchema.default(''),
+  recipientEmail: z.string().trim().email('请填写正确的收件邮箱').max(254).transform((value) => value.toLowerCase()).optional(),
   serialNumber: z.string().transform((value) => value.replace(/[\r\n\t]/g, '').trim().toUpperCase()).pipe(
     z.string().max(100).regex(/^[A-Z0-9._\-/]*$/, 'SN 只能包含字母、数字和常用连接符')
   ).default(''),
-  shippedAt: z.string().trim().max(40).default(''),
   photos: z.array(z.object({
     slot: afterSalesOutboundPhotoSlotSchema,
     originalFilename: z.string().trim().min(1).max(180),

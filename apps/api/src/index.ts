@@ -2696,7 +2696,7 @@ app.post('/after-sales/:id/payment/confirm', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:approve');
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
-  if (serviceCase.serviceStage !== 'WAITING_PAYMENT_CONFIRMATION') throw conflict('该工单当前不需要确认收款');
+  if (!['WAITING_PAYMENT_CONFIRMATION', 'WAITING_CUSTOMER_CONFIRMATION'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不需要确认收款');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE after_sales_cases SET service_stage = 'WAITING_REPAIR_SHIPMENT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(user.id, serviceCase.id),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'payment_confirmed', '管理员已确认收款', '工单已进入待维修及发货流程', ?)`).bind(id(), serviceCase.id, user.id),
@@ -2711,7 +2711,8 @@ app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
   const input = await parseBody(c.req.raw, afterSalesOutboundShipmentSchema);
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   if (!['READY_FOR_PROCESSING', 'WAITING_REPAIR_SHIPMENT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前还不能发货');
-  if (!serviceCase.contactEmail) throw conflict('该工单缺少客户邮箱，无法发送发货通知');
+  const recipientEmail = input.recipientEmail || serviceCase.contactEmail;
+  if (!recipientEmail) throw conflict('请先填写本次收件邮箱，再发送发货通知');
   const previous = await one<{ id: string }>(c.env.DB, "SELECT id FROM after_sales_cases WHERE id = ? AND service_stage = 'RETURN_SHIPPED'", serviceCase.id);
   if (previous) throw conflict('该工单已完成售后发货，请勿重复提交');
   const uploadedPhotos = await Promise.all(input.photos.map(async (photo) => {
@@ -2727,7 +2728,7 @@ app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
     }
     return { ...photo, id: id(), key, fileSize: parsed.bytes.byteLength };
   }));
-  const shippedAt = input.shippedAt || new Date().toISOString();
+  const shippedAt = new Date().toISOString();
   const mailData: MailTemplateData = {
     title: '售后发货通知',
     preheader: `您的 MaxCINE 售后工单 ${serviceCase.caseNo} 已安排发货。`,
@@ -2750,7 +2751,7 @@ app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
   const mailContent = { subject: mailSubject('shipment_notice', mailEnvironment(c.env), serviceCase.caseNo), html: renderMailHtml(mailData), text: renderMailText(mailData) };
   const mailResult = await sendViaMailCenter(c, {
     template: 'shipment_notice',
-    to: serviceCase.contactEmail,
+    to: recipientEmail,
     subject: mailContent.subject,
     html: mailContent.html,
     text: mailContent.text,
@@ -2769,7 +2770,7 @@ app.post('/after-sales/:id/outbound-shipment', requireAuth, async (c) => {
       VALUES (?, ?, 'inspection_other', ?, ?, ?, ?, ?, ?, ?)`).bind(photo.id, serviceCase.id, photo.slot, photo.key, photo.dataUrl, photo.originalFilename, photo.contentType, photo.fileSize, user.id)),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id, metadata_json) VALUES (?, ?, 'outbound_shipped', '售后产品已发货', ?, ?, ?)`)
       .bind(id(), serviceCase.id, description, user.id, JSON.stringify({ carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, photoSlots: uploadedPhotos.map((photo) => photo.slot), mailStatus: mailResult.sent ? 'sent' : 'failed' })),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.outbound_shipment', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, photoCount: uploadedPhotos.length, mailStatus: mailResult.sent ? 'sent' : 'failed', providerMessageId: mailResult.providerMessageId } })
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.outbound_shipment', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { carrier: input.carrier, trackingNumber: input.trackingNumber, serialNumber: input.serialNumber, shippedAt, recipientEmail, photoCount: uploadedPhotos.length, mailStatus: mailResult.sent ? 'sent' : 'failed', providerMessageId: mailResult.providerMessageId } })
   ]);
   return c.json({ id: serviceCase.id, serviceStage: 'RETURN_SHIPPED', mailStatus: mailResult.sent ? 'sent' : 'failed', failureReason: mailResult.failureReason, providerMessageId: mailResult.providerMessageId });
 });
