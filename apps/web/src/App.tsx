@@ -183,7 +183,8 @@ function isDealerRoute(path: string): boolean {
     || path.startsWith('/system/orders/')
     || path === '/system/notifications'
     || path === '/system/after-sales'
-    || path.startsWith('/system/after-sales/');
+    || path.startsWith('/system/after-sales/')
+    || path.startsWith('/system/assets/');
 }
 
 function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void; onLogout: () => void }) {
@@ -204,11 +205,11 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (!user) return <Login onLogin={onLogin} />;
   const path = route.split('?')[0];
   if (path === '/system/intelligence' && hasIntelligenceAccess(user)) return <IntelligencePortal user={user} route={route} logout={onLogout} />;
-  if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} />;
+  if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
   if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/admin') && hasAdminAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
-  if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} />;
+  if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (route.startsWith('/system')) {
     location.hash = `#${defaultSystemRoute(user)}`;
     return null;

@@ -265,9 +265,9 @@ const photoCategoryName: Record<string, string> = {
   inspection_other: "其他检测照片",
 };
 function assetBase(route: string): string {
-  return route.startsWith("/system/service-center")
-    ? "/system/service-center/assets"
-    : "/system/admin/assets";
+  if (route.startsWith("/system/service-center")) return "/system/service-center/assets";
+  if (route.startsWith("/system/assets")) return "/system/assets";
+  return "/system/admin/assets";
 }
 
 function GsxTabs({

@@ -107,7 +107,7 @@ function hasGlobalAssetAccess(user: SessionUser): boolean {
 }
 
 function hasAssetCenterReadAccess(user: SessionUser): boolean {
-  return hasGlobalAssetAccess(user) || can(user, 'asset:manage') || user.roles.includes('authorized_service_center');
+  return hasGlobalAssetAccess(user) || can(user, 'asset:manage') || user.roles.includes('authorized_service_center') || user.dealerIds.length > 0 || user.storeIds.length > 0;
 }
 
 function assertAssetReadAccess(user: SessionUser): void {
@@ -379,6 +379,17 @@ function afterSalesAssetScope(user: SessionUser, alias = 'assets'): { sql: strin
 function assetScope(user: SessionUser, _alias = 'assets'): { sql: string; params: string[] } {
   if (hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center')) return { sql: '1 = 1', params: [] };
   if (can(user, 'asset:manage')) return { sql: '1 = 1', params: [] };
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (user.storeIds.length) {
+    clauses.push(`assets.store_id IN (${placeholders(user.storeIds)})`);
+    params.push(...user.storeIds);
+  }
+  if (user.dealerIds.length) {
+    clauses.push(`assets.dealer_id IN (${placeholders(user.dealerIds)})`);
+    params.push(...user.dealerIds);
+  }
+  if (clauses.length) return { sql: `(${clauses.join(' OR ')})`, params };
   throw forbidden('当前账户没有授权的资产数据范围');
 }
 
@@ -3386,8 +3397,9 @@ app.post('/admin/assets/:id/factory-photos', requireAuth, async (c) => {
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest(`图片仅支持 JPG、PNG 或 WebP：${file.name || '未命名图片'}`);
     if (file.size > 8 * 1024 * 1024) throw badRequest(`单张图片不能超过 8MB：${file.name || '未命名图片'}`);
     const photoId = id();
-    const objectKey = `factory-photos/${asset.id}/${Date.now()}-${crypto.randomUUID()}-${file.name || 'photo'}`;
-    await c.env.ASSETS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { assetId: asset.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+    const safeFilename = (file.name || 'photo').replace(/[^\w.-]+/g, '_').slice(0, 120) || 'photo';
+    const objectKey = `factory-photos-${asset.id}-${Date.now()}-${crypto.randomUUID()}-${safeFilename}`;
+    await c.env.ASSETS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
     statements.push(c.env.DB.prepare(`INSERT INTO asset_factory_photos (id, asset_id, photo_type, object_key, original_filename, content_type, file_size, remark, uploaded_by)
       VALUES (?, ?, NULL, ?, ?, ?, ?, '', ?)`)
       .bind(photoId, asset.id, objectKey, file.name || 'photo', file.type, file.size, user.id));
@@ -3418,7 +3430,11 @@ app.delete('/admin/assets/:id/factory-photos/:photoId', requireAuth, async (c) =
   assertPermission(user, 'asset:manage');
   const photo = await one<{ id: string; objectKey: string; photoType: string | null }>(c.env.DB, 'SELECT id, object_key AS objectKey, photo_type AS photoType FROM asset_factory_photos WHERE id = ? AND asset_id = ?', c.req.param('photoId'), c.req.param('id'));
   if (!photo) throw notFound('未找到该出厂照片');
-  if (c.env.ASSETS) await c.env.ASSETS.delete(photo.objectKey);
+  if (c.env.ASSETS) {
+    await c.env.ASSETS.delete([photo.objectKey]);
+    const remaining = await c.env.ASSETS.head(photo.objectKey);
+    if (remaining) throw conflict('R2 图片对象删除失败，请稍后重试');
+  }
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM asset_factory_photos WHERE id = ?').bind(photo.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'asset.factory_photo_delete', entityType: 'asset', entityId: c.req.param('id'), requestId: c.get('requestId'), before: { photoId: photo.id, photoType: photo.photoType } })
