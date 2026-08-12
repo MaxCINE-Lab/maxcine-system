@@ -2047,7 +2047,46 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     if (error instanceof Error && error.message.includes('UNIQUE constraint failed: shipments')) throw conflict('该订单已经存在物流记录，请刷新页面查看最新状态。');
     throw error;
   }
-  return c.json({ id: order.id, status: 'shipped', trackingNumber });
+  const dealer = await one<{ name: string; notificationEmail: string }>(c.env.DB, 'SELECT name, notification_email AS notificationEmail FROM dealers WHERE id = ?', order.dealerId);
+  let shipmentMailStatus = 'NO_RECIPIENT';
+  let shipmentMailFailureReason = '';
+  if (dealer?.notificationEmail) {
+    const mailData: MailTemplateData = {
+      title: '发货通知',
+      preheader: `订单 ${order.orderNo} 已发货`,
+      logoUrl: notificationSender(c.env).logoUrl,
+      reference: `订单 ${order.orderNo}`,
+      fields: [
+        ['经销商名称', dealer.name || '暂无数据'],
+        ['订单号', order.orderNo],
+        ['发货时间', new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false, timeZone: 'Asia/Shanghai' }).format(shippedAt)],
+        ['产品名称', items.map((item) => item.name).join('、') || '暂无数据'],
+        ['产品版本', items.map((item) => item.productVersion || item.specification || '—').join('、')],
+        ['数量', String(items.reduce((sum, item) => sum + item.quantity, 0))],
+        ['绑定 SN', serials.map((serial) => serial.serialNumber).join('、') || '暂无数据'],
+        ['物流公司', input.carrier || '暂未填写'],
+        ['运单号', trackingNumber || '暂未填写'],
+        ['订单当前状态', '已发货']
+      ],
+      sections: [{ heading: '发货说明', body: '订单已完成发货确认，请留意物流状态。' }],
+      actionText: '查看订单',
+      actionUrl: `${c.env.APP_ORIGIN || ''}/#/system/orders/${order.id}`
+    };
+    const delivery = await sendViaMailCenter(c, { template: 'shipment_notice', to: dealer.notificationEmail, subject: mailSubject('shipment_notice', mailEnvironment(c.env), `｜订单 ${order.orderNo}`), html: renderMailHtml(mailData), text: renderMailText(mailData), idempotencyKey: `dealer-shipment-notification:${order.id}:${shipmentId}`, actorId: user.id, relatedEntityType: 'order', relatedEntityId: order.id });
+    shipmentMailStatus = delivery.sent ? 'sent' : 'failed';
+    shipmentMailFailureReason = delivery.failureReason || '';
+  } else {
+    const sender = notificationSender(c.env);
+    const messageId = id();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`INSERT OR IGNORE INTO mail_center_messages (id, provider, template_key, subject, to_email, from_email, from_name, reply_to_email, reply_to_name,
+        status, failure_reason, provider_message_id, related_entity_type, related_entity_id, idempotency_key, html_content, text_content, sent_by)
+        VALUES (?, ?, 'shipment_notice', ?, '', ?, ?, ?, ?, 'failed', 'NO_RECIPIENT', '', 'order', ?, ?, '', '', ?)`)
+        .bind(messageId, c.env.EMAIL_PROVIDER || 'mock', mailSubject('shipment_notice', mailEnvironment(c.env), `｜订单 ${order.orderNo}`), sender.address, sender.name, sender.replyTo, sender.replyToName, order.id, `dealer-shipment-notification:${order.id}:${shipmentId}`, user.id),
+      dbAudit(c.env.DB, { actorId: user.id, action: 'mail.no_recipient', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { template: 'shipment_notice', orderNo: order.orderNo } })
+    ]);
+  }
+  return c.json({ id: order.id, status: 'shipped', trackingNumber, shipmentMailStatus, shipmentMailFailureReason });
 });
 
 app.get('/notifications', requireAuth, async (c) => {
@@ -2407,6 +2446,7 @@ app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   const canRecord = can(user, 'data:read:all') || can(user, 'after-sales:assign') || canOperateAssignedCase(user, serviceCase.serviceCenterId) || Boolean(serviceCase.storeId && user.storeIds.includes(serviceCase.storeId));
   if (!canRecord) throw forbidden('你无权录入该工单的寄修单号');
+  if (!['WAITING_CUSTOMER_SHIPMENT', 'WAITING_SERVICE_CENTER_RECEIPT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能录入寄修单号');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE after_sales_cases SET inbound_carrier = ?, inbound_tracking_number = ?, inbound_note = ?, inbound_recorded_at = CURRENT_TIMESTAMP, inbound_recorded_by = ?, service_stage = 'WAITING_SERVICE_CENTER_RECEIPT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.carrier, input.trackingNumber, input.note, user.id, user.id, serviceCase.id),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inbound_tracking_recorded', '录入寄修单号', ?, ?)`).bind(id(), serviceCase.id, `${input.carrier} ${input.trackingNumber}`, user.id),
@@ -3369,7 +3409,7 @@ app.post('/admin/dealers', requireAuth, async (c) => {
   const input = await parseBody(c.req.raw, createDealerSchema);
   const dealerId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, authorization_type, service_center_id, contact_name, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, user.id, user.id),
+    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, authorization_type, service_center_id, contact_name, notification_email, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.notificationEmail, user.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.create', entityType: 'dealer', entityId: dealerId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: dealerId }, 201);
@@ -3458,12 +3498,12 @@ app.get('/admin/options', requireAuth, async (c) => {
 
 app.get('/admin/dealers', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'dealer:manage');
-  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.contact_name AS contactName, dealers.status, service_centers.name AS serviceCenterName, COUNT(DISTINCT stores.id) AS storeCount, COUNT(DISTINCT dealer_user_assignments.user_id) AS userCount, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id LEFT JOIN dealer_user_assignments ON dealer_user_assignments.dealer_id = dealers.id AND dealer_user_assignments.status = 'active' LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id GROUP BY dealers.id ORDER BY dealers.name`) });
+  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.contact_name AS contactName, dealers.notification_email AS notificationEmail, dealers.status, service_centers.name AS serviceCenterName, COUNT(DISTINCT stores.id) AS storeCount, COUNT(DISTINCT dealer_user_assignments.user_id) AS userCount, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id LEFT JOIN dealer_user_assignments ON dealer_user_assignments.dealer_id = dealers.id AND dealer_user_assignments.status = 'active' LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id GROUP BY dealers.id ORDER BY dealers.name`) });
 });
 
 app.get('/admin/dealers/:id', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'dealer:manage');
-  const dealer = await one(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.service_center_id AS serviceCenterId, dealers.contact_name AS contactName, dealers.status, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt, service_centers.name AS serviceCenterName FROM dealers LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id WHERE dealers.id = ?`, c.req.param('id'));
+  const dealer = await one(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.service_center_id AS serviceCenterId, dealers.contact_name AS contactName, dealers.notification_email AS notificationEmail, dealers.status, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt, service_centers.name AS serviceCenterName FROM dealers LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id WHERE dealers.id = ?`, c.req.param('id'));
   if (!dealer) throw notFound('未找到该经销商');
   const [stores, users, summary] = await Promise.all([
     all(c.env.DB, 'SELECT id, name, platform, status FROM stores WHERE dealer_id = ? ORDER BY name', c.req.param('id')),
@@ -3478,7 +3518,7 @@ app.patch('/admin/dealers/:id', requireAuth, async (c) => {
   const dealer = await one<{ id: string }>(c.env.DB, 'SELECT id FROM dealers WHERE id = ?', c.req.param('id')); if (!dealer) throw notFound('未找到该经销商');
   if (input.serviceCenterId) { const center = await one<{ id: string }>(c.env.DB, "SELECT id FROM service_centers WHERE id = ? AND status = 'active'", input.serviceCenterId); if (!center) throw badRequest('所选授权服务中心不可用'); }
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE dealers SET code = ?, name = ?, province = ?, authorization_type = ?, service_center_id = ?, contact_name = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.status, user.id, dealer.id),
+    c.env.DB.prepare('UPDATE dealers SET code = ?, name = ?, province = ?, authorization_type = ?, service_center_id = ?, contact_name = ?, notification_email = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.notificationEmail, input.status, user.id, dealer.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.update', entityType: 'dealer', entityId: dealer.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: dealer.id });
@@ -3702,11 +3742,31 @@ app.patch('/admin/users/:id/watermark', requireAuth, async (c) => {
 
 app.post('/admin/users/:id/reset-password', requireAuth, async (c) => {
   const user = c.get('user'); assertPermission(user, 'user:manage'); const input = await parseBody(c.req.raw, passwordResetSchema); const passwordHash = await hashPassword(input.nextPassword);
-  await c.env.DB.batch([c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, c.req.param('id')), dbAudit(c.env.DB, { actorId: user.id, action: 'user.reset_password', entityType: 'user', entityId: c.req.param('id'), requestId: c.get('requestId') })]);
+  const target = await one<{ id: string }>(c.env.DB, 'SELECT id FROM users WHERE id = ?', c.req.param('id'));
+  if (!target) throw notFound('未找到该用户');
+  await c.env.DB.batch([c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, must_change_password = 1, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, c.req.param('id')), dbAudit(c.env.DB, { actorId: user.id, action: 'user.reset_password', entityType: 'user', entityId: c.req.param('id'), requestId: c.get('requestId'), after: { sessionRevoked: true, mustChangePassword: true } })]);
   return c.json({ id: c.req.param('id') });
 });
 
 app.post('/admin/users/:id/revoke-sessions', requireAuth, async (c) => { const user = c.get('user'); assertPermission(user, 'user:manage'); await c.env.DB.prepare('UPDATE users SET session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(user.id, c.req.param('id')).run(); return c.json({ id: c.req.param('id'), revoked: true }); });
-app.post('/auth/change-password', requireAuth, async (c) => { const user = c.get('user'); const input = await parseBody(c.req.raw, passwordChangeSchema); const account = await one<{ passwordHash: string }>(c.env.DB, 'SELECT password_hash AS passwordHash FROM users WHERE id = ?', user.id); if (!account || !(await verifyPassword(input.currentPassword, account.passwordHash))) throw badRequest('当前密码不正确'); const passwordHash = await hashPassword(input.nextPassword); await c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, user.id).run(); return c.json({ changed: true }); });
+app.post('/auth/change-password', requireAuth, async (c) => {
+  const user = c.get('user');
+  const input = await parseBody(c.req.raw, passwordChangeSchema);
+  const account = await one<{ passwordHash: string }>(c.env.DB, 'SELECT password_hash AS passwordHash FROM users WHERE id = ?', user.id);
+  if (!account || !(await verifyPassword(input.currentPassword, account.passwordHash))) throw badRequest('当前密码不正确');
+  const passwordHash = await hashPassword(input.nextPassword);
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, must_change_password = 0, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'user.change_password', entityType: 'user', entityId: user.id, requestId: c.get('requestId'), after: { mustChangePassword: false } })
+  ]);
+  const sessionUser = await loadSessionUser(c.env.DB, user.id);
+  if (!sessionUser) throw new AppError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录');
+  const token = await createSessionToken(sessionUser, c.env.SESSION_SECRET);
+  const isSecure = new URL(c.req.url).protocol === 'https:';
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = isSecure || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
+  return c.json({ changed: true, user: sessionUser });
+});
 
 export default app;
