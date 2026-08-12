@@ -58,3 +58,6 @@ jobs:
 
       - name: Deploy staging Pages
         run: npx wrangler pages deploy apps/web/dist --project-name maxcine-web-staging --branch deploy/staging
+
+      - name: Deploy staging public website
+        run: npx wrangler pages deploy apps/website --project-name maxcine-website-staging --branch deploy/staging

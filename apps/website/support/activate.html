@@ -1,0 +1,319 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>产品激活中心 - MaxCINE</title>
+
+<link rel="stylesheet" href="../styles.css">
+
+<style>
+body { margin:0; background:#f5f5f5 !important; color:#111 !important; }
+
+.mc-header {
+  background:#fff !important;
+  border-bottom:1px solid #eee;
+  height:60px;
+  display:flex;
+  align-items:center;
+  padding:0 20px;
+}
+
+.mc-left {
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+.mc-logo { height:24px; }
+
+.mc-container {
+  max-width:900px;
+  margin:0 auto;
+  padding:80px 20px;
+  text-align:center;
+}
+
+.mc-form {
+  max-width:420px;
+  margin:20px auto;
+  display:flex;
+  flex-direction:column;
+  gap:14px;
+}
+
+.mc-input {
+  padding:12px;
+  border-radius:8px;
+  border:1px solid #ddd !important;
+  background:#fff !important;
+  color:#111 !important;
+}
+
+.mc-input::placeholder {
+  color:#999;
+}
+
+.mc-btn {
+  padding:12px;
+  border:none;
+  border-radius:8px;
+  cursor:pointer;
+  background:#007bff !important;
+  color:#fff !important;
+}
+
+.mc-card {
+  background:#fff;
+  margin-top:20px;
+  padding:20px;
+  border-radius:12px;
+  text-align:left;
+}
+
+.mc-product {
+  display:flex;
+  gap:16px;
+  align-items:center;
+}
+
+.mc-product img { width:80px; }
+
+.spinner::after {
+  content:"";
+  width:16px;
+  height:16px;
+  border:2px solid #ccc;
+  border-top:2px solid #007bff;
+  border-radius:50%;
+  display:inline-block;
+  animation:spin 1s linear infinite;
+  margin-left:6px;
+}
+
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.hidden { display:none; }
+</style>
+</head>
+
+<body>
+
+<div class="mc-header">
+  <div class="mc-left">
+    <img src="../assets/logo2.png" class="mc-logo">
+    <div>产品激活中心</div>
+  </div>
+</div>
+
+<div class="mc-container">
+
+<h1>设备激活</h1>
+
+<div class="mc-form">
+  <input id="sn" class="mc-input" placeholder="请输入产品序列号">
+  <input id="tracking" class="mc-input" placeholder="请输入快递单号">
+  <input 
+    type="text" 
+    id="buydate" 
+    class="mc-input" 
+    placeholder="请选择购买日期"
+    onfocus="this.type='date'"
+    onblur="if(!this.value)this.type='text'"
+  >
+
+  <button onclick="startActivate()" class="mc-btn">立即激活</button>
+  <button onclick="checkStatus()" class="mc-btn">查询激活状态</button>
+</div>
+
+<div id="notice" class="mc-card hidden">
+  <h3>激活前确认</h3>
+  <p>• 每个设备仅可激活一次<br>• 激活后将绑定账号信息及保修期</p>
+  <p id="countdown">请等待 5 秒...</p>
+  <button id="confirm-btn" class="mc-btn" disabled onclick="confirmActivate()">同意并继续</button>
+</div>
+
+<div id="result"></div>
+
+</div>
+
+<script>
+
+let currentSN = "";
+
+function startActivate(){
+
+  const sn = document.getElementById("sn").value.trim();
+  const tracking = document.getElementById("tracking").value.trim();
+  const buydate = document.getElementById("buydate").value;
+
+  if(!sn || !tracking || !buydate){
+    alert("请填写完整信息");
+    return;
+  }
+
+  currentSN = sn;
+
+  document.getElementById("notice").classList.remove("hidden");
+
+  let time = 5;
+  const btn = document.getElementById("confirm-btn");
+
+  const timer = setInterval(()=>{
+    time--;
+    document.getElementById("countdown").innerHTML = `请等待 ${time} 秒...`;
+
+    if(time<=0){
+      clearInterval(timer);
+      btn.disabled = false;
+    }
+  },1000);
+}
+
+function confirmActivate(){
+
+  const result = document.getElementById("result");
+  const btn = document.getElementById("confirm-btn");
+
+  btn.innerHTML = "正在上传至服务器 <span class='spinner'></span>";
+
+  const input_tracking = document.getElementById("tracking").value.trim();
+  const input_buydate = document.getElementById("buydate").value;
+
+  setTimeout(()=>{
+
+    // ✅ activate（已激活）
+    fetch("../data/activate/" + currentSN + ".json")
+      .then(res=>{
+        if(res.ok){
+          return res.json().then(data=>{
+            showCard(data, true);
+            throw "stop";
+          });
+        }
+
+        // ✅ allow（可激活）
+        return fetch("../data/allow/" + currentSN + ".json");
+      })
+      .then(res=>{
+        if(res && res.ok){
+          return res.json().then(data=>{
+
+            if(
+              input_tracking !== (data.verify_code || data.tracking) ||
+              input_buydate !== data.buy_date
+            ){
+              result.innerHTML = "❌ 信息不匹配，无法激活";
+              return;
+            }
+
+            showCard(data, false);
+            throw "stop";
+          });
+        }
+
+        // ✅ data（已激活）
+        return fetch("../data/" + currentSN + ".json");
+      })
+      .then(res=>{
+        if(res && res.ok){
+          return res.json().then(data=>{
+            showCard(data, true);
+            throw "stop";
+          });
+        }
+
+        throw "notfound";
+      })
+      .catch(err=>{
+        if(err === "stop") return;
+        result.innerHTML="❌ 未查询到设备";
+      });
+
+  },1200);
+}
+
+function checkStatus(){
+
+  const sn = document.getElementById("sn").value.trim();
+  const result = document.getElementById("result");
+
+  if(!sn){
+    alert("请输入序列号");
+    return;
+  }
+
+  result.innerHTML = "查询中...";
+
+  fetch("../data/activate/" + sn + ".json")
+    .then(res=>{
+      if(res.ok){
+        return res.json().then(data=>{
+          showCard(data, true);
+          throw "stop";
+        });
+      }
+
+      return fetch("../data/" + sn + ".json");
+    })
+    .then(res=>{
+      if(res && res.ok){
+        return res.json().then(data=>{
+          showCard(data, true);
+          throw "stop";
+        });
+      }
+
+      return fetch("../data/allow/" + sn + ".json");
+    })
+    .then(res=>{
+      if(res && res.ok){
+        result.innerHTML = "⚠️ 该设备尚未激活";
+        throw "stop";
+      }
+
+      throw "notfound";
+    })
+    .catch(err=>{
+      if(err === "stop") return;
+      result.innerHTML="⚠️ 该设备尚未激活";
+    });
+}
+
+function showCard(data, isActivated){
+
+  const product = data.product || data.version;
+  const activate_date = data.start_date;
+
+  if(!activate_date){
+    document.getElementById("result").innerHTML = "❌ 数据异常";
+    return;
+  }
+
+  document.getElementById("result").innerHTML=`
+  <div class="mc-card">
+
+    <h3 style="color:${isActivated?'#ff9800':'green'};">
+      ${isActivated?'⚠️ 已激活设备':'✅ 激活成功'}
+    </h3>
+
+    <div class="mc-product">
+      <img src="../assets/products/${data.image}">
+      <div>
+        <strong>${product}</strong><br>
+        SN：${data.sn || currentSN}
+      </div>
+    </div>
+
+    <p style="margin-top:12px;">
+      购买时间：${data.buy_date}<br>
+      激活时间：${activate_date}
+    </p>
+
+  </div>`;
+}
+
+</script>
+
+</body>
+</html>

@@ -21,9 +21,10 @@ export function shipmentWarrantyRule(sku: string): ShipmentWarrantyRule | null {
 
 export function shipmentWarrantyDates(shippedAt: string | Date, durationDays: number): { startAt: string; endAt: string } {
   const value = typeof shippedAt === 'string' ? new Date(`${shippedAt.replace(' ', 'T')}Z`) : shippedAt;
-  const shippedDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(value);
-  const [year, month, day] = shippedDate.split('-').map(Number);
-  const start = new Date(Date.UTC(year, month - 1, day + 3));
+  const effectiveAt = new Date(value.getTime() + 72 * 60 * 60 * 1000);
+  const effectiveDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(effectiveAt);
+  const [year, month, day] = effectiveDate.split('-').map(Number);
+  const start = new Date(Date.UTC(year, month - 1, day));
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + durationDays - 1);
   return { startAt: start.toISOString().slice(0, 10), endAt: end.toISOString().slice(0, 10) };

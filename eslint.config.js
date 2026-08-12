@@ -23,5 +23,22 @@ export default tseslint.config(
   {
     files: ['scripts/**/*.mjs', 'e2e/**/*.mjs'],
     languageOptions: { globals: { ...globals.node, ...globals.browser } }
+  },
+  {
+    files: ['apps/website/**/*.js'],
+    languageOptions: {
+      globals: {
+        ...globals.browser,
+        Response: 'readonly',
+        showCard: 'readonly'
+      }
+    },
+    rules: {
+      '@typescript-eslint/no-unused-vars': 'off'
+    }
+  },
+  {
+    files: ['apps/website/scripts/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node } }
   }
 );

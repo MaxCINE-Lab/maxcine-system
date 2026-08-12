@@ -15,6 +15,7 @@ bucket_name = "maxcine-assets"
 
 [vars]
 APP_ORIGIN = "http://localhost:5173"
+PUBLIC_ORIGIN = "http://localhost:5174"
 EMAIL_PROVIDER = "mock"
 AI_PROVIDER = "disabled"
 
@@ -30,6 +31,7 @@ migrations_dir = "migrations"
 
 [env.staging.vars]
 APP_ORIGIN = "https://maxcine-web-staging.pages.dev"
+PUBLIC_ORIGIN = "https://maxcine-website-staging.pages.dev"
 COOKIE_SAMESITE = "None"
 EMAIL_PROVIDER = "resend"
 AI_PROVIDER = "disabled"
@@ -46,6 +48,7 @@ migrations_dir = "migrations"
 
 [env.production.vars]
 APP_ORIGIN = "https://maxcine-web.pages.dev"
+PUBLIC_ORIGIN = "https://maxcine-website.pages.dev"
 COOKIE_SAMESITE = "None"
 EMAIL_PROVIDER = "mock"
 AI_PROVIDER = "disabled"
