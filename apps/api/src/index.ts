@@ -3,7 +3,7 @@ import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
-  adminDamageReviewSchema, confirmQuoteSendSchema, factoryPhotoTypeSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
@@ -3310,10 +3310,10 @@ app.get('/assets/:id', requireAuth, async (c) => {
     one<{ id: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string; isPublicQueryEnabled: number; updatedAt: string }>(c.env.DB, `SELECT id, public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
       public_warranty_status AS publicWarrantyStatus, public_note AS publicNote, is_public_query_enabled AS isPublicQueryEnabled,
       updated_at AS updatedAt FROM asset_public_warranties WHERE asset_id = ?`, asset.id),
-    all<{ id: string; photoType: string; originalFilename: string; contentType: string; fileSize: number; remark: string; uploadedAt: string; uploadedByName: string | null }>(c.env.DB, `SELECT asset_factory_photos.id, photo_type AS photoType, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize,
+    all<{ id: string; photoType: string | null; originalFilename: string; contentType: string; fileSize: number; remark: string; uploadedAt: string; uploadedByName: string | null }>(c.env.DB, `SELECT asset_factory_photos.id, photo_type AS photoType, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize,
       remark, uploaded_at AS uploadedAt, users.name AS uploadedByName
       FROM asset_factory_photos LEFT JOIN users ON users.id = asset_factory_photos.uploaded_by
-      WHERE asset_id = ? ORDER BY CASE photo_type WHEN 'front' THEN 1 WHEN 'back' THEN 2 WHEN 'sn_plate' THEN 3 WHEN 'package' THEN 4 ELSE 5 END, uploaded_at DESC`, asset.id)
+      WHERE asset_id = ? ORDER BY uploaded_at DESC`, asset.id)
   ]);
   return c.json({
     asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) },
@@ -3377,27 +3377,25 @@ app.post('/admin/assets/:id/factory-photos', requireAuth, async (c) => {
   const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', c.req.param('id'));
   if (!asset) throw notFound('未找到该资产');
   const form = await c.req.raw.formData();
-  const photoType = factoryPhotoTypeSchema.parse(String(form.get('photoType') ?? ''));
-  const remark = String(form.get('remark') ?? '').trim().slice(0, 500);
-  const file = form.get('file');
-  if (!(file instanceof File)) throw badRequest('请选择要上传的出厂照片');
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest('图片仅支持 JPG、PNG 或 WebP');
-  if (file.size > 8 * 1024 * 1024) throw badRequest('单张图片不能超过 8MB');
-  const previous = await one<{ id: string; objectKey: string }>(c.env.DB, 'SELECT id, object_key AS objectKey FROM asset_factory_photos WHERE asset_id = ? AND photo_type = ?', asset.id, photoType);
-  if (previous?.objectKey) await c.env.ASSETS.delete(previous.objectKey);
-  const fileBuffer = await file.arrayBuffer();
-  const objectKey = `factory-photos/${asset.id}/${photoType}/${Date.now()}-${crypto.randomUUID()}-${file.name || 'photo'}`;
-  await c.env.ASSETS.put(objectKey, fileBuffer, { httpMetadata: { contentType: file.type }, customMetadata: { assetId: asset.id, photoType, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
-  const photoId = previous?.id ?? id();
-  await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO asset_factory_photos (id, asset_id, photo_type, object_key, original_filename, content_type, file_size, remark, uploaded_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(asset_id, photo_type) DO UPDATE SET object_key = excluded.object_key, original_filename = excluded.original_filename,
-      content_type = excluded.content_type, file_size = excluded.file_size, remark = excluded.remark, uploaded_at = CURRENT_TIMESTAMP, uploaded_by = excluded.uploaded_by`)
-      .bind(photoId, asset.id, photoType, objectKey, file.name || 'photo', file.type, file.size, remark, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'asset.factory_photo_upload', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before: previous, after: { photoType, remark } })
-  ]);
-  return c.json({ id: photoId, photoType }, 201);
+  const files = [...form.getAll('files'), ...form.getAll('file')].filter((value): value is File => value instanceof File && value.size > 0);
+  if (!files.length) throw badRequest('请选择要上传的出厂照片');
+  if (files.length > 30) throw badRequest('一次最多上传 30 张出厂照片');
+  const uploaded: Array<{ id: string; originalFilename: string }> = [];
+  const statements: D1PreparedStatement[] = [];
+  for (const file of files) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest(`图片仅支持 JPG、PNG 或 WebP：${file.name || '未命名图片'}`);
+    if (file.size > 8 * 1024 * 1024) throw badRequest(`单张图片不能超过 8MB：${file.name || '未命名图片'}`);
+    const photoId = id();
+    const objectKey = `factory-photos/${asset.id}/${Date.now()}-${crypto.randomUUID()}-${file.name || 'photo'}`;
+    await c.env.ASSETS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { assetId: asset.id, uploadedBy: user.id, originalFilename: file.name || 'photo' } });
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_factory_photos (id, asset_id, photo_type, object_key, original_filename, content_type, file_size, remark, uploaded_by)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, '', ?)`)
+      .bind(photoId, asset.id, objectKey, file.name || 'photo', file.type, file.size, user.id));
+    uploaded.push({ id: photoId, originalFilename: file.name || 'photo' });
+  }
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'asset.factory_photo_upload', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: { count: uploaded.length, filenames: uploaded.map((item) => item.originalFilename) } }));
+  await c.env.DB.batch(statements);
+  return c.json({ photos: uploaded }, 201);
 });
 
 app.get('/assets/:id/factory-photos/:photoId/content', requireAuth, async (c) => {
@@ -3418,7 +3416,7 @@ app.get('/assets/:id/factory-photos/:photoId/content', requireAuth, async (c) =>
 app.delete('/admin/assets/:id/factory-photos/:photoId', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'asset:manage');
-  const photo = await one<{ id: string; objectKey: string; photoType: string }>(c.env.DB, 'SELECT id, object_key AS objectKey, photo_type AS photoType FROM asset_factory_photos WHERE id = ? AND asset_id = ?', c.req.param('photoId'), c.req.param('id'));
+  const photo = await one<{ id: string; objectKey: string; photoType: string | null }>(c.env.DB, 'SELECT id, object_key AS objectKey, photo_type AS photoType FROM asset_factory_photos WHERE id = ? AND asset_id = ?', c.req.param('photoId'), c.req.param('id'));
   if (!photo) throw notFound('未找到该出厂照片');
   if (c.env.ASSETS) await c.env.ASSETS.delete(photo.objectKey);
   await c.env.DB.batch([

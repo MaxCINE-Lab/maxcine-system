@@ -477,6 +477,85 @@
   font-size: 14px;
 }
 
+.factory-photo-uploader {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--mc-space-3);
+  margin: var(--mc-space-4) 0;
+}
+
+.factory-photo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: var(--mc-space-3);
+  margin-top: var(--mc-space-4);
+}
+
+.factory-photo-grid--pending {
+  margin-bottom: var(--mc-space-4);
+}
+
+.factory-photo-card {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: var(--mc-space-3);
+  border: 1px solid var(--mc-border);
+  border-radius: var(--mc-radius-md);
+  background: var(--mc-surface-muted);
+}
+
+.factory-photo-card--pending {
+  border-style: dashed;
+}
+
+.factory-photo-thumb {
+  display: block;
+  width: 100%;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--mc-radius-sm);
+  background: var(--mc-surface);
+}
+
+.factory-photo-card img,
+.factory-photo-thumb img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: var(--mc-surface);
+}
+
+.factory-photo-card figcaption {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  color: var(--mc-text-secondary);
+  font-size: 12px;
+}
+
+.factory-photo-card figcaption strong,
+.factory-photo-card figcaption span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.factory-photo-card figcaption strong {
+  color: var(--mc-text);
+  font-size: 13px;
+}
+
+.factory-photo-viewer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--mc-space-3);
+  padding: var(--mc-space-4) var(--mc-space-5);
+  border-top: 1px solid var(--mc-border);
+}
+
 .camera-photo-backdrop {
   position: fixed;
   inset: 0;

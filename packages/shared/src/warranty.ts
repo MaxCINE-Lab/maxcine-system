@@ -20,7 +20,7 @@ export function shipmentWarrantyRule(sku: string): ShipmentWarrantyRule | null {
 }
 
 export function shipmentWarrantyDates(shippedAt: string | Date, durationDays: number): { startAt: string; endAt: string } {
-  const value = typeof shippedAt === 'string' ? new Date(`${shippedAt.replace(' ', 'T')}Z`) : shippedAt;
+  const value = typeof shippedAt === 'string' ? parseShipmentDate(shippedAt) : shippedAt;
   const effectiveAt = new Date(value.getTime() + 72 * 60 * 60 * 1000);
   const effectiveDate = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(effectiveAt);
   const [year, month, day] = effectiveDate.split('-').map(Number);
@@ -28,4 +28,14 @@ export function shipmentWarrantyDates(shippedAt: string | Date, durationDays: nu
   const end = new Date(start);
   end.setUTCDate(end.getUTCDate() + durationDays - 1);
   return { startAt: start.toISOString().slice(0, 10), endAt: end.toISOString().slice(0, 10) };
+}
+
+function parseShipmentDate(shippedAt: string): Date {
+  const value = shippedAt.trim();
+  if (!value) return new Date(NaN);
+  if (/(?:Z|[+-]\d{2}:?\d{2})$/i.test(value)) return new Date(value.replace(' ', 'T'));
+  const match = value.match(/^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,3}))?)?)?$/);
+  if (!match) return new Date(value);
+  const [, year, month, day, hour = '00', minute = '00', second = '00', millisecond = '0'] = match;
+  return new Date(Date.UTC(Number(year), Number(month) - 1, Number(day), Number(hour) - 8, Number(minute), Number(second), Number(millisecond.padEnd(3, '0'))));
 }
