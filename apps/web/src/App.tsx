@@ -3,9 +3,10 @@ import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
+import { IntelligencePortal } from './IntelligencePortal';
 import { OperationsPortal } from './OperationsPortal';
 import { ServiceCenterPortal } from './ServiceCenterPortal';
-import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
+import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasIntelligenceAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -176,6 +177,7 @@ function isDealerRoute(path: string): boolean {
   return path === '/system/dashboard'
     || path === '/system/inventory'
     || path === '/system/customer-risk'
+    || path === '/system/intelligence'
     || path === '/system/new-order'
     || path === '/system/orders'
     || path.startsWith('/system/orders/')
@@ -201,6 +203,7 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
   const path = route.split('?')[0];
+  if (path === '/system/intelligence' && hasIntelligenceAccess(user)) return <IntelligencePortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} />;
   if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
   if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;

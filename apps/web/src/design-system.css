@@ -3245,3 +3245,45 @@ body:has(.system) {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+.intelligence-coming-soon {
+  max-width: 760px;
+  min-height: 360px;
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 14px;
+  padding: 56px;
+}
+
+.intelligence-coming-soon h2 {
+  margin: 4px 0 0;
+  color: var(--mc-text);
+  font-size: clamp(42px, 6vw, 72px);
+  line-height: .95;
+  letter-spacing: -.06em;
+}
+
+.intelligence-coming-soon p {
+  max-width: 520px;
+  margin: 0;
+  color: var(--mc-text-secondary);
+  font-size: 16px;
+  line-height: 1.7;
+}
+
+.intelligence-coming-soon .intelligence-subtitle {
+  color: var(--mc-text);
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.intelligence-coming-soon > strong {
+  margin-top: 14px;
+  color: var(--mc-brand);
+  font-size: 13px;
+  font-weight: 760;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+}

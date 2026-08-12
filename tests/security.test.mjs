@@ -175,6 +175,25 @@ test('shipment confirmation accepts optional categorized outbound photos and sti
   assert.match(source, /shipment_photos/);
 });
 
+test('MaxCINE Intelligence is a disabled coming-soon entry without AI provider calls', () => {
+  const appSource = readFileSync(new URL('../apps/web/src/App.tsx', import.meta.url), 'utf8');
+  const navSource = readFileSync(new URL('../apps/web/src/systemNavigation.tsx', import.meta.url), 'utf8');
+  const pageSource = readFileSync(new URL('../apps/web/src/IntelligencePortal.tsx', import.meta.url), 'utf8');
+  const config = readFileSync(new URL('../apps/api/wrangler.toml', import.meta.url), 'utf8');
+  const combined = `${appSource}\n${navSource}\n${pageSource}`;
+  assert.match(navSource, /MaxCINE Intelligence/);
+  assert.match(navSource, /function hasIntelligenceAccess/);
+  assert.match(navSource, /return hasAdminAccess\(user\) \|\| hasDealerAccess\(user\)/);
+  assert.doesNotMatch(navSource, /hasWarehouseAccess\(user\).*MaxCINE Intelligence/s);
+  assert.doesNotMatch(navSource, /hasServiceCenterAccess\(user\).*MaxCINE Intelligence/s);
+  assert.match(appSource, /\/system\/intelligence/);
+  assert.match(pageSource, /Coming Soon/);
+  assert.match(pageSource, /IN DEVELOPMENT/);
+  assert.doesNotMatch(pageSource, /textarea|发送|button[^>]*发送/i);
+  assert.match(config, /AI_PROVIDER = "disabled"/);
+  assert.doesNotMatch(combined, /deepseek|hunyuan|混元|api\.openai\.com|api\.deepseek\.com/i);
+});
+
 test('super administrators receive the same effective workflow permissions as warehouse and service center roles', () => {
   const fullSuperAdmin = user({ id: 'full-super-admin', roles: ['super_admin'], permissions: [...PERMISSIONS] });
   assert.equal(can(fullSuperAdmin, 'order:fulfill'), true);
