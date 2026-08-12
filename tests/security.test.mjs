@@ -194,6 +194,61 @@ test('MaxCINE Intelligence is a disabled coming-soon entry without AI provider c
   assert.doesNotMatch(combined, /deepseek|hunyuan|混元|api\.openai\.com|api\.deepseek\.com/i);
 });
 
+test('after-sales stages hide obsolete actions and backend rejects stale stage writes', () => {
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
+  assert.match(adminUiSource, /after-sales-phase-nav/);
+  assert.match(adminUiSource, /data-phase=\{detailPhase\}/);
+  assert.match(adminUiSource, /尚未到达该阶段/);
+  assert.match(apiSource, /该工单当前不能录入寄修单号/);
+  assert.match(apiSource, /\['WAITING_CUSTOMER_SHIPMENT', 'WAITING_SERVICE_CENTER_RECEIPT'\]\.includes\(serviceCase\.serviceStage\)/);
+  assert.match(apiSource, /该工单当前不能提交检测结果/);
+  assert.match(apiSource, /该工单当前不需要确认收款/);
+  assert.match(apiSource, /该工单当前还不能发货/);
+});
+
+test('global toast and forced password change use a viewport-fixed notification path', () => {
+  const appSource = readFileSync(new URL('../apps/web/src/App.tsx', import.meta.url), 'utf8');
+  const toastSource = readFileSync(new URL('../apps/web/src/Toast.tsx', import.meta.url), 'utf8');
+  const cssSource = readFileSync(new URL('../apps/web/src/design-system.css', import.meta.url), 'utf8');
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const authSource = readFileSync(new URL('../apps/api/src/auth.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  assert.match(appSource, /ToastProvider/);
+  assert.match(appSource, /\/system\/change-password/);
+  assert.match(appSource, /user\.mustChangePassword/);
+  assert.match(toastSource, /ToastProvider/);
+  assert.match(toastSource, /useToast/);
+  assert.match(cssSource, /\.toast-stack/);
+  assert.match(cssSource, /position: fixed/);
+  assert.match(apiSource, /must_change_password = 1/);
+  assert.match(apiSource, /session_version = session_version \+ 1/);
+  assert.match(apiSource, /user\.change_password/);
+  assert.match(authSource, /mustChangePassword/);
+  assert.match(migration, /must_change_password/);
+  assert.match(apiSource, /after: \{ sessionRevoked: true, mustChangePassword: true \}/);
+  assert.match(apiSource, /after: \{ mustChangePassword: false \}/);
+});
+
+test('dealer shipment notifications use dealer notification email and never roll back shipment on mail failure', () => {
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const schemasSource = readFileSync(new URL('../packages/shared/src/schemas.ts', import.meta.url), 'utf8');
+  const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
+  const operationsUiSource = readFileSync(new URL('../apps/web/src/OperationsPortal.tsx', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  assert.match(schemasSource, /notificationEmail/);
+  assert.match(adminUiSource, /通知邮箱/);
+  assert.match(migration, /notification_email/);
+  assert.match(apiSource, /SELECT name, notification_email AS notificationEmail FROM dealers/);
+  assert.match(apiSource, /dealer-shipment-notification:\$\{order\.id\}:\$\{shipmentId\}/);
+  assert.match(apiSource, /NO_RECIPIENT/);
+  assert.match(apiSource, /template: 'shipment_notice'/);
+  assert.match(apiSource, /订单已发货/);
+  assert.match(apiSource, /return c\.json\(\{ id: order\.id, status: 'shipped'/);
+  assert.match(operationsUiSource, /通知邮件发送失败/);
+  assert.doesNotMatch(apiSource, /throw conflict\('邮件发送失败|throw badRequest\('邮件发送失败/);
+});
+
 test('super administrators receive the same effective workflow permissions as warehouse and service center roles', () => {
   const fullSuperAdmin = user({ id: 'full-super-admin', roles: ['super_admin'], permissions: [...PERMISSIONS] });
   assert.equal(can(fullSuperAdmin, 'order:fulfill'), true);
