@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -173,6 +173,27 @@ test('shipment confirmation accepts optional categorized outbound photos and sti
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /确认发货前请上传/);
   assert.match(source, /shipment_photos/);
+});
+
+test('inventory serial ledger requires product selection and keeps inbound separated from shipment warranty', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0024_inventory_serial_ledger.sql', import.meta.url), 'utf8');
+  const parsed = createInventorySerialSchema.parse({
+    productId: '40000000-0000-4000-8000-000000000001',
+    serialNumber: ' mx-test-sn-0001 ',
+    productionDate: '2026-08-15',
+    warehouseLocation: '山东云仓',
+    internalNote: '入库测试，不触发销售。'
+  });
+  assert.equal(parsed.serialNumber, 'MX-TEST-SN-0001');
+  assert.equal(createInventorySerialSchema.safeParse({ serialNumber: 'MX-TEST-SN-0001' }).success, false);
+  assert.equal(updateInventorySerialSchema.safeParse({ state: 'shipped' }).success, false);
+  assert.equal(updateInventorySerialSchema.safeParse({ state: 'blocked', internalNote: '管理员标记异常' }).success, true);
+  assert.match(migration, /production_date/);
+  assert.match(migration, /warehouse_location/);
+  assert.match(source, /inventory\.serial_create/);
+  assert.match(source, /transaction_type, quantity_delta, note, created_by\)\s*VALUES \(\?, \?, \?, 'inbound', 1/);
+  assert.doesNotMatch(source, /asset_public_warranties[\s\S]{0,220}inventory\.serial_create/);
 });
 
 test('MaxCINE Intelligence is a disabled coming-soon entry without AI provider calls', () => {

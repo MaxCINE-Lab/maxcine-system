@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
-  createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
+  createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
@@ -97,6 +97,10 @@ const shipmentPhotoRequirements = [
 
 function assertPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, permission)) throw forbidden();
+}
+
+function assertInventoryLedgerRead(user: SessionUser): void {
+  if (!can(user, 'inventory:manage') && !can(user, 'inventory:warehouse-manage') && !can(user, 'inventory:read')) throw forbidden();
 }
 
 // Global GSX access is a permission relationship, never an email, display name,
@@ -452,6 +456,30 @@ async function findAssetByIdentifier(db: D1Database, serialNumber: string): Prom
      WHERE assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
      ORDER BY CASE WHEN assets.current_sn = ? COLLATE NOCASE THEN 0 WHEN assets.original_sn = ? COLLATE NOCASE THEN 1 ELSE 2 END, assets.updated_at DESC
      LIMIT 1`, serialNumber, serialNumber, serialNumber, serialNumber, serialNumber);
+}
+
+async function ensureAssetForInventorySerial(db: D1Database, input: { serialNumber: string; productId: string; actorId: string }): Promise<{ assetId: string; statements: D1PreparedStatement[]; created: boolean }> {
+  const existing = await findAssetByIdentifier(db, input.serialNumber);
+  if (existing) return { assetId: existing.id, statements: [], created: false };
+  const product = await one<{ id: string; name: string; sku: string; productVersion: string; specification: string }>(db,
+    `SELECT id, name, sku, product_version AS productVersion, specification FROM products WHERE id = ?`, input.productId);
+  if (!product) throw notFound('未找到该产品');
+  const assetId = id();
+  return {
+    assetId,
+    created: true,
+    statements: [
+      db.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, warranty_policy, source_channel, shipping_warehouse, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'active', 'unknown', 'inventory_inbound', '', ?, ?)`)
+        .bind(assetId, input.serialNumber, input.serialNumber, product.id, product.name, product.productVersion || product.specification || product.sku, input.actorId, input.actorId),
+      db.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, source, created_by)
+        VALUES (?, ?, 'current_sn', ?, 1, 'inventory_inbound', ?)`)
+        .bind(id(), assetId, input.serialNumber, input.actorId),
+      db.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+        VALUES (?, ?, 'imported', CURRENT_TIMESTAMP, '管理员新建库存', '该资产由库存 SN 台账创建，用于出厂照片和内部 GSX 查询；未触发销售、发货或保修。', ?, 'admin_private', 'inventory')`)
+        .bind(id(), assetId, input.actorId)
+    ]
+  };
 }
 
 async function allocationStatementsForSerials(db: D1Database, input: { orderId: string; serialNumbers: string[]; actorId: string; allowExistingOnly?: boolean }): Promise<{ statements: D1PreparedStatement[]; serials: Array<{ serialNumber: string; productId: string; orderItemId: string }> }> {
@@ -3894,6 +3922,172 @@ app.patch('/admin/products/:id', requireAuth, async (c) => {
 app.get('/admin/inventory', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'inventory:manage');
   return c.json({ inventory: await all(c.env.DB, `SELECT inventory.id, products.sku, products.name, inventory.quantity AS availableQuantity, inventory.reserved_quantity AS reservedQuantity, inventory.reorder_level AS reorderLevel, inventory.updated_at AS updatedAt FROM inventory JOIN products ON products.id = inventory.product_id ORDER BY products.sku`) });
+});
+
+app.get('/admin/inventory/serials', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInventoryLedgerRead(user);
+  const url = new URL(c.req.url);
+  const search = normalizeLookup(url.searchParams.get('search') ?? '');
+  const productId = url.searchParams.get('productId')?.trim() ?? '';
+  const state = url.searchParams.get('state')?.trim() ?? '';
+  const warehouse = url.searchParams.get('warehouse')?.trim() ?? '';
+  const page = pageValue(url.searchParams.get('page') ?? undefined);
+  const limit = limitValue(url.searchParams.get('limit') ?? undefined, 30);
+  const sort = url.searchParams.get('sort') ?? 'updatedAt';
+  const direction = url.searchParams.get('direction') === 'asc' ? 'ASC' : 'DESC';
+  const orderBy = ({
+    sn: 'sn.serial_number',
+    sku: 'products.sku',
+    product: 'products.name',
+    state: 'sn.state',
+    productionDate: 'sn.production_date',
+    warehouse: 'sn.warehouse_location',
+    createdAt: 'sn.created_at',
+    updatedAt: 'sn.updated_at'
+  } as Record<string, string>)[sort] ?? 'sn.updated_at';
+  const filters: string[] = [];
+  const params: unknown[] = [];
+  if (search) {
+    filters.push(`(sn.serial_number LIKE '%' || ? || '%' ESCAPE '\\' OR products.sku LIKE '%' || ? || '%' ESCAPE '\\' OR products.name LIKE '%' || ? || '%' ESCAPE '\\' OR products.product_version LIKE '%' || ? || '%' ESCAPE '\\' OR sn.internal_note LIKE '%' || ? || '%' ESCAPE '\\')`);
+    params.push(search, search, search, search, search);
+  }
+  if (productId) { filters.push('sn.product_id = ?'); params.push(productId); }
+  if (state) { filters.push('sn.state = ?'); params.push(state); }
+  if (warehouse) { filters.push('sn.warehouse_location = ?'); params.push(warehouse); }
+  const where = filters.length ? `WHERE ${filters.join(' AND ')}` : '';
+  const [count, rows, products, warehouses] = await Promise.all([
+    one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM serial_numbers AS sn JOIN products ON products.id = sn.product_id ${where}`, ...params),
+    all(c.env.DB, `SELECT sn.id, sn.serial_number AS serialNumber, sn.state, sn.production_date AS productionDate,
+        sn.warehouse_location AS warehouseLocation, sn.storage_box AS storageBox, sn.carton_number AS cartonNumber,
+        sn.internal_note AS internalNote, sn.created_at AS createdAt, sn.updated_at AS updatedAt,
+        sn.order_item_id AS orderItemId, sn.shipment_id AS shipmentId,
+        products.id AS productId, products.name AS productName, products.sku, products.product_version AS productVersion, products.specification,
+        inventory.quantity AS productAvailableQuantity, inventory.reserved_quantity AS productReservedQuantity,
+        inventory_asset.id AS assetId,
+        COALESCE(photo_counts.factoryPhotoCount, 0) AS factoryPhotoCount
+      FROM serial_numbers AS sn
+      JOIN products ON products.id = sn.product_id
+      JOIN inventory ON inventory.product_id = products.id
+      LEFT JOIN assets AS inventory_asset ON inventory_asset.current_sn = sn.serial_number COLLATE NOCASE OR inventory_asset.original_sn = sn.serial_number COLLATE NOCASE
+      LEFT JOIN (SELECT asset_id, COUNT(*) AS factoryPhotoCount FROM asset_factory_photos GROUP BY asset_id) AS photo_counts ON photo_counts.asset_id = inventory_asset.id
+      ${where}
+      ORDER BY ${orderBy} ${direction}, sn.serial_number ASC
+      LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit),
+    all<{ id: string; sku: string; name: string; productVersion: string; specification: string }>(c.env.DB, `SELECT id, sku, name, product_version AS productVersion, specification FROM products WHERE is_active = 1 ORDER BY sku`),
+    all<{ value: string }>(c.env.DB, `SELECT DISTINCT warehouse_location AS value FROM serial_numbers WHERE warehouse_location <> '' ORDER BY warehouse_location`)
+  ]);
+  return c.json({ serials: rows, products, warehouses: warehouses.map((item) => item.value), pagination: { page, limit, total: count?.count ?? 0, totalPages: Math.max(1, Math.ceil((count?.count ?? 0) / limit)) } });
+});
+
+app.get('/admin/inventory/serials/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInventoryLedgerRead(user);
+  const serial = await one<{ id: string; serialNumber: string; state: string; productionDate: string | null; warehouseLocation: string; storageBox: string; cartonNumber: string; internalNote: string; orderItemId: string | null; shipmentId: string | null; productId: string; productName: string; sku: string; productVersion: string; specification: string; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT serial_numbers.id, serial_numbers.serial_number AS serialNumber, serial_numbers.state, serial_numbers.production_date AS productionDate, serial_numbers.warehouse_location AS warehouseLocation, serial_numbers.storage_box AS storageBox, serial_numbers.carton_number AS cartonNumber, serial_numbers.internal_note AS internalNote,
+      serial_numbers.order_item_id AS orderItemId, serial_numbers.shipment_id AS shipmentId, products.id AS productId, products.name AS productName, products.sku, products.product_version AS productVersion, products.specification,
+      serial_numbers.created_at AS createdAt, serial_numbers.updated_at AS updatedAt
+      FROM serial_numbers JOIN products ON products.id = serial_numbers.product_id WHERE serial_numbers.id = ?`, c.req.param('id'));
+  if (!serial) throw notFound('未找到该 SN 库存记录');
+  const asset = await findAssetByIdentifier(c.env.DB, serial.serialNumber);
+  const photos = asset ? await all<{ id: string; originalFilename: string; contentType: string; fileSize: number; uploadedAt: string; uploadedByName: string | null }>(c.env.DB,
+    `SELECT asset_factory_photos.id, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize, uploaded_at AS uploadedAt, users.name AS uploadedByName
+      FROM asset_factory_photos LEFT JOIN users ON users.id = asset_factory_photos.uploaded_by
+      WHERE asset_id = ? ORDER BY uploaded_at DESC`, asset.id) : [];
+  return c.json({ serial, asset, factoryPhotos: photos.map((photo) => ({ ...photo, contentUrl: asset ? `/assets/${asset.id}/factory-photos/${photo.id}/content` : '' })) });
+});
+
+app.post('/admin/inventory/serials', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'inventory:manage');
+  const input = await parseBody(c.req.raw, createInventorySerialSchema);
+  const existingSerial = await one<{ id: string }>(c.env.DB, 'SELECT id FROM serial_numbers WHERE serial_number = ? COLLATE NOCASE', input.serialNumber);
+  if (existingSerial) throw conflict('当前可售库存中已存在相同 SN，不能重复创建');
+  const product = await one<{ id: string; sku: string; name: string; productVersion: string; specification: string; inventoryId: string | null }>(c.env.DB,
+    `SELECT products.id, sku, name, product_version AS productVersion, specification, inventory.id AS inventoryId FROM products LEFT JOIN inventory ON inventory.product_id = products.id WHERE products.id = ? AND products.is_active = 1`, input.productId);
+  if (!product) throw notFound('未找到可用产品 / P/N');
+  const existingAsset = await findAssetByIdentifier(c.env.DB, input.serialNumber);
+  if (existingAsset && !input.confirmExistingAsset) throw badRequest('该 SN 已存在历史 GSX 资产记录，请确认后再创建库存 SN', { existingAsset: [`${existingAsset.currentSn || input.serialNumber} · ${existingAsset.productName || '未知产品'} · ${existingAsset.assetStatus}`] });
+  const inventoryId = product.inventoryId ?? id();
+  const serialId = id();
+  const assetResult = await ensureAssetForInventorySerial(c.env.DB, { serialNumber: input.serialNumber, productId: product.id, actorId: user.id });
+  const statements: D1PreparedStatement[] = [];
+  if (!product.inventoryId) statements.push(c.env.DB.prepare('INSERT INTO inventory (id, product_id, created_by, updated_by) VALUES (?, ?, ?, ?)').bind(inventoryId, product.id, user.id, user.id));
+  statements.push(
+    c.env.DB.prepare(`INSERT INTO serial_numbers (id, product_id, serial_number, state, production_date, warehouse_location, storage_box, carton_number, internal_note, created_by, updated_by)
+      VALUES (?, ?, ?, 'available', ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(serialId, product.id, input.serialNumber, input.productionDate || null, input.warehouseLocation, input.storageBox, input.cartonNumber, input.internalNote, user.id, user.id),
+    c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, transaction_type, quantity_delta, note, created_by)
+      VALUES (?, ?, ?, 'inbound', 1, ?, ?)`)
+      .bind(id(), inventoryId, product.id, `管理员新建库存 SN：${input.serialNumber}`, user.id),
+    ...assetResult.statements,
+    dbAudit(c.env.DB, { actorId: user.id, action: 'inventory.serial_create', entityType: 'serial_number', entityId: serialId, requestId: c.get('requestId'), after: { ...input, assetId: assetResult.assetId, assetCreated: assetResult.created } })
+  );
+  await c.env.DB.batch(statements);
+  return c.json({ id: serialId, assetId: assetResult.assetId }, 201);
+});
+
+app.patch('/admin/inventory/serials/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'inventory:manage');
+  const input = await parseBody(c.req.raw, updateInventorySerialSchema);
+  const serial = await one<{ id: string; productId: string; serialNumber: string; state: string; orderItemId: string | null; shipmentId: string | null; productionDate: string | null; warehouseLocation: string; storageBox: string; cartonNumber: string; internalNote: string; inventoryId: string }>(c.env.DB,
+    `SELECT serial_numbers.id, serial_numbers.product_id AS productId, serial_numbers.serial_number AS serialNumber, serial_numbers.state, serial_numbers.order_item_id AS orderItemId, serial_numbers.shipment_id AS shipmentId,
+      serial_numbers.production_date AS productionDate, serial_numbers.warehouse_location AS warehouseLocation, serial_numbers.storage_box AS storageBox, serial_numbers.carton_number AS cartonNumber, serial_numbers.internal_note AS internalNote,
+      inventory.id AS inventoryId
+      FROM serial_numbers JOIN inventory ON inventory.product_id = serial_numbers.product_id WHERE serial_numbers.id = ?`, c.req.param('id'));
+  if (!serial) throw notFound('未找到该 SN 库存记录');
+  const linked = Boolean(serial.orderItemId || serial.shipmentId || serial.state === 'allocated' || serial.state === 'shipped');
+  const nextProductId = input.productId ?? serial.productId;
+  const productChanged = nextProductId !== serial.productId;
+  const stateChanged = input.state && input.state !== serial.state;
+  if (linked && (productChanged || stateChanged || input.productionDate !== (serial.productionDate ?? ''))) throw conflict('该 SN 已关联订单或发货记录，不能通过库存编辑修改关键字段');
+  if (productChanged && !input.confirmProductChange) throw conflict('修改 P/N 会影响库存归属，请二次确认');
+  if (stateChanged && !['available', 'blocked'].includes(serial.state)) throw conflict('该库存状态由订单或发货流程维护，不能手动修改');
+  const nextProduct = productChanged ? await one<{ id: string; inventoryId: string | null }>(c.env.DB, `SELECT products.id, inventory.id AS inventoryId FROM products LEFT JOIN inventory ON inventory.product_id = products.id WHERE products.id = ? AND products.is_active = 1`, nextProductId) : null;
+  if (productChanged && !nextProduct) throw notFound('未找到可用产品 / P/N');
+  const statements: D1PreparedStatement[] = [];
+  let nextInventoryId = nextProduct?.inventoryId ?? '';
+  if (productChanged && nextProduct && !nextProduct.inventoryId) {
+    nextInventoryId = id();
+    statements.push(c.env.DB.prepare('INSERT INTO inventory (id, product_id, created_by, updated_by) VALUES (?, ?, ?, ?)').bind(nextInventoryId, nextProduct.id, user.id, user.id));
+  }
+  const nextState = input.state ?? serial.state;
+  if (productChanged && serial.state === 'available') {
+    statements.push(
+      c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, transaction_type, quantity_delta, note, created_by) VALUES (?, ?, ?, 'adjustment', -1, ?, ?)`)
+        .bind(id(), serial.inventoryId, serial.productId, `SN ${serial.serialNumber} 改绑至其他 P/N`, user.id),
+      c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, transaction_type, quantity_delta, note, created_by) VALUES (?, ?, ?, 'adjustment', 1, ?, ?)`)
+        .bind(id(), nextInventoryId, nextProductId, `SN ${serial.serialNumber} 从其他 P/N 改入`, user.id)
+    );
+  } else if (!productChanged && stateChanged) {
+    const delta = serial.state === 'available' && nextState === 'blocked' ? -1 : serial.state === 'blocked' && nextState === 'available' ? 1 : 0;
+    if (delta) statements.push(c.env.DB.prepare(`INSERT INTO inventory_transactions (id, inventory_id, product_id, transaction_type, quantity_delta, note, created_by) VALUES (?, ?, ?, 'adjustment', ?, ?, ?)`)
+      .bind(id(), serial.inventoryId, serial.productId, delta, `SN ${serial.serialNumber} 状态调整为 ${nextState}`, user.id));
+  }
+  statements.push(
+    c.env.DB.prepare(`UPDATE serial_numbers SET product_id = ?, state = ?, production_date = ?, warehouse_location = ?, storage_box = ?, carton_number = ?, internal_note = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(nextProductId, nextState, input.productionDate || null, input.warehouseLocation, input.storageBox, input.cartonNumber, input.internalNote, user.id, serial.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'inventory.serial_update', entityType: 'serial_number', entityId: serial.id, requestId: c.get('requestId'), before: serial, after: input })
+  );
+  await c.env.DB.batch(statements);
+  return c.json({ id: serial.id });
+});
+
+app.post('/admin/inventory/serials/:id/factory-photos', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  if (!c.env.ASSETS) throw conflict('图片存储尚未启用，请先在 Cloudflare 启用 R2 并配置 ASSETS binding');
+  const serial = await one<{ id: string; serialNumber: string; productId: string }>(c.env.DB, 'SELECT id, serial_number AS serialNumber, product_id AS productId FROM serial_numbers WHERE id = ?', c.req.param('id'));
+  if (!serial) throw notFound('未找到该 SN 库存记录');
+  const assetResult = await ensureAssetForInventorySerial(c.env.DB, { serialNumber: serial.serialNumber, productId: serial.productId, actorId: user.id });
+  if (assetResult.statements.length) await c.env.DB.batch(assetResult.statements);
+  // Reuse the same R2/table implementation through an internal helper-shaped
+  // minimal duplicate would be riskier here because the existing endpoint also
+  // owns validation and audit. Redirecting the client would drop the body, so
+  // the UI calls this route only to guarantee an asset exists and receives the
+  // canonical upload path to use next.
+  return c.json({ assetId: assetResult.assetId, uploadUrl: `/admin/assets/${assetResult.assetId}/factory-photos` });
 });
 
 app.get('/admin/inventory/:id/transactions', requireAuth, async (c) => {

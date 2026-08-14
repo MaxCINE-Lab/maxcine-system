@@ -30,12 +30,14 @@ type ShipmentPhotoDraft = { category: ShipmentPhotoCategory; label: string; help
 
 type Props = { user: SessionUser; route: string; logout: () => void };
 type InventoryRow = { id: string; sku: string; name: string; availableQuantity: number; reservedQuantity: number; reorderLevel: number };
+type InventorySerialRow = { id: string; serialNumber: string; state: string; productionDate: string | null; warehouseLocation: string; storageBox: string; cartonNumber: string; internalNote: string; createdAt: string; updatedAt: string; productName: string; sku: string; productVersion: string; specification: string; factoryPhotoCount: number };
 type NotificationRow = { id: string; title: string; body: string; link: string | null; readAt: string | null; createdAt: string };
 
 const statusName: Record<OrderStatus, string> = { draft: '草稿', submitted: '待审核', approved: '待发货', rejected: '已驳回', picking: '待发货', packed: '待发货', shipped: '已发货', delivered: '已签收', cancelled: '已取消' };
 const packageOptions = ['顺丰f1纸箱', '顺丰f2纸箱', '普通纸箱', '定制纸箱', '防水袋', '文件袋', '葫芦泡（白色普通）', '葫芦泡（蓝色加强）'];
 const money = (value: number) => `¥${(value / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`;
 const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${value.replace(' ', 'T')}Z`)) : '—';
+const serialStateText = (value: string) => ({ available: '可售', allocated: '预留', shipped: '已售出', returned: '已退回', blocked: '异常' } as Record<string, string>)[value] ?? value;
 const errorText = (error: unknown) => error instanceof ApiClientError ? error.message : '操作未完成，请稍后重试。';
 const splitLines = (value: string) => value.split(/[\n\r,，、\s]+/).map((item) => normalizeScannerValue(item)).filter(Boolean);
 const shipmentPhotoRequirements: Array<{ category: ShipmentPhotoCategory; label: string; help: string }> = [
@@ -269,9 +271,15 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
 function Inventory({ user, route, logout }: Props) {
   const warehouse = route.split('?')[0].startsWith('/system/warehouse') && user.permissions.includes('order:fulfill');
   const [data, setData] = useState<InventoryRow[]>([]);
-  const load = useCallback(() => { if (warehouse) return api<{ items: InventoryRow[] }>('/inventory').then((value) => setData(value.items)); return api<{ inventory: InventoryRow[] }>('/admin/inventory').then((value) => setData(value.inventory)); }, [warehouse]);
+  const [serials, setSerials] = useState<InventorySerialRow[]>([]);
+  const [search, setSearch] = useState('');
+  const load = useCallback(() => {
+    const summary = warehouse ? api<{ items: InventoryRow[] }>('/inventory').then((value) => setData(value.items)) : api<{ inventory: InventoryRow[] }>('/admin/inventory').then((value) => setData(value.inventory));
+    const ledger = api<{ serials: InventorySerialRow[] }>(`/admin/inventory/serials?search=${encodeURIComponent(search)}&limit=80`).then((value) => setSerials(value.serials));
+    return Promise.all([summary, ledger]);
+  }, [warehouse, search]);
   useEffect(() => { void load(); }, [load]);
-  return <Shell user={user} route={route} title={warehouse ? '库存查询' : '产品与库存'} subtitle={warehouse ? '查看可用库存和已预留数量。' : '所有库存变动均保留流水记录。'} logout={logout}><div className="table-wrap"><table><thead><tr><th>SKU</th><th>产品</th><th>可用库存</th><th>已预留</th><th>预警值</th>{!warehouse && <th>操作</th>}</tr></thead><tbody>{data.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.name}</td><td>{item.availableQuantity}</td><td>{item.reservedQuantity}</td><td>{item.reorderLevel}</td>{!warehouse && <td><InventoryAdjust id={item.id} onDone={load} /></td>}</tr>)}</tbody></table></div></Shell>;
+  return <Shell user={user} route={route} title={warehouse ? '库存明细' : '产品与库存'} subtitle={warehouse ? '查看产品汇总和 SN 级库存台账；仓库账号只读。' : '所有库存变动均保留流水记录。'} logout={logout}><section className="toolbar"><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索 SN / P/N / 产品" /></section><div className="table-wrap"><table><thead><tr><th>SKU</th><th>产品</th><th>可用库存</th><th>已预留</th><th>预警值</th>{!warehouse && <th>操作</th>}</tr></thead><tbody>{data.map((item) => <tr key={item.id}><td>{item.sku}</td><td>{item.name}</td><td>{item.availableQuantity}</td><td>{item.reservedQuantity}</td><td>{item.reorderLevel}</td>{!warehouse && <td><InventoryAdjust id={item.id} onDone={() => { void load(); }} /></td>}</tr>)}</tbody></table></div><section className="panel"><div className="panel-title"><h2>库存明细表</h2><span>SN 级只读台账。</span></div><div className="table-wrap"><table><thead><tr><th>SN</th><th>产品名称</th><th>P/N</th><th>产品版本</th><th>生产日期</th><th>库存状态</th><th>存放仓库</th><th>收纳盒</th><th>箱号</th><th>内部备注</th><th>照片</th><th>更新时间</th></tr></thead><tbody>{serials.map((item) => <tr key={item.id}><td>{item.serialNumber}</td><td>{item.productName}</td><td>{item.sku}</td><td>{item.productVersion || item.specification || '—'}</td><td>{item.productionDate || '—'}</td><td>{serialStateText(item.state)}</td><td>{item.warehouseLocation || '—'}</td><td>{item.storageBox || '—'}</td><td>{item.cartonNumber || '—'}</td><td>{item.internalNote || '—'}</td><td>{item.factoryPhotoCount ? `${item.factoryPhotoCount} 张` : '—'}</td><td>{date(item.updatedAt)}</td></tr>)}</tbody></table>{!serials.length && <div className="empty-state"><h2>暂无库存 SN。</h2></div>}</div></section></Shell>;
 }
 function InventoryAdjust({ id, onDone }: { id: string; onDone: () => void }) { const [open, setOpen] = useState(false); const [quantityDelta, setQuantityDelta] = useState(''); const [note, setNote] = useState(''); const submit = async () => { await api(`/admin/inventory/${id}/adjustments`, { method: 'POST', body: JSON.stringify({ quantityDelta: Number(quantityDelta), note }) }); setOpen(false); onDone(); }; return open ? <span className="inline-actions"><input aria-label="调整数量" value={quantityDelta} onChange={(event) => setQuantityDelta(event.target.value)} /><input aria-label="调整原因" value={note} onChange={(event) => setNote(event.target.value)} /><Button onClick={() => void submit()}>保存</Button></span> : <Button secondary onClick={() => setOpen(true)}>调整库存</Button>; }
 function ResourceList({ user, route, logout, title, path, field = 'items' }: Props & { title: string; path: string; field?: string }) { const [rows, setRows] = useState<Record<string, unknown>[]>([]); useEffect(() => { api<Record<string, Record<string, unknown>[]>>(path).then((data) => setRows(data[field] ?? Object.values(data)[0] ?? [])); }, [path, field]); return <Shell user={user} route={route} title={title} subtitle="查看并管理授权范围内的信息。" logout={logout}>{rows.length ? <div className="table-wrap"><table><thead><tr>{Object.keys(rows[0]).slice(0, 6).map((key) => <th key={key}>{key}</th>)}</tr></thead><tbody>{rows.map((row, index) => <tr key={String(row.id ?? index)}>{Object.keys(rows[0]).slice(0, 6).map((key) => <td key={key}>{String(row[key] ?? '—')}</td>)}</tr>)}</tbody></table></div> : <div className="empty-state"><h2>暂无内容。</h2></div>}</Shell>; }
@@ -283,6 +291,7 @@ export function OperationsPortal({ user, route, logout }: Props) {
   const warehouseOnlyUser = user.roles.includes('warehouse_manager') && !hasAdminAccess(user) && !hasDealerAccess(user) && !hasServiceCenterAccess(user);
   if (warehouse || warehouseOnlyUser) {
     const warehouseRoute = warehouse ? route : '/system/warehouse';
+    if (path === '/system/warehouse/inventory') return <Inventory user={user} route={warehouseRoute} logout={logout} />;
     if (path.startsWith('/system/warehouse/order/')) return <OrderPage user={user} route={warehouseRoute} logout={logout} warehouse orderId={path.split('/').at(-1)!} />;
     return <Orders user={user} route={warehouseRoute} logout={logout} warehouse />;
   }

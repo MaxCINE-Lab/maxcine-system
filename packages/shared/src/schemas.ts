@@ -137,6 +137,30 @@ export const adjustInventorySchema = z.object({
   note: z.string().trim().min(3).max(500)
 });
 
+export const inventorySerialStateSchema = z.enum(['available', 'blocked']);
+
+export const createInventorySerialSchema = z.object({
+  productId: z.string().uuid('请选择产品 / P/N'),
+  serialNumber: serialInputSchema,
+  productionDate: isoDateSchema.optional().or(z.literal('')).default(''),
+  warehouseLocation: z.string().trim().max(120).default(''),
+  storageBox: z.string().trim().max(120).default(''),
+  cartonNumber: z.string().trim().max(120).default(''),
+  internalNote: z.string().trim().max(1000).default(''),
+  confirmExistingAsset: z.boolean().default(false)
+});
+
+export const updateInventorySerialSchema = z.object({
+  productId: z.string().uuid().optional(),
+  productionDate: isoDateSchema.optional().or(z.literal('')).default(''),
+  warehouseLocation: z.string().trim().max(120).default(''),
+  storageBox: z.string().trim().max(120).default(''),
+  cartonNumber: z.string().trim().max(120).default(''),
+  internalNote: z.string().trim().max(1000).default(''),
+  state: inventorySerialStateSchema.optional(),
+  confirmProductChange: z.boolean().default(false)
+});
+
 export const createDealerSchema = z.object({
   code: z.string().trim().min(2).max(32).regex(/^[A-Z0-9-]+$/, '经销商编码只能使用大写字母、数字和连字符'),
   name: z.string().trim().min(2).max(160),
