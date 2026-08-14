@@ -147,8 +147,8 @@ function publicWarrantyStatus(row: { publicWarrantyStatus: string; publicWarrant
   return today > row.publicWarrantyEndDate ? '已过保' : '保修中';
 }
 
-async function completePublicWarrantyChallenge(db: D1Database, challengeId: string, ipHash: string): Promise<string> {
-  const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, 'SELECT id, used_at AS usedAt, expires_at AS expiresAt FROM public_warranty_challenges WHERE id = ? AND ip_hash = ?', challengeId, ipHash);
+async function completePublicWarrantyChallenge(db: D1Database, challengeId: string): Promise<string> {
+  const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, 'SELECT id, used_at AS usedAt, expires_at AS expiresAt FROM public_warranty_challenges WHERE id = ?', challengeId);
   if (!challenge) throw forbidden('请先完成滑块验证');
   if (challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
   const token = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
@@ -158,9 +158,9 @@ async function completePublicWarrantyChallenge(db: D1Database, challengeId: stri
   return token;
 }
 
-async function consumePublicWarrantyToken(db: D1Database, challengeId: string, token: string, ipHash: string): Promise<void> {
+async function consumePublicWarrantyToken(db: D1Database, challengeId: string, token: string): Promise<void> {
   const tokenHash = await hashIdentifier(token);
-  const challenge = await one<{ id: string; expiresAt: string; usedAt: string | null }>(db, 'SELECT id, expires_at AS expiresAt, used_at AS usedAt FROM public_warranty_challenges WHERE id = ? AND token_hash = ? AND ip_hash = ?', challengeId, tokenHash, ipHash);
+  const challenge = await one<{ id: string; expiresAt: string; usedAt: string | null }>(db, 'SELECT id, expires_at AS expiresAt, used_at AS usedAt FROM public_warranty_challenges WHERE id = ? AND token_hash = ?', challengeId, tokenHash);
   if (!challenge || challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
   await db.prepare(`UPDATE public_warranty_challenges SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND token_hash = ? AND used_at IS NULL`)
     .bind(challengeId, tokenHash)
@@ -1175,8 +1175,7 @@ app.post('/public/warranty/challenges', async (c) => {
 app.post('/public/warranty/challenges/:id/complete', async (c) => {
   const body = await parseBody(c.req.raw, z.object({ sliderValue: z.number().min(0).max(100) }));
   if (body.sliderValue < 98) throw badRequest('请将滑块拖到最右端');
-  const ipHash = await hashIdentifier(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown');
-  const token = await completePublicWarrantyChallenge(c.env.DB, c.req.param('id'), ipHash);
+  const token = await completePublicWarrantyChallenge(c.env.DB, c.req.param('id'));
   return c.json({ token, expiresInSeconds: 120 });
 });
 
@@ -1187,8 +1186,7 @@ app.get('/public/warranty/:sn', async (c) => {
   const challengeId = url.searchParams.get('challengeId') ?? '';
   const token = url.searchParams.get('token') ?? '';
   if (!challengeId || !token) throw forbidden('请先完成滑块验证');
-  const ipHash = await hashIdentifier(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown');
-  await consumePublicWarrantyToken(c.env.DB, challengeId, token, ipHash);
+  await consumePublicWarrantyToken(c.env.DB, challengeId, token);
   const row = await one<{ serialNumber: string; productName: string; productVersion: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
     `SELECT serial_number_snapshot AS serialNumber, product_name_snapshot AS productName, product_version_snapshot AS productVersion,
       public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
