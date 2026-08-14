@@ -26,6 +26,9 @@ type BarcodeDetectorLike = {
 };
 
 type BarcodeDetectorConstructor = new (options?: { formats?: string[] }) => BarcodeDetectorLike;
+type SupportedBarcodeDetectorConstructor = BarcodeDetectorConstructor & {
+  getSupportedFormats?: () => Promise<string[]>;
+};
 
 declare global {
   interface Window {
@@ -79,11 +82,13 @@ function feedbackSuccess(): void {
 export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
   private stream: MediaStream | null = null;
   private overlay: HTMLDivElement | null = null;
+  private video: HTMLVideoElement | null = null;
   private active = false;
   private zxingControls: IScannerControls | null = null;
   private readonly scanTimeoutMs = 90000;
   private readonly acceptedAt: Record<string, number> = {};
   private torchEnabled = false;
+  private committed = false;
 
   isSupported(): boolean {
     return Boolean(navigator.mediaDevices?.getUserMedia);
@@ -92,6 +97,7 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
   async start(onResult: (result: ScanResult) => void, options: ScannerStartOptions = {}): Promise<void> {
     if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前设备无法使用摄像头，请改用扫描枪或手动输入。');
     this.stop();
+    this.committed = false;
     const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
     this.stream = stream;
     this.active = true;
@@ -126,18 +132,32 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
       throw new Error('摄像头扫码窗口初始化失败。');
     }
     video.srcObject = stream;
+    this.video = video;
     cancel.addEventListener('click', () => this.stop(), { once: true });
     this.setupTorch(torch);
     await video.play();
 
-    if (!window.BarcodeDetector) {
+    const detector = await this.createNativeDetector();
+    if (!detector) {
       this.setStatus('当前浏览器未提供原生识别，将使用兼容识别模式。');
       await this.startZxing(stream, video, photoInput, onResult, options);
       return;
     }
 
-    const detector = new window.BarcodeDetector({ formats: detectorFormats });
     await this.startDetector(detector, video, photoInput, onResult, options);
+  }
+
+  private async createNativeDetector(): Promise<BarcodeDetectorLike | null> {
+    if (!window.BarcodeDetector) return null;
+    const detectorConstructor = window.BarcodeDetector as SupportedBarcodeDetectorConstructor;
+    try {
+      const supported = await detectorConstructor.getSupportedFormats?.();
+      const formats = supported?.length ? detectorFormats.filter((format) => supported.includes(format)) : detectorFormats;
+      if (!formats.length) return null;
+      return new window.BarcodeDetector({ formats });
+    } catch {
+      return null;
+    }
   }
 
   private setupTorch(button: HTMLButtonElement): void {
@@ -173,7 +193,25 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     return new BrowserMultiFormatReader(hints, { delayBetweenScanAttempts: 100 });
   }
 
+  private completeScan(result: ScanResult, onResult: (result: ScanResult) => void, options: ScannerStartOptions): boolean {
+    if (this.committed && !options.continuous) return true;
+    if (!options.continuous) this.committed = true;
+    this.overlay?.querySelector('.scanner-frame')?.classList.add('scanner-frame--success');
+    this.setStatus(`已识别：${result.value}`);
+    feedbackSuccess();
+    try {
+      onResult(result);
+    } finally {
+      if (!options.continuous) this.cleanup();
+    }
+    return true;
+  }
+
   private async emitCandidate(raw: string, format: ScannerSymbology, source: 'camera' | 'manual', onResult: (result: ScanResult) => void, options: ScannerStartOptions): Promise<boolean> {
+    if (this.committed && !options.continuous) {
+      this.cleanup();
+      return true;
+    }
     const parsed = parseScannedValue(raw, format);
     if (!parsed.ok) {
       this.setStatus(parsed.reason);
@@ -190,25 +228,51 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
       this.setStatus(error instanceof Error ? error.message : '业务校验未通过，未录入。');
       return false;
     }
-    this.overlay?.querySelector('.scanner-frame')?.classList.add('scanner-frame--success');
-    this.setStatus(`已识别：${parsed.value}`);
-    feedbackSuccess();
-    onResult(result);
-    window.setTimeout(() => this.overlay?.querySelector('.scanner-frame')?.classList.remove('scanner-frame--success'), 650);
-    if (!options.continuous) {
-      window.setTimeout(() => this.stop(), 260);
+    return this.completeScan(result, onResult, options);
+  }
+
+  private scheduleCandidateFallback(
+    state: { value: string; raw: string; format: ScannerSymbology; timer: number | null },
+    raw: string,
+    format: ScannerSymbology,
+    value: string,
+    onResult: (result: ScanResult) => void,
+    options: ScannerStartOptions,
+    onAccepted: () => void
+  ): void {
+    if (options.continuous || this.committed) return;
+    if (state.value !== value) {
+      if (state.timer !== null) window.clearTimeout(state.timer);
+      state.value = value;
+      state.raw = raw;
+      state.format = format;
+      state.timer = window.setTimeout(() => {
+        state.timer = null;
+        if (!this.active || this.committed) return;
+        this.setStatus(`已稳定识别：${value}，正在自动录入…`);
+        void this.emitCandidate(state.raw, state.format, 'camera', onResult, options).then((accepted) => {
+          if (accepted) onAccepted();
+        });
+      }, 900);
+      return;
     }
-    return true;
+    state.raw = raw;
+    state.format = format;
   }
 
   private async startDetector(detector: BarcodeDetectorLike, video: HTMLVideoElement, photoInput: HTMLInputElement, onResult: (result: ScanResult) => void, options: ScannerStartOptions): Promise<void> {
     await new Promise<void>((resolve, reject) => {
+      let settled = false;
       let pending = false;
       const consensus = new MultiFrameConsensus();
+      const fallback = { value: '', raw: '', format: 'unknown' as ScannerSymbology, timer: null as number | null };
       const startedAt = Date.now();
       const canvas = document.createElement('canvas');
       const context = canvas.getContext('2d', { willReadFrequently: true });
       const finish = (error?: Error) => {
+        if (settled) return;
+        settled = true;
+        if (fallback.timer !== null) window.clearTimeout(fallback.timer);
         if (error) reject(error);
         else resolve();
       };
@@ -234,11 +298,12 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
               const format = detectorFormat(candidate.format);
               const parsed = parseScannedValue(raw, format);
               if (parsed.ok) {
-                const confirmed = consensus.push(`${parsed.format}:${parsed.value}`);
+                const confirmed = consensus.push(parsed.value);
+                this.scheduleCandidateFallback(fallback, raw, format, parsed.value, onResult, options, finish);
                 this.setStatus(confirmed ? '多帧确认成功，正在校验…' : `识别候选：${parsed.value}，请保持稳定。`);
                 if (confirmed) {
                   consensus.reset();
-                  await this.emitCandidate(raw, format, 'camera', onResult, options);
+                  if (await this.emitCandidate(raw, format, 'camera', onResult, options)) return finish();
                 }
               } else {
                 this.setStatus(parsed.reason);
@@ -261,8 +326,8 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     if (!context || !video.videoWidth || !video.videoHeight) return video;
     const sourceW = video.videoWidth;
     const sourceH = video.videoHeight;
-    const roiW = Math.round(sourceW * 0.78);
-    const roiH = Math.round(sourceH * 0.42);
+    const roiW = Math.round(sourceW * 0.82);
+    const roiH = Math.round(sourceH * 0.68);
     const sx = Math.round((sourceW - roiW) / 2);
     const sy = Math.round((sourceH - roiH) / 2);
     canvas.width = roiW;
@@ -305,9 +370,11 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
     await new Promise<void>((resolve, reject) => {
       let settled = false;
       const consensus = new MultiFrameConsensus();
+      const fallback = { value: '', raw: '', format: 'unknown' as ScannerSymbology, timer: null as number | null };
       const finish = (error?: Error) => {
         if (settled) return;
         settled = true;
+        if (fallback.timer !== null) window.clearTimeout(fallback.timer);
         window.clearTimeout(timeout);
         if (error) reject(error);
         else resolve();
@@ -332,11 +399,14 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
           const format = zxingFormat(result?.getBarcodeFormat());
           const parsed = parseScannedValue(raw, format);
           if (!parsed.ok) return this.setStatus(parsed.reason);
-          const confirmed = consensus.push(`${parsed.format}:${parsed.value}`);
+          const confirmed = consensus.push(parsed.value);
+          this.scheduleCandidateFallback(fallback, raw, format, parsed.value, onResult, options, finish);
           this.setStatus(confirmed ? '多帧确认成功，正在校验…' : `识别候选：${parsed.value}，请保持稳定。`);
           if (confirmed) {
             consensus.reset();
-            void this.emitCandidate(raw, format, 'camera', onResult, options);
+            void this.emitCandidate(raw, format, 'camera', onResult, options).then((accepted) => {
+              if (accepted) finish();
+            });
           }
         } else if (error) {
           // ZXing reports ordinary per-frame misses while searching.
@@ -349,11 +419,42 @@ export class BrowserBarcodeScanner implements BarcodeScannerAdapter {
   }
 
   stop(): void {
+    this.cleanup();
+  }
+
+  private cleanup(): void {
     this.active = false;
-    this.zxingControls?.stop();
+    try {
+      this.zxingControls?.stop();
+    } catch {
+      // Scanner controls may already be stopped.
+    }
     this.zxingControls = null;
-    this.stream?.getTracks().forEach((track) => track.stop());
+    const video = this.video ?? this.overlay?.querySelector<HTMLVideoElement>('video') ?? null;
+    if (video) {
+      try {
+        video.pause();
+      } catch {
+        // Ignore optional video cleanup failures.
+      }
+      video.srcObject = null;
+      video.removeAttribute('src');
+      try {
+        video.load();
+      } catch {
+        // Safari can ignore load() after srcObject cleanup.
+      }
+    }
+    this.stream?.getTracks().forEach((track) => {
+      try {
+        track.stop();
+      } catch {
+        // Media tracks may already be stopped.
+      }
+    });
     this.stream = null;
+    this.video = null;
+    this.torchEnabled = false;
     this.overlay?.remove();
     this.overlay = null;
   }

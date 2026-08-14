@@ -6,6 +6,7 @@ import { AdminManagementPortal } from './AdminManagementPortal';
 import { GsxPortal } from './GsxPortal';
 import { AccountMenu, SystemNavigation, captureWatermarkLines, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess } from './systemNavigation';
 import { CameraPhotoButton } from './CameraPhotoButton';
+import { useToast } from './Toast';
 
 type Notice = { tone: 'error' | 'success'; text: string } | null;
 type Order = { id: string; orderNo: string; dealerName?: string; storeName: string; status: OrderStatus; totalCents: number; itemCount: number; itemSummary?: string; serialSummary?: string; fulfillmentCarrier?: string; fulfillmentTrackingNumber?: string; createdAt: string };
@@ -119,6 +120,7 @@ function OrderPageLegacy({ user, route, logout, warehouse = false, orderId }: Pr
 }
 
 function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & { warehouse?: boolean; orderId: string }) {
+  const toast = useToast();
   const [data, setData] = useState<OrderDetail | null>(null);
   const [availableSerialGroups, setAvailableSerialGroups] = useState<AvailableSerialGroup[]>([]);
   const [notice, setNotice] = useState<Notice>(null);
@@ -153,11 +155,16 @@ function OrderPage({ user, route, logout, warehouse = false, orderId }: Props & 
   }, [canReview, data, orderId, warehouse]);
   const action = async (path: string, body?: unknown, success?: string) => {
     try {
-      await api(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
-      setNotice({ tone: 'success', text: success ?? '操作已完成。' });
+      const result = await api<{ shipmentMailStatus?: string; shipmentMailFailureReason?: string }>(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined });
+      const suffix = result?.shipmentMailStatus === 'failed' ? `，但通知邮件发送失败：${result.shipmentMailFailureReason || '请在邮件中心查看'}` : result?.shipmentMailStatus === 'NO_RECIPIENT' ? '，经销商未配置通知邮箱，未发送邮件' : '';
+      const text = `${success ?? '操作已完成。'}${suffix}`;
+      setNotice({ tone: result?.shipmentMailStatus === 'failed' ? 'error' : 'success', text });
+      toast({ tone: result?.shipmentMailStatus === 'failed' ? 'warning' : 'success', text });
       void load();
     } catch (error) {
-      setNotice({ tone: 'error', text: errorText(error) });
+      const text = errorText(error);
+      setNotice({ tone: 'error', text });
+      toast({ tone: 'error', text });
     }
   };
   const review = async (approved: boolean) => {

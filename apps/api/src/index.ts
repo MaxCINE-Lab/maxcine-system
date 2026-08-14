@@ -3,7 +3,7 @@ import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   createCustomerRiskRecordSchema, createDealerSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
-  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
+  adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
@@ -60,9 +60,29 @@ function isEquivalentLocalOrigin(origin: string, expected: string): boolean {
   }
 }
 
-function isAllowedOrigin(origin: string | undefined, appOrigin: string | undefined): boolean {
+function isAllowedOrigin(origin: string | undefined, ...origins: Array<string | undefined>): boolean {
   if (!origin) return false;
-  return allowedOrigins(appOrigin).some((expected) => origin === expected || isEquivalentLocalOrigin(origin, expected));
+  return origins.flatMap(allowedOrigins).some((expected) => origin === expected || isEquivalentLocalOrigin(origin, expected));
+}
+
+function isPublicPath(path: string): boolean {
+  return path.startsWith('/public/');
+}
+
+function isFujianRequest(request: Request): boolean {
+  const cf = request.cf as IncomingRequestCfProperties | undefined;
+  if (cf?.country !== 'CN') return false;
+  const region = String(cf.region ?? '').trim().toLowerCase();
+  const regionCode = String(cf.regionCode ?? '').trim().toLowerCase();
+  if (!region && !regionCode) return false;
+  return ['fujian', '福建', '福建省'].includes(region) || ['fj', 'cn-fj'].includes(regionCode);
+}
+
+function fujianBlockedResponse(): Response {
+  return new Response('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>404</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111827;background:#f3f4f6}main{padding:40px;text-align:center}h1{font-size:22px}</style></head><body><main><h1>您访问的页面不存在</h1></main></body></html>', {
+    status: 403,
+    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+  });
 }
 
 function statusLabel(status: string): string {
@@ -87,11 +107,15 @@ function hasGlobalAssetAccess(user: SessionUser): boolean {
 }
 
 function hasAssetCenterReadAccess(user: SessionUser): boolean {
-  return hasGlobalAssetAccess(user) || can(user, 'asset:manage') || user.roles.includes('authorized_service_center');
+  return hasGlobalAssetAccess(user) || can(user, 'asset:manage') || user.roles.includes('authorized_service_center') || user.dealerIds.length > 0 || user.storeIds.length > 0;
 }
 
 function assertAssetReadAccess(user: SessionUser): void {
   if (!hasAssetCenterReadAccess(user)) throw forbidden();
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function normalizeLookup(value: string): string {
@@ -111,6 +135,36 @@ function dbAudit(db: D1Database, input: { actorId: string; action: string; entit
       input.before ? JSON.stringify(input.before) : null,
       input.after ? JSON.stringify(input.after) : null,
       input.requestId);
+}
+
+function publicWarrantyStatus(row: { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }, now = new Date()): string {
+  if (row.publicWarrantyStatus !== 'auto') {
+    return ({ pending: '待生效', active: '保修中', expired: '已过保', no_warranty: '无保修', blocked: '不可查询', hidden: '不可查询', unknown: '待确认' } as Record<string, string>)[row.publicWarrantyStatus] ?? '待确认';
+  }
+  if (!row.publicWarrantyStartDate || !row.publicWarrantyEndDate) return '待确认';
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  if (today < row.publicWarrantyStartDate) return '待生效';
+  return today > row.publicWarrantyEndDate ? '已过保' : '保修中';
+}
+
+async function completePublicWarrantyChallenge(db: D1Database, challengeId: string, ipHash: string): Promise<string> {
+  const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, 'SELECT id, used_at AS usedAt, expires_at AS expiresAt FROM public_warranty_challenges WHERE id = ? AND ip_hash = ?', challengeId, ipHash);
+  if (!challenge) throw forbidden('请先完成滑块验证');
+  if (challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
+  const token = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
+  await db.prepare(`UPDATE public_warranty_challenges SET token_hash = ?, completed_at = CURRENT_TIMESTAMP, expires_at = datetime('now', '+2 minutes') WHERE id = ? AND used_at IS NULL`)
+    .bind(await hashIdentifier(token), challengeId)
+    .run();
+  return token;
+}
+
+async function consumePublicWarrantyToken(db: D1Database, challengeId: string, token: string, ipHash: string): Promise<void> {
+  const tokenHash = await hashIdentifier(token);
+  const challenge = await one<{ id: string; expiresAt: string; usedAt: string | null }>(db, 'SELECT id, expires_at AS expiresAt, used_at AS usedAt FROM public_warranty_challenges WHERE id = ? AND token_hash = ? AND ip_hash = ?', challengeId, tokenHash, ipHash);
+  if (!challenge || challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
+  await db.prepare(`UPDATE public_warranty_challenges SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND token_hash = ? AND used_at IS NULL`)
+    .bind(challengeId, tokenHash)
+    .run();
 }
 
 async function parseBody<T>(request: Request, schema: z.ZodType<T>): Promise<T> {
@@ -329,6 +383,17 @@ function afterSalesAssetScope(user: SessionUser, alias = 'assets'): { sql: strin
 function assetScope(user: SessionUser, _alias = 'assets'): { sql: string; params: string[] } {
   if (hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center')) return { sql: '1 = 1', params: [] };
   if (can(user, 'asset:manage')) return { sql: '1 = 1', params: [] };
+  const clauses: string[] = [];
+  const params: string[] = [];
+  if (user.storeIds.length) {
+    clauses.push(`assets.store_id IN (${placeholders(user.storeIds)})`);
+    params.push(...user.storeIds);
+  }
+  if (user.dealerIds.length) {
+    clauses.push(`assets.dealer_id IN (${placeholders(user.dealerIds)})`);
+    params.push(...user.dealerIds);
+  }
+  if (clauses.length) return { sql: `(${clauses.join(' OR ')})`, params };
   throw forbidden('当前账户没有授权的资产数据范围');
 }
 
@@ -1075,8 +1140,10 @@ app.use('*', async (c, next) => {
   c.header('X-Request-ID', requestId);
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  const pathname = new URL(c.req.url).pathname;
+  if (isPublicPath(pathname) && isFujianRequest(c.req.raw)) return fujianBlockedResponse();
   const origin = c.req.header('Origin');
-  const allowedOrigin = isAllowedOrigin(origin, c.env.APP_ORIGIN);
+  const allowedOrigin = isAllowedOrigin(origin, c.env.APP_ORIGIN, c.env.PUBLIC_ORIGIN);
   if (origin && allowedOrigin) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Credentials', 'true');
@@ -1095,6 +1162,51 @@ app.onError((error, c) => {
 });
 
 app.get('/health', (c) => c.json({ ok: true, service: 'maxcine-api', requestId: c.get('requestId') }));
+
+app.post('/public/warranty/challenges', async (c) => {
+  const challengeId = id();
+  const ipHash = await hashIdentifier(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown');
+  await c.env.DB.prepare(`INSERT INTO public_warranty_challenges (id, expires_at, ip_hash) VALUES (?, datetime('now', '+5 minutes'), ?)`)
+    .bind(challengeId, ipHash)
+    .run();
+  return c.json({ challengeId, expiresInSeconds: 300 }, 201);
+});
+
+app.post('/public/warranty/challenges/:id/complete', async (c) => {
+  const body = await parseBody(c.req.raw, z.object({ sliderValue: z.number().min(0).max(100) }));
+  if (body.sliderValue < 98) throw badRequest('请将滑块拖到最右端');
+  const ipHash = await hashIdentifier(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown');
+  const token = await completePublicWarrantyChallenge(c.env.DB, c.req.param('id'), ipHash);
+  return c.json({ token, expiresInSeconds: 120 });
+});
+
+app.get('/public/warranty/:sn', async (c) => {
+  const sn = normalizeLookup(c.req.param('sn'));
+  if (!/^[A-Z0-9._\-/]{4,100}$/.test(sn)) throw badRequest('未查询到可公开的保修信息，请检查序列号后重试。');
+  const url = new URL(c.req.url);
+  const challengeId = url.searchParams.get('challengeId') ?? '';
+  const token = url.searchParams.get('token') ?? '';
+  if (!challengeId || !token) throw forbidden('请先完成滑块验证');
+  const ipHash = await hashIdentifier(c.req.header('CF-Connecting-IP') || c.req.header('X-Forwarded-For') || 'unknown');
+  await consumePublicWarrantyToken(c.env.DB, challengeId, token, ipHash);
+  const row = await one<{ serialNumber: string; productName: string; productVersion: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
+    `SELECT serial_number_snapshot AS serialNumber, product_name_snapshot AS productName, product_version_snapshot AS productVersion,
+      public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
+      public_warranty_status AS publicWarrantyStatus, public_note AS publicNote
+     FROM asset_public_warranties
+     WHERE is_public_query_enabled = 1 AND serial_number_snapshot = ? COLLATE NOCASE
+     LIMIT 1`, sn);
+  if (!row || ['hidden', 'blocked'].includes(row.publicWarrantyStatus)) throw notFound('未查询到可公开的保修信息，请检查序列号后重试。');
+  return c.json({
+    serialNumber: row.serialNumber,
+    productName: row.productName,
+    productVersion: row.productVersion,
+    warrantyStatus: publicWarrantyStatus(row),
+    warrantyStartDate: row.publicWarrantyStartDate,
+    warrantyEndDate: row.publicWarrantyEndDate,
+    publicNote: row.publicNote
+  });
+});
 
 app.get('/repair-materials', requireAuth, async (c) => {
   const user = c.get('user');
@@ -1982,17 +2094,24 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   const assetStatements: D1PreparedStatement[] = [];
   let createdAssets = 0;
   for (const serial of serials) {
-    const existingAsset = await one<{ id: string }>(c.env.DB,
-      `SELECT id FROM assets WHERE current_sn = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1`, serial.serialNumber);
+    const existingAsset = await one<{ id: string; warrantyStartAt: string | null; warrantyEndAt: string | null }>(c.env.DB,
+      `SELECT id, warranty_start_at AS warrantyStartAt, warranty_end_at AS warrantyEndAt FROM assets WHERE current_sn = ? COLLATE NOCASE ORDER BY created_at ASC LIMIT 1`, serial.serialNumber);
     const rule = shipmentWarrantyRule(serial.sku);
     const dates = rule ? shipmentWarrantyDates(shippedAt, rule.durationDays) : null;
     const assetId = existingAsset?.id ?? id();
     const warrantyPolicy = rule && rule.durationDays > 90 ? 'extended' : rule ? 'standard' : 'unknown';
     if (existingAsset) {
-      assetStatements.push(c.env.DB.prepare(`UPDATE assets SET product_id = ?, product_name_snapshot = ?, version_snapshot = ?, asset_status = 'in_service',
-        warranty_policy = ?, warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '',
-        dealer_id = ?, store_id = ?, latest_order_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
-        .bind(serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, assetId));
+      const shouldInitializeInternalWarranty = !existingAsset.warrantyStartAt && !existingAsset.warrantyEndAt;
+      if (shouldInitializeInternalWarranty) {
+        assetStatements.push(c.env.DB.prepare(`UPDATE assets SET product_id = ?, product_name_snapshot = ?, version_snapshot = ?, asset_status = 'in_service',
+          warranty_policy = ?, warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '',
+          dealer_id = ?, store_id = ?, latest_order_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+          .bind(serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, assetId));
+      } else {
+        assetStatements.push(c.env.DB.prepare(`UPDATE assets SET product_id = ?, product_name_snapshot = ?, version_snapshot = ?, asset_status = 'in_service',
+          dealer_id = ?, store_id = ?, latest_order_id = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+          .bind(serial.productId, serial.productName, serial.productVersion ?? '', order.dealerId, order.storeId, order.id, user.id, assetId));
+      }
     } else {
       createdAssets += 1;
       assetStatements.push(c.env.DB.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
@@ -2007,6 +2126,11 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
       operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '订单已发货', ?, ?, ?, 'dealer', '订单履约')`)
       .bind(id(), assetId, trackingNumber ? `${input.carrier}：${trackingNumber}` : `${input.carrier}：未填写运单号`, order.id, user.id));
     if (rule && dates) {
+      assetStatements.push(c.env.DB.prepare(`INSERT OR IGNORE INTO asset_public_warranties (id, asset_id, serial_number_snapshot, product_name_snapshot, product_version_snapshot,
+        public_warranty_start_date, public_warranty_end_date, public_warranty_status, public_note, is_public_query_enabled,
+        initialized_from_order_id, initialized_from_shipment_id, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'auto', '', 1, ?, ?, ?, ?)`)
+        .bind(id(), assetId, serial.serialNumber, serial.productName, serial.productVersion ?? '', dates.startAt, dates.endAt, order.id, shipmentId, user.id, user.id));
       assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
         operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', CURRENT_TIMESTAMP, ?, ?, ?, ?, 'dealer', '订单履约')`)
         .bind(id(), assetId, rule.label, `保修有效期：${dates.startAt} 至 ${dates.endAt}`, order.id, user.id));
@@ -2047,7 +2171,46 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
     if (error instanceof Error && error.message.includes('UNIQUE constraint failed: shipments')) throw conflict('该订单已经存在物流记录，请刷新页面查看最新状态。');
     throw error;
   }
-  return c.json({ id: order.id, status: 'shipped', trackingNumber });
+  const dealer = await one<{ name: string; notificationEmail: string }>(c.env.DB, 'SELECT name, notification_email AS notificationEmail FROM dealers WHERE id = ?', order.dealerId);
+  let shipmentMailStatus = 'NO_RECIPIENT';
+  let shipmentMailFailureReason = '';
+  if (dealer?.notificationEmail) {
+    const mailData: MailTemplateData = {
+      title: '发货通知',
+      preheader: `订单 ${order.orderNo} 已发货`,
+      logoUrl: notificationSender(c.env).logoUrl,
+      reference: `订单 ${order.orderNo}`,
+      fields: [
+        ['经销商名称', dealer.name || '暂无数据'],
+        ['订单号', order.orderNo],
+        ['发货时间', new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false, timeZone: 'Asia/Shanghai' }).format(shippedAt)],
+        ['产品名称', items.map((item) => item.name).join('、') || '暂无数据'],
+        ['产品版本', items.map((item) => item.productVersion || item.specification || '—').join('、')],
+        ['数量', String(items.reduce((sum, item) => sum + item.quantity, 0))],
+        ['绑定 SN', serials.map((serial) => serial.serialNumber).join('、') || '暂无数据'],
+        ['物流公司', input.carrier || '暂未填写'],
+        ['运单号', trackingNumber || '暂未填写'],
+        ['订单当前状态', '已发货']
+      ],
+      sections: [{ heading: '发货说明', body: '订单已完成发货确认，请留意物流状态。' }],
+      actionText: '查看订单',
+      actionUrl: `${c.env.APP_ORIGIN || ''}/#/system/orders/${order.id}`
+    };
+    const delivery = await sendViaMailCenter(c, { template: 'shipment_notice', to: dealer.notificationEmail, subject: mailSubject('shipment_notice', mailEnvironment(c.env), `｜订单 ${order.orderNo}`), html: renderMailHtml(mailData), text: renderMailText(mailData), idempotencyKey: `dealer-shipment-notification:${order.id}:${shipmentId}`, actorId: user.id, relatedEntityType: 'order', relatedEntityId: order.id });
+    shipmentMailStatus = delivery.sent ? 'sent' : 'failed';
+    shipmentMailFailureReason = delivery.failureReason || '';
+  } else {
+    const sender = notificationSender(c.env);
+    const messageId = id();
+    await c.env.DB.batch([
+      c.env.DB.prepare(`INSERT OR IGNORE INTO mail_center_messages (id, provider, template_key, subject, to_email, from_email, from_name, reply_to_email, reply_to_name,
+        status, failure_reason, provider_message_id, related_entity_type, related_entity_id, idempotency_key, html_content, text_content, sent_by)
+        VALUES (?, ?, 'shipment_notice', ?, '', ?, ?, ?, ?, 'failed', 'NO_RECIPIENT', '', 'order', ?, ?, '', '', ?)`)
+        .bind(messageId, c.env.EMAIL_PROVIDER || 'mock', mailSubject('shipment_notice', mailEnvironment(c.env), `｜订单 ${order.orderNo}`), sender.address, sender.name, sender.replyTo, sender.replyToName, order.id, `dealer-shipment-notification:${order.id}:${shipmentId}`, user.id),
+      dbAudit(c.env.DB, { actorId: user.id, action: 'mail.no_recipient', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { template: 'shipment_notice', orderNo: order.orderNo } })
+    ]);
+  }
+  return c.json({ id: order.id, status: 'shipped', trackingNumber, shipmentMailStatus, shipmentMailFailureReason });
 });
 
 app.get('/notifications', requireAuth, async (c) => {
@@ -2407,6 +2570,7 @@ app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {
   const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
   const canRecord = can(user, 'data:read:all') || can(user, 'after-sales:assign') || canOperateAssignedCase(user, serviceCase.serviceCenterId) || Boolean(serviceCase.storeId && user.storeIds.includes(serviceCase.storeId));
   if (!canRecord) throw forbidden('你无权录入该工单的寄修单号');
+  if (!['WAITING_CUSTOMER_SHIPMENT', 'WAITING_SERVICE_CENTER_RECEIPT'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能录入寄修单号');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE after_sales_cases SET inbound_carrier = ?, inbound_tracking_number = ?, inbound_note = ?, inbound_recorded_at = CURRENT_TIMESTAMP, inbound_recorded_by = ?, service_stage = 'WAITING_SERVICE_CENTER_RECEIPT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(input.carrier, input.trackingNumber, input.note, user.id, user.id, serviceCase.id),
     c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id) VALUES (?, ?, 'inbound_tracking_recorded', '录入寄修单号', ?, ?)`).bind(id(), serviceCase.id, `${input.carrier} ${input.trackingNumber}`, user.id),
@@ -3179,7 +3343,7 @@ app.get('/assets/:id', requireAuth, async (c) => {
   const afterSalesPhotoWhere = assetSnValues.length
     ? `(after_sales_cases.asset_id = ? OR UPPER(after_sales_cases.serial_number) IN (${snPlaceholders}))`
     : `after_sales_cases.asset_id = ?`;
-  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos] = await Promise.all([
+  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos, publicWarranty, factoryPhotos] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
     all(c.env.DB, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.subject, after_sales_cases.description, service_centers.name AS serviceCenterName, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt,
@@ -3197,9 +3361,22 @@ app.get('/assets/:id', requireAuth, async (c) => {
       WHERE shipment_photos.order_id = ? ORDER BY shipment_photos.created_at DESC`, asset.latestOrderId || ''),
     all(c.env.DB, `SELECT after_sales_attachments.id, 'after_sales' AS source, after_sales_attachments.category, after_sales_attachments.photo_slot AS photoSlot, after_sales_attachments.data_url AS dataUrl, after_sales_attachments.original_filename AS originalFilename, after_sales_attachments.content_type AS contentType, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt, after_sales_cases.case_no AS relatedNo
       FROM after_sales_attachments JOIN after_sales_cases ON after_sales_cases.id = after_sales_attachments.case_id LEFT JOIN users ON users.id = after_sales_attachments.uploaded_by
-      WHERE ${afterSalesPhotoWhere} ORDER BY after_sales_attachments.created_at DESC`, asset.id, ...assetSnValues)
+      WHERE ${afterSalesPhotoWhere} ORDER BY after_sales_attachments.created_at DESC`, asset.id, ...assetSnValues),
+    one<{ id: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string; isPublicQueryEnabled: number; updatedAt: string }>(c.env.DB, `SELECT id, public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
+      public_warranty_status AS publicWarrantyStatus, public_note AS publicNote, is_public_query_enabled AS isPublicQueryEnabled,
+      updated_at AS updatedAt FROM asset_public_warranties WHERE asset_id = ?`, asset.id),
+    all<{ id: string; photoType: string | null; originalFilename: string; contentType: string; fileSize: number; remark: string; uploadedAt: string; uploadedByName: string | null }>(c.env.DB, `SELECT asset_factory_photos.id, photo_type AS photoType, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize,
+      remark, uploaded_at AS uploadedAt, users.name AS uploadedByName
+      FROM asset_factory_photos LEFT JOIN users ON users.id = asset_factory_photos.uploaded_by
+      WHERE asset_id = ? ORDER BY uploaded_at DESC`, asset.id)
   ]);
-  return c.json({ asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) }, identifiers, events, serviceCases, notes, sales, audit, photos: [...shipmentPhotos, ...afterSalesPhotos] });
+  return c.json({
+    asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) },
+    identifiers, events, serviceCases, notes, sales, audit,
+    publicWarranty: publicWarranty ? { ...publicWarranty, warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) } : null,
+    factoryPhotos: factoryPhotos.map((photo) => ({ ...photo, contentUrl: `/assets/${asset.id}/factory-photos/${(photo as { id: string }).id}/content` })),
+    photos: [...shipmentPhotos, ...afterSalesPhotos]
+  });
 });
 
 app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
@@ -3216,6 +3393,123 @@ app.patch('/admin/assets/:id/warranty', requireAuth, async (c) => {
     dbAudit(c.env.DB, { actorId: user.id, action: 'asset.warranty_override', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before: asset, after: input })
   ]);
   return c.json({ id: asset.id });
+});
+
+app.patch('/admin/assets/:id/public-warranty', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  const input = await parseBody(c.req.raw, updatePublicWarrantySchema);
+  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string }>(c.env.DB,
+    'SELECT id, current_sn AS currentSn, original_sn AS originalSn, product_name_snapshot AS productName, version_snapshot AS version FROM assets WHERE id = ?', c.req.param('id'));
+  if (!asset) throw notFound('未找到该资产');
+  const before = await one(c.env.DB, 'SELECT * FROM asset_public_warranties WHERE asset_id = ?', asset.id);
+  const publicWarrantyId = before ? (before as { id: string }).id : id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, product_name_snapshot, product_version_snapshot,
+      public_warranty_start_date, public_warranty_end_date, public_warranty_status, public_note, is_public_query_enabled, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(asset_id) DO UPDATE SET
+        serial_number_snapshot = excluded.serial_number_snapshot,
+        product_name_snapshot = excluded.product_name_snapshot,
+        product_version_snapshot = excluded.product_version_snapshot,
+        public_warranty_start_date = excluded.public_warranty_start_date,
+        public_warranty_end_date = excluded.public_warranty_end_date,
+        public_warranty_status = excluded.public_warranty_status,
+        public_note = excluded.public_note,
+        is_public_query_enabled = excluded.is_public_query_enabled,
+        updated_at = CURRENT_TIMESTAMP,
+        updated_by = excluded.updated_by`)
+      .bind(publicWarrantyId, asset.id, asset.currentSn || asset.originalSn || '', asset.productName, asset.version, input.publicWarrantyStartDate, input.publicWarrantyEndDate, input.publicWarrantyStatus, input.publicNote, input.isPublicQueryEnabled ? 1 : 0, user.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'asset.public_warranty_update', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before, after: input })
+  ]);
+  return c.json({ id: asset.id });
+});
+
+app.post('/admin/assets/:id/factory-photos', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  if (!c.env.ASSETS) throw conflict('图片存储尚未启用，请先在 Cloudflare 启用 R2 并配置 ASSETS binding');
+  const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', c.req.param('id'));
+  if (!asset) throw notFound('未找到该资产');
+  const form = await c.req.raw.formData();
+  const files = [...form.getAll('files'), ...form.getAll('file')].filter((value): value is File => value instanceof File && value.size > 0);
+  if (!files.length) throw badRequest('请选择要上传的出厂照片');
+  if (files.length > 30) throw badRequest('一次最多上传 30 张出厂照片');
+  const uploaded: Array<{ id: string; originalFilename: string }> = [];
+  const statements: D1PreparedStatement[] = [];
+  for (const file of files) {
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest(`图片仅支持 JPG、PNG 或 WebP：${file.name || '未命名图片'}`);
+    if (file.size > 8 * 1024 * 1024) throw badRequest(`单张图片不能超过 8MB：${file.name || '未命名图片'}`);
+    const photoId = id();
+    const extension = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+    const randomParts = Array.from(crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(36)).join('');
+    const objectKey = `factory-photos/photo_${Date.now()}_${randomParts}.${extension}`;
+    // Keep MIME metadata in D1 and set the response header in the authenticated
+    // read API. The R2 key intentionally avoids asset IDs, original filenames,
+    // and pure UUID/hex filenames; Staging showed those key shapes are harder
+    // to reason about when verifying physical deletion from Wrangler.
+    const multipartUpload = await c.env.ASSETS.createMultipartUpload(objectKey);
+    try {
+      const uploadedPart = await multipartUpload.uploadPart(1, await file.arrayBuffer());
+      await multipartUpload.complete([uploadedPart]);
+    } catch (error) {
+      await multipartUpload.abort();
+      throw error;
+    }
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_factory_photos (id, asset_id, photo_type, object_key, original_filename, content_type, file_size, remark, uploaded_by)
+      VALUES (?, ?, NULL, ?, ?, ?, ?, '', ?)`)
+      .bind(photoId, asset.id, objectKey, file.name || 'photo', file.type, file.size, user.id));
+    uploaded.push({ id: photoId, originalFilename: file.name || 'photo' });
+  }
+  statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'asset.factory_photo_upload', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: { count: uploaded.length, filenames: uploaded.map((item) => item.originalFilename) } }));
+  await c.env.DB.batch(statements);
+  return c.json({ photos: uploaded }, 201);
+});
+
+app.get('/assets/:id/factory-photos/:photoId/content', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertAssetReadAccess(user);
+  const scope = assetScope(user);
+  const photo = await one<{ id: string; objectKey: string; contentType: string; originalFilename: string }>(c.env.DB,
+    `SELECT asset_factory_photos.id, object_key AS objectKey, content_type AS contentType, original_filename AS originalFilename
+     FROM asset_factory_photos JOIN assets ON assets.id = asset_factory_photos.asset_id
+     WHERE asset_factory_photos.id = ? AND asset_factory_photos.asset_id = ? AND ${scope.sql}`, c.req.param('photoId'), c.req.param('id'), ...scope.params);
+  if (!photo) throw notFound('未找到该出厂照片');
+  if (!c.env.ASSETS) throw notFound('图片存储尚未启用');
+  const object = await c.env.ASSETS.get(photo.objectKey);
+  if (!object) throw notFound('该图片内容不可用，请重新上传');
+  return new Response(object.body, { headers: { 'Content-Type': object.httpMetadata?.contentType || photo.contentType || 'application/octet-stream', 'Cache-Control': 'private, max-age=300', 'Content-Disposition': `inline; filename="${encodeURIComponent(photo.originalFilename || 'factory-photo')}"` } });
+});
+
+app.delete('/admin/assets/:id/factory-photos/:photoId', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'asset:manage');
+  const photo = await one<{ id: string; objectKey: string; photoType: string | null; ageSeconds: number | null }>(c.env.DB,
+    `SELECT id, object_key AS objectKey, photo_type AS photoType,
+      CAST(strftime('%s','now') - strftime('%s', uploaded_at) AS INTEGER) AS ageSeconds
+      FROM asset_factory_photos WHERE id = ? AND asset_id = ?`, c.req.param('photoId'), c.req.param('id'));
+  if (!photo) throw notFound('未找到该出厂照片');
+  if (c.env.ASSETS) {
+    const deleteSafetyDelayMs = 6500;
+    const ageMs = typeof photo.ageSeconds === 'number' ? photo.ageSeconds * 1000 : deleteSafetyDelayMs;
+    if (ageMs >= 0 && ageMs < deleteSafetyDelayMs) await sleep(deleteSafetyDelayMs - ageMs);
+    const beforeHead = await c.env.ASSETS.head(photo.objectKey);
+    const beforeObject = await c.env.ASSETS.get(photo.objectKey);
+    const existedBeforeDelete = Boolean(beforeHead || beforeObject);
+    await c.env.ASSETS.delete(photo.objectKey);
+    await sleep(5000);
+    const [remainingHead, remainingObject] = await Promise.all([
+      c.env.ASSETS.head(photo.objectKey),
+      c.env.ASSETS.get(photo.objectKey),
+    ]);
+    const remainingList = await c.env.ASSETS.list({ prefix: photo.objectKey, limit: 1 });
+    if (existedBeforeDelete && (remainingHead || remainingObject || remainingList.objects.some((object) => object.key === photo.objectKey))) throw conflict('R2 图片对象删除失败，请稍后重试');
+  }
+  await c.env.DB.batch([
+    c.env.DB.prepare('DELETE FROM asset_factory_photos WHERE id = ?').bind(photo.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'asset.factory_photo_delete', entityType: 'asset', entityId: c.req.param('id'), requestId: c.get('requestId'), before: { photoId: photo.id, photoType: photo.photoType } })
+  ]);
+  return c.body(null, 204);
 });
 
 app.patch('/admin/assets/:id', requireAuth, async (c) => {
@@ -3369,7 +3663,7 @@ app.post('/admin/dealers', requireAuth, async (c) => {
   const input = await parseBody(c.req.raw, createDealerSchema);
   const dealerId = id();
   await c.env.DB.batch([
-    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, authorization_type, service_center_id, contact_name, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, user.id, user.id),
+    c.env.DB.prepare('INSERT INTO dealers (id, code, name, province, authorization_type, service_center_id, contact_name, notification_email, created_by, updated_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').bind(dealerId, input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.notificationEmail, user.id, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.create', entityType: 'dealer', entityId: dealerId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: dealerId }, 201);
@@ -3458,12 +3752,12 @@ app.get('/admin/options', requireAuth, async (c) => {
 
 app.get('/admin/dealers', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'dealer:manage');
-  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.contact_name AS contactName, dealers.status, service_centers.name AS serviceCenterName, COUNT(DISTINCT stores.id) AS storeCount, COUNT(DISTINCT dealer_user_assignments.user_id) AS userCount, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id LEFT JOIN dealer_user_assignments ON dealer_user_assignments.dealer_id = dealers.id AND dealer_user_assignments.status = 'active' LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id GROUP BY dealers.id ORDER BY dealers.name`) });
+  return c.json({ dealers: await all(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.contact_name AS contactName, dealers.notification_email AS notificationEmail, dealers.status, service_centers.name AS serviceCenterName, COUNT(DISTINCT stores.id) AS storeCount, COUNT(DISTINCT dealer_user_assignments.user_id) AS userCount, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt FROM dealers LEFT JOIN stores ON stores.dealer_id = dealers.id LEFT JOIN dealer_user_assignments ON dealer_user_assignments.dealer_id = dealers.id AND dealer_user_assignments.status = 'active' LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id GROUP BY dealers.id ORDER BY dealers.name`) });
 });
 
 app.get('/admin/dealers/:id', requireAuth, async (c) => {
   assertPermission(c.get('user'), 'dealer:manage');
-  const dealer = await one(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.service_center_id AS serviceCenterId, dealers.contact_name AS contactName, dealers.status, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt, service_centers.name AS serviceCenterName FROM dealers LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id WHERE dealers.id = ?`, c.req.param('id'));
+  const dealer = await one(c.env.DB, `SELECT dealers.id, dealers.code, dealers.name, dealers.province, dealers.authorization_type AS authorizationType, dealers.service_center_id AS serviceCenterId, dealers.contact_name AS contactName, dealers.notification_email AS notificationEmail, dealers.status, dealers.created_at AS createdAt, dealers.updated_at AS updatedAt, service_centers.name AS serviceCenterName FROM dealers LEFT JOIN service_centers ON service_centers.id = dealers.service_center_id WHERE dealers.id = ?`, c.req.param('id'));
   if (!dealer) throw notFound('未找到该经销商');
   const [stores, users, summary] = await Promise.all([
     all(c.env.DB, 'SELECT id, name, platform, status FROM stores WHERE dealer_id = ? ORDER BY name', c.req.param('id')),
@@ -3478,7 +3772,7 @@ app.patch('/admin/dealers/:id', requireAuth, async (c) => {
   const dealer = await one<{ id: string }>(c.env.DB, 'SELECT id FROM dealers WHERE id = ?', c.req.param('id')); if (!dealer) throw notFound('未找到该经销商');
   if (input.serviceCenterId) { const center = await one<{ id: string }>(c.env.DB, "SELECT id FROM service_centers WHERE id = ? AND status = 'active'", input.serviceCenterId); if (!center) throw badRequest('所选授权服务中心不可用'); }
   await c.env.DB.batch([
-    c.env.DB.prepare('UPDATE dealers SET code = ?, name = ?, province = ?, authorization_type = ?, service_center_id = ?, contact_name = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.status, user.id, dealer.id),
+    c.env.DB.prepare('UPDATE dealers SET code = ?, name = ?, province = ?, authorization_type = ?, service_center_id = ?, contact_name = ?, notification_email = ?, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(input.code, input.name, input.province, input.authorizationType, input.serviceCenterId, input.contactName, input.notificationEmail, input.status, user.id, dealer.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'dealer.update', entityType: 'dealer', entityId: dealer.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: dealer.id });
@@ -3702,11 +3996,31 @@ app.patch('/admin/users/:id/watermark', requireAuth, async (c) => {
 
 app.post('/admin/users/:id/reset-password', requireAuth, async (c) => {
   const user = c.get('user'); assertPermission(user, 'user:manage'); const input = await parseBody(c.req.raw, passwordResetSchema); const passwordHash = await hashPassword(input.nextPassword);
-  await c.env.DB.batch([c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, c.req.param('id')), dbAudit(c.env.DB, { actorId: user.id, action: 'user.reset_password', entityType: 'user', entityId: c.req.param('id'), requestId: c.get('requestId') })]);
+  const target = await one<{ id: string }>(c.env.DB, 'SELECT id FROM users WHERE id = ?', c.req.param('id'));
+  if (!target) throw notFound('未找到该用户');
+  await c.env.DB.batch([c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, must_change_password = 1, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, c.req.param('id')), dbAudit(c.env.DB, { actorId: user.id, action: 'user.reset_password', entityType: 'user', entityId: c.req.param('id'), requestId: c.get('requestId'), after: { sessionRevoked: true, mustChangePassword: true } })]);
   return c.json({ id: c.req.param('id') });
 });
 
 app.post('/admin/users/:id/revoke-sessions', requireAuth, async (c) => { const user = c.get('user'); assertPermission(user, 'user:manage'); await c.env.DB.prepare('UPDATE users SET session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(user.id, c.req.param('id')).run(); return c.json({ id: c.req.param('id'), revoked: true }); });
-app.post('/auth/change-password', requireAuth, async (c) => { const user = c.get('user'); const input = await parseBody(c.req.raw, passwordChangeSchema); const account = await one<{ passwordHash: string }>(c.env.DB, 'SELECT password_hash AS passwordHash FROM users WHERE id = ?', user.id); if (!account || !(await verifyPassword(input.currentPassword, account.passwordHash))) throw badRequest('当前密码不正确'); const passwordHash = await hashPassword(input.nextPassword); await c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, session_version = session_version + 1, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, user.id).run(); return c.json({ changed: true }); });
+app.post('/auth/change-password', requireAuth, async (c) => {
+  const user = c.get('user');
+  const input = await parseBody(c.req.raw, passwordChangeSchema);
+  const account = await one<{ passwordHash: string }>(c.env.DB, 'SELECT password_hash AS passwordHash FROM users WHERE id = ?', user.id);
+  if (!account || !(await verifyPassword(input.currentPassword, account.passwordHash))) throw badRequest('当前密码不正确');
+  const passwordHash = await hashPassword(input.nextPassword);
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET password_hash = ?, password_changed_at = CURRENT_TIMESTAMP, must_change_password = 0, session_version = session_version + 1, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?').bind(passwordHash, user.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'user.change_password', entityType: 'user', entityId: user.id, requestId: c.get('requestId'), after: { mustChangePassword: false } })
+  ]);
+  const sessionUser = await loadSessionUser(c.env.DB, user.id);
+  if (!sessionUser) throw new AppError(401, 'UNAUTHENTICATED', '登录状态已失效，请重新登录');
+  const token = await createSessionToken(sessionUser, c.env.SESSION_SECRET);
+  const isSecure = new URL(c.req.url).protocol === 'https:';
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = isSecure || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
+  return c.json({ changed: true, user: sessionUser });
+});
 
 export default app;

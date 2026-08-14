@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MaxCINE — Precision Imaging Systems</title>
+    <meta
+      name="description"
+      content="MaxCINE — A professional imaging brand focused on premium drone filters, cinema accessories and brand peripherals, engineered for precision imaging."
+    />
+    <!-- favicon -->
+    <link rel="icon" href="assets/favicon.ico" />
+
+    <!-- CSS -->
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <style>
+.hero-slider {
+  position: relative;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.slide {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  animation: fade 10s infinite;
+}
+
+.slide1 { animation-delay: 0s; }
+.slide2 { animation-delay: 5s; }
+
+.bg {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+}
+
+@keyframes fade {
+  0% { opacity: 0 }
+  10% { opacity: 1 }
+  40% { opacity: 1 }
+  50% { opacity: 0 }
+  100% { opacity: 0 }
+}
+</style>
+  <body>
+    <header class="mc-header">
+      <div class="mc-header-inner">
+        <a href="#" class="mc-logo" aria-label="MaxCINE">
+          <img src="assets/logo.png" alt="MaxCINE" />
+        </a>
+        <nav class="mc-nav" aria-label="Primary navigation">
+          <a href="#filters" data-i18n="nav.filters" class="mc-nav-link">航拍无人机滤镜</a>
+          <a href="#cinema" data-i18n="nav.cinema" class="mc-nav-link">影视制作配件</a>
+          <a href="#merch" data-i18n="nav.merch" class="mc-nav-link">品牌周边</a>
+          <a href="#support" data-i18n="nav.support" class="mc-nav-link">支持</a>
+          <a href="#buy" data-i18n="nav.buy" class="mc-nav-link">购买</a>
+          <button class="mc-lang-toggle" data-lang="cn" aria-label="Switch language">
+            <span class="mc-lang-option mc-lang-option--active">CN</span>
+            <span class="mc-lang-separator">|</span>
+            <span class="mc-lang-option">EN</span>
+          </button>
+        </nav>
+      </div>
+    </header>
+
+    <main>
+      <!-- Hero -->
+      <section class="mc-hero hero-slider">
+
+        <div class="slide slide2">
+  <div class="bg" style="background-image:url('./assets/firstpage.jpg')"></div>
+
+  <div class="mc-hero-content">
+    <p class="mc-hero-kicker">专业级航拍无人机增广镜</p>
+    <h1 class="mc-hero-title">视界尽展</h1>
+    <p class="mc-hero-subtitle">适用于 DJI MAVIC 4 Pro</p>
+
+    <a href="#featured"
+       class="mc-btn mc-btn-outline mc-btn-pill">
+      RMB 499 起 / 立即购买
+    </a>
+  </div>
+</div>
+
+        <div class="slide slide1">
+  <div class="bg" style="background-image:url('./assets/second.jpg')"></div>
+
+  <div class="mc-hero-content">
+    <p class="mc-hero-kicker">专业级航拍无人机ND滤镜系统</p>
+    <h1 class="mc-hero-title">光影尽现</h1>
+    <p class="mc-hero-subtitle">2026年6月6日10AM发布，RMB 299元起</p>
+
+    <a href="./booking.html"
+       class="mc-btn mc-btn-outline mc-btn-pill">
+      立即预约
+    </a>
+  </div>
+</div>
+
+      </section>
+      <!-- Featured Product -->
+      <section id="featured" class="mc-section mc-section--dark mc-section--padded">
+        <div class="mc-section-inner mc-section-inner--split">
+          <div class="mc-featured-media">
+            <div class="mc-featured-image" role="img" aria-label="MaxCINE ND filter mounted on drone gimbal"></div>
+          </div>
+          <div class="mc-featured-content">
+            <p class="mc-kicker" data-i18n="featured.kicker">FEATURED PRODUCT</p>
+            <h2 class="mc-section-title" data-i18n="featured.title">
+              MaxCINE航拍无人机增广镜系列
+            </h2>
+            <p class="mc-section-body" data-i18n="featured.body">
+              专为 Mavic 4 Pro 打造的专业级增广镜，在复杂光照条件下依然保持稳定细节与自然色彩。配合外置ND滤镜套装与俯仰稳定模块，为专业影像团队提供更可靠的空间控制与动态表现。
+            </p>
+            <ul class="mc-featured-list">
+              <li data-i18n="featured.point1">航空级铝合金框体，精密CNC切削。</li>
+              <li data-i18n="featured.point2">多层纳米镀膜，抗雾拒污，持久可靠。</li>
+              <li data-i18n="featured.point3">专为专业级航拍用户设计。</li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- Product Categories -->
+      <section id="filters" class="mc-section mc-section--black mc-section--padded">
+        <div class="mc-section-inner">
+          <div class="mc-section-header">
+            <h2 class="mc-section-title" data-i18n="categories.title">
+              产品体系概览
+            </h2>
+            <p class="mc-section-body" data-i18n="categories.body">
+              从航拍滤镜到片场工具，MaxCINE 以统一的工业设计语言与光学标准，为专业影像创作提供完整的支持。
+            </p>
+          </div>
+
+          <div class="mc-category-grid">
+            <article class="mc-category-card">
+              <div class="mc-category-media mc-category-media--filters"></div>
+              <div class="mc-category-content">
+                <h3 data-i18n="categories.filters.title">航拍无人机滤镜</h3>
+                <p data-i18n="categories.filters.body">
+                  为主流航拍平台打造的滤镜系统，优化天空层次与高光细节，让每一次起飞都具备电影级画面控制力。
+                </p>
+              </div>
+            </article>
+
+            <article id="cinema" class="mc-category-card">
+              <div class="mc-category-media mc-category-media--cinema"></div>
+              <div class="mc-category-content">
+                <h3 data-i18n="categories.cinema.title">影视制作配件</h3>
+                <p data-i18n="categories.cinema.body">
+                  敬请期待
+                </p>
+              </div>
+            </article>
+
+            <article id="merch" class="mc-category-card">
+              <div class="mc-category-media mc-category-media--merch"></div>
+              <div class="mc-category-content">
+                <h3 data-i18n="categories.merch.title">品牌周边</h3>
+                <p data-i18n="categories.merch.body">
+                  敬请期待
+                </p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </section>
+
+      <!-- Brand Philosophy -->
+      <section class="mc-section mc-section--dark mc-section--padded">
+        <div class="mc-section-inner mc-section-inner--narrow">
+          <p class="mc-kicker" data-i18n="philosophy.kicker">BRAND PHILOSOPHY</p>
+          <h2 class="mc-philosophy-title" data-i18n="philosophy.title">
+            每一颗像素背后，都是一次精密工程决策。
+          </h2>
+          <p class="mc-philosophy-slogan" data-i18n="philosophy.slogan">
+            Create Without Limits&nbsp; Make it Real.
+          </p>
+          <p class="mc-philosophy-body" data-i18n="philosophy.body">
+            MaxCINE 将航拍与电影工业的工程标准，凝聚在每一枚滤镜、每一个机械细节之中。
+            我们与全球专业影像团队合作，在极端环境中持续验证产品可靠性，只为让创作者在按下 REC
+            的瞬间，完全相信画面的每一处层次与质感。
+          </p>
+        </div>
+      </section>
+
+     <div class="mc-support-grid">
+
+  <!-- 保修查询 -->
+  <article class="mc-support-card mc-support-card--clickable" data-support="warranty">
+    <h3>保修查询</h3>
+    <p>
+      通过序列号快速验证产品保修状态与服务记录。
+    </p>
+  </article>
+
+  <!-- 下载中心 -->
+  <article class="mc-support-card mc-support-card--clickable" onclick="location.href='./downloads/'">
+    <h3>服务与支持</h3>
+    <p>
+      获取产品配置校正文件与校正节点，为片场团队建立统一的技术基线。
+    </p>
+  </article>
+
+  <!-- 联系技术顾问 -->
+  <a href="./support/" class="mc-support-card mc-support-card--clickable">
+    <h3>联系技术顾问</h3>
+    <p>获取一对一技术支持或申请自助寄修售后服务</p>
+  </a>
+  <!-- 🆕 售后政策 -->
+  <a href="./support/policy.html" class="mc-support-card mc-support-card--clickable">
+    <h3>售后政策</h3>
+    <p>查看保修范围、服务条款及维修流程说明，了解您的权益保障。</p>
+  </a>
+  <!-- 🆕 维修价格 -->
+<a href="./repair-pricing/" class="mc-support-card mc-support-card--clickable">
+  <h3>维修价格</h3>
+  <p>查看维修与服务费用及服务说明</p>
+</a>
+
+</div> <!-- ⭐ 必须加这个 -->
+<section id="buy" class="mc-section mc-section--dark mc-section--padded mc-section--border-top">
+  <div class="mc-section-inner mc-section-inner--split mc-buy-inner">
+
+    <div>
+      <p class="mc-kicker">WHERE TO FIND</p>
+      <h2 class="mc-section-title">
+        通过授权渠道体验 MaxCINE
+      </h2>
+      <p class="mc-section-body">
+        MaxCINE 仅通过精选的优质经销商进行合作销售与技术支持。
+      </p>
+    </div>
+
+    <div class="mc-buy-columns">
+      <div class="mc-buy-column">
+        <h3>官方自营渠道</h3>
+        <p>MaxCINE官方旗舰店<p>
+        <p>极致工作室<p>
+      </div>
+      <div class="mc-buy-column">
+        <h3>优质授权经销商</h3>
+        <p>MaxCINE智选店</p>
+        <p>CINEWorks</p>
+        <p>MAXCINE聚影</p>
+        <p>臻品工作室</p>
+        <p>不知名的飞手</p>
+        <p>HHH-forever</p>
+         <p>天枢科技淘宝店</p>
+        <p>新风影像</p>
+      </div>
+    </div>
+
+  </div>
+</section>
+
+    <footer class="mc-footer">
+      <div class="mc-footer-inner">
+        <div class="mc-footer-left">
+          <p class="mc-footer-brand">MaxCINE</p>
+          <p class="mc-footer-copy">
+            © <span id="mc-year"></span> MaxCINE Imaging Systems. All rights reserved.
+          </p>
+        </div>
+        <div class="mc-footer-middle">
+          <a href="#" class="mc-footer-link">Terms</a>
+          <a href="#" class="mc-footer-link">Privacy</a>
+          <a href="#" class="mc-footer-link">Cookies</a>
+        </div>
+      </div>
+    </footer>
+
+    <!-- JS -->
+    <script src="script.js?v=5"></script>
+  </body>
+</html>

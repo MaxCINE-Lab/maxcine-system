@@ -175,6 +175,80 @@ test('shipment confirmation accepts optional categorized outbound photos and sti
   assert.match(source, /shipment_photos/);
 });
 
+test('MaxCINE Intelligence is a disabled coming-soon entry without AI provider calls', () => {
+  const appSource = readFileSync(new URL('../apps/web/src/App.tsx', import.meta.url), 'utf8');
+  const navSource = readFileSync(new URL('../apps/web/src/systemNavigation.tsx', import.meta.url), 'utf8');
+  const pageSource = readFileSync(new URL('../apps/web/src/IntelligencePortal.tsx', import.meta.url), 'utf8');
+  const config = readFileSync(new URL('../apps/api/wrangler.toml', import.meta.url), 'utf8');
+  const combined = `${appSource}\n${navSource}\n${pageSource}`;
+  assert.match(navSource, /MaxCINE Intelligence/);
+  assert.match(navSource, /function hasIntelligenceAccess/);
+  assert.match(navSource, /return hasAdminAccess\(user\) \|\| hasDealerAccess\(user\)/);
+  assert.doesNotMatch(navSource, /hasWarehouseAccess\(user\).*MaxCINE Intelligence/s);
+  assert.doesNotMatch(navSource, /hasServiceCenterAccess\(user\).*MaxCINE Intelligence/s);
+  assert.match(appSource, /\/system\/intelligence/);
+  assert.match(pageSource, /Coming Soon/);
+  assert.match(pageSource, /IN DEVELOPMENT/);
+  assert.doesNotMatch(pageSource, /textarea|发送|button[^>]*发送/i);
+  assert.match(config, /AI_PROVIDER = "disabled"/);
+  assert.doesNotMatch(combined, /deepseek|hunyuan|混元|api\.openai\.com|api\.deepseek\.com/i);
+});
+
+test('after-sales stages hide obsolete actions and backend rejects stale stage writes', () => {
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
+  assert.match(adminUiSource, /after-sales-phase-nav/);
+  assert.match(adminUiSource, /data-phase=\{detailPhase\}/);
+  assert.match(adminUiSource, /尚未到达该阶段/);
+  assert.match(apiSource, /该工单当前不能录入寄修单号/);
+  assert.match(apiSource, /\['WAITING_CUSTOMER_SHIPMENT', 'WAITING_SERVICE_CENTER_RECEIPT'\]\.includes\(serviceCase\.serviceStage\)/);
+  assert.match(apiSource, /该工单当前不能提交检测结果/);
+  assert.match(apiSource, /该工单当前不需要确认收款/);
+  assert.match(apiSource, /该工单当前还不能发货/);
+});
+
+test('global toast and forced password change use a viewport-fixed notification path', () => {
+  const appSource = readFileSync(new URL('../apps/web/src/App.tsx', import.meta.url), 'utf8');
+  const toastSource = readFileSync(new URL('../apps/web/src/Toast.tsx', import.meta.url), 'utf8');
+  const cssSource = readFileSync(new URL('../apps/web/src/design-system.css', import.meta.url), 'utf8');
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const authSource = readFileSync(new URL('../apps/api/src/auth.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0023_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  assert.match(appSource, /ToastProvider/);
+  assert.match(appSource, /\/system\/change-password/);
+  assert.match(appSource, /user\.mustChangePassword/);
+  assert.match(toastSource, /ToastProvider/);
+  assert.match(toastSource, /useToast/);
+  assert.match(cssSource, /\.toast-stack/);
+  assert.match(cssSource, /position: fixed/);
+  assert.match(apiSource, /must_change_password = 1/);
+  assert.match(apiSource, /session_version = session_version \+ 1/);
+  assert.match(apiSource, /user\.change_password/);
+  assert.match(authSource, /mustChangePassword/);
+  assert.match(migration, /must_change_password/);
+  assert.match(apiSource, /after: \{ sessionRevoked: true, mustChangePassword: true \}/);
+  assert.match(apiSource, /after: \{ mustChangePassword: false \}/);
+});
+
+test('dealer shipment notifications use dealer notification email and never roll back shipment on mail failure', () => {
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const schemasSource = readFileSync(new URL('../packages/shared/src/schemas.ts', import.meta.url), 'utf8');
+  const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
+  const operationsUiSource = readFileSync(new URL('../apps/web/src/OperationsPortal.tsx', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0023_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  assert.match(schemasSource, /notificationEmail/);
+  assert.match(adminUiSource, /通知邮箱/);
+  assert.match(migration, /notification_email/);
+  assert.match(apiSource, /SELECT name, notification_email AS notificationEmail FROM dealers/);
+  assert.match(apiSource, /dealer-shipment-notification:\$\{order\.id\}:\$\{shipmentId\}/);
+  assert.match(apiSource, /NO_RECIPIENT/);
+  assert.match(apiSource, /template: 'shipment_notice'/);
+  assert.match(apiSource, /订单已发货/);
+  assert.match(apiSource, /return c\.json\(\{ id: order\.id, status: 'shipped'/);
+  assert.match(operationsUiSource, /通知邮件发送失败/);
+  assert.doesNotMatch(apiSource, /throw conflict\('邮件发送失败|throw badRequest\('邮件发送失败/);
+});
+
 test('super administrators receive the same effective workflow permissions as warehouse and service center roles', () => {
   const fullSuperAdmin = user({ id: 'full-super-admin', roles: ['super_admin'], permissions: [...PERMISSIONS] });
   assert.equal(can(fullSuperAdmin, 'order:fulfill'), true);
@@ -192,6 +266,96 @@ test('shipment warranty rules use the confirmed SKU durations only', () => {
   assert.equal(shipmentWarrantyRule('W124')?.durationDays, 90);
   assert.equal(shipmentWarrantyRule('W114'), null);
   assert.deepEqual(shipmentWarrantyDates('2026-07-27 08:00:00', 90), { startAt: '2026-07-30', endAt: '2026-10-27' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-12 16:30:00', 90), { startAt: '2026-08-15', endAt: '2026-11-12' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-31 23:59:00', 90), { startAt: '2026-09-03', endAt: '2026-12-01' });
+  assert.deepEqual(shipmentWarrantyDates('2026-12-31 23:59:00', 90), { startAt: '2027-01-03', endAt: '2027-04-02' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-12T16:30:00+08:00', 90), { startAt: '2026-08-15', endAt: '2026-11-12' });
+  assert.deepEqual(shipmentWarrantyDates(new Date('2026-08-12T15:59:59.000Z'), 180), { startAt: '2026-08-15', endAt: '2027-02-10' });
+});
+
+test('public warranty API uses slider token, Fujian edge check and an explicit safe DTO', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const config = readFileSync(new URL('../apps/api/wrangler.toml', import.meta.url), 'utf8');
+  assert.match(source, /\/public\/warranty\/challenges/);
+  assert.match(source, /sliderValue < 98/);
+  assert.match(source, /consumePublicWarrantyToken/);
+  assert.match(source, /used_at = CURRENT_TIMESTAMP/);
+  assert.match(source, /isPublicPath\(pathname\) && isFujianRequest/);
+  assert.ok(source.includes("cf?.country !== 'CN'"));
+  assert.match(source, /'fujian', '福建', '福建省'/);
+  assert.match(source, /'fj', 'cn-fj'/);
+  assert.ok(source.includes('serialNumber: row.serialNumber'));
+  assert.ok(source.includes('productName: row.productName'));
+  assert.match(source, /warrantyStatus: publicWarrantyStatus/);
+  const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
+  assert.ok(publicWarrantyRoute.length > 0);
+  assert.doesNotMatch(publicWarrantyRoute, /SELECT \*/);
+  assert.doesNotMatch(publicWarrantyRoute, /object_key AS objectKey/);
+  assert.doesNotMatch(publicWarrantyRoute, /factory/i);
+  assert.ok(config.includes('PUBLIC_ORIGIN = "https://maxcine-website-staging.pages.dev"'));
+});
+
+test('public and internal warranties are initialized together but edited independently', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_public_warranty_and_factory_photos.sql', import.meta.url), 'utf8');
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS asset_public_warranties/);
+  assert.match(migration, /UNIQUE REFERENCES assets/);
+  assert.match(source, /INSERT OR IGNORE INTO asset_public_warranties/);
+  assert.match(source, /shouldInitializeInternalWarranty/);
+  assert.ok(source.includes('asset.public_warranty_update'));
+  const publicWarrantyUpdateRoute = source.slice(source.indexOf("app.patch('/admin/assets/:id/public-warranty'"), source.indexOf("app.post('/admin/assets/:id/factory-photos'"));
+  const internalWarrantyUpdateRoute = source.slice(source.indexOf("app.patch('/admin/assets/:id/warranty'"), source.indexOf("app.patch('/admin/assets/:id/public-warranty'"));
+  assert.doesNotMatch(publicWarrantyUpdateRoute, /UPDATE assets SET warranty_/);
+  assert.doesNotMatch(internalWarrantyUpdateRoute, /asset_public_warranties/);
+});
+
+test('factory photos are internal R2-only metadata and never exposed by public warranty', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_public_warranty_and_factory_photos.sql', import.meta.url), 'utf8');
+  const multiPhotoMigration = readFileSync(new URL('../apps/api/migrations/0022_factory_photos_multi_upload.sql', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS asset_factory_photos/);
+  assert.match(migration, /object_key TEXT NOT NULL/);
+  assert.match(multiPhotoMigration, /asset_factory_photos_v2/);
+  assert.doesNotMatch(multiPhotoMigration, /UNIQUE\(asset_id, photo_type\)/);
+  assert.match(source, /图片存储尚未启用/);
+  assert.match(source, /form\.getAll\('files'\)/);
+  assert.ok(source.includes('c.env.ASSETS.put'));
+  assert.match(source, /factory-photos\/photo_\$\{Date\.now\(\)\}_\$\{randomParts\}\.\$\{extension\}/);
+  assert.doesNotMatch(source, /factory-photos-\$\{asset\.id\}-\$\{Date\.now\(\)\}/);
+  assert.doesNotMatch(source, /factory-photos\/p_\$\{photoId/);
+  assert.match(packageJson.devDependencies.wrangler, /\^4\.(12[3-9]|1[3-9]\d|[2-9]\d{2,})\./);
+  assert.doesNotMatch(source, /ON CONFLICT\(asset_id, photo_type\)/);
+  assert.doesNotMatch(migration, /data_url/);
+  assert.doesNotMatch(source, /asset_factory_photos[\\s\\S]*data_url/);
+  const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
+  assert.doesNotMatch(publicWarrantyRoute, /factoryPhotos/);
+});
+
+test('factory photo deletion verifies the exact R2 object before removing D1 metadata', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const deleteRoute = source.slice(source.indexOf("app.delete('/admin/assets/:id/factory-photos/:photoId'"), source.indexOf("app.get('/admin/audit-logs'"));
+  assert.match(deleteRoute, /object_key AS objectKey/);
+  assert.match(deleteRoute, /ASSETS\.head\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.get\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.delete\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.list\(\{\s*prefix: photo\.objectKey/);
+  assert.match(deleteRoute, /R2 图片对象删除失败/);
+  assert.match(deleteRoute, /deleteSafetyDelayMs = 6500/);
+  assert.ok(deleteRoute.indexOf('ASSETS.delete(photo.objectKey)') < deleteRoute.indexOf("DELETE FROM asset_factory_photos"));
+});
+
+test('website keeps the original static architecture while warranty query uses the public API', () => {
+  const warrantyJs = readFileSync(new URL('../apps/website/warranty.js', import.meta.url), 'utf8');
+  const middleware = readFileSync(new URL('../apps/website/functions/_middleware.js', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../apps/website/warranty.html', import.meta.url), 'utf8');
+  assert.match(warrantyJs, /MAXCINE_PUBLIC_API_BASE/);
+  assert.ok(warrantyJs.includes('/public/warranty/challenges'));
+  assert.ok(warrantyJs.includes('/public/warranty/${encodeURIComponent(normalized)}'));
+  assert.ok(!warrantyJs.includes('/data/'));
+  assert.match(html, /slider-input/);
+  assert.match(middleware, /request\.cf/);
+  assert.match(middleware, /您访问的页面不存在/);
 });
 
 test('historical warranty records preserve warnings without rejecting a whole batch', () => {

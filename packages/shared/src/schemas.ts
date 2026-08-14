@@ -143,7 +143,8 @@ export const createDealerSchema = z.object({
   province: z.string().trim().max(64).default(''),
   authorizationType: z.string().trim().min(2).max(80).default('授权经销商'),
   serviceCenterId: z.string().uuid().nullable().default(null),
-  contactName: z.string().trim().max(80).default('')
+  contactName: z.string().trim().max(80).default(''),
+  notificationEmail: z.string().trim().email('请填写正确的通知邮箱').max(254).transform((value) => value.toLowerCase()).or(z.literal('')).default('')
 });
 
 export const updateDealerSchema = createDealerSchema.omit({ code: true }).extend({
@@ -491,6 +492,20 @@ export const updateAssetWarrantySchema = z.object({
 }).superRefine((value, context) => {
   if (value.warrantyOverrideStatus && !value.warrantyOverrideReason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['warrantyOverrideReason'], message: '设置人工保修状态时必须填写原因' });
 });
+
+export const updatePublicWarrantySchema = z.object({
+  publicWarrantyStartDate: isoDateSchema.nullable(),
+  publicWarrantyEndDate: isoDateSchema.nullable(),
+  publicWarrantyStatus: z.enum(['auto', 'pending', 'active', 'expired', 'no_warranty', 'blocked', 'hidden', 'unknown']),
+  publicNote: z.string().trim().max(1000).default(''),
+  isPublicQueryEnabled: z.boolean()
+}).superRefine((value, context) => {
+  if (value.publicWarrantyStartDate && value.publicWarrantyEndDate && value.publicWarrantyEndDate < value.publicWarrantyStartDate) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicWarrantyEndDate'], message: '公开保修结束日期不能早于开始日期' });
+  }
+});
+
+export const factoryPhotoTypeSchema = z.enum(['front', 'back', 'sn_plate', 'package', 'other']);
 
 export const updateAssetSchema = z.object({
   currentSn: z.string().transform((value) => value.replace(/[\r\n\t]/g, '').trim().toUpperCase()).pipe(z.string().min(1).max(100)).optional(),

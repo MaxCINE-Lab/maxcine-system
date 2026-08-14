@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
 import bwipjs from 'bwip-js';
 import { canAcceptScan, isValidEan, MultiFrameConsensus, normalizeScannerValue, parseQrPayload, parseScannedValue } from '../packages/shared/dist/scanner.js';
@@ -49,9 +50,11 @@ ok('QR Code JSON 解析允许字段', () => {
   assert.equal(parsed.value, 'STAGE-GSX-W101-0102');
 });
 
-ok('未知 QR 内容不录入', () => {
-  const parsed = parseQrPayload('这是一段普通说明，不是 MaxCINE 数据');
-  assert.equal(parsed.ok, false);
+ok('QR Code 普通文本原样返回', () => {
+  const parsed = parseQrPayload('这是一段普通说明');
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.value, '这是一段普通说明');
+  assert.equal(parsed.kind, 'text');
 });
 
 ok('多帧连续 3 次一致成功', () => {
@@ -76,6 +79,13 @@ ok('5 帧中 4 帧一致成功', () => {
   assert.equal(consensus.push('A'), 'A');
 });
 
+ok('同一业务值即使格式抖动也能确认', () => {
+  const consensus = new MultiFrameConsensus();
+  assert.equal(consensus.push('6901649533292'), null);
+  assert.equal(consensus.push('6901649533292'), null);
+  assert.equal(consensus.push('6901649533292'), '6901649533292');
+});
+
 ok('同一条码 2 秒内不重复录入', () => {
   const state = {};
   assert.equal(canAcceptScan(state, 'SN-1', 1000), true);
@@ -95,6 +105,17 @@ ok('业务校验失败场景保持可识别错误', () => {
   assert.match(missing.message, /不存在/);
   assert.match(shipped.message, /已经发货/);
   assert.match(bound.message, /已绑定/);
+});
+
+ok('扫码成功和取消共用 cleanup 并清空摄像头 video', () => {
+  const source = readFileSync(new URL('../apps/web/src/scanner.ts', import.meta.url), 'utf8');
+  assert.match(source, /private completeScan/);
+  assert.match(source, /finally\s*\{\s*if \(!options\.continuous\) this\.cleanup\(\);/);
+  assert.match(source, /private cleanup/);
+  assert.match(source, /video\.srcObject = null/);
+  assert.match(source, /track\.stop\(\)/);
+  assert.match(source, /this\.overlay\?\.remove\(\)/);
+  assert.match(source, /stop\(\): void \{\s*this\.cleanup\(\);/);
 });
 
 const expected = 'STAGE-GSX-W101-0102';

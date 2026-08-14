@@ -123,6 +123,10 @@ export function hasServiceCenterAccess(user: SessionUser): boolean {
   return user.roles.includes('authorized_service_center') || hasAnyPermission(user, ['after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend']);
 }
 
+export function hasIntelligenceAccess(user: SessionUser): boolean {
+  return hasAdminAccess(user) || hasDealerAccess(user);
+}
+
 export function systemNavGroups(user: SessionUser): NavGroup[] {
   const groups: NavGroup[] = [];
   if (hasAdminAccess(user)) {
@@ -137,6 +141,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
         ['售后管理', '/system/admin/after-sales'],
         ['用户与权限', '/system/admin/users'],
         ['审计记录', '/system/admin/audit'],
+        ['MaxCINE Intelligence', '/system/intelligence'],
         ['系统设置', '/system/admin/mail-center']
       ]
     });
@@ -150,6 +155,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
         ['我的订单', '/system/orders'],
         ['共享库存', '/system/inventory'],
         ['Customer Risk Center', '/system/customer-risk'],
+        ['MaxCINE Intelligence', '/system/intelligence'],
         ['通知', '/system/notifications'],
         ['售后服务', '/system/after-sales']
       ]
@@ -174,6 +180,7 @@ export function systemNavActive(path: string, href: string): boolean {
     || (href === '/system/admin/mail-center' && path.startsWith('/system/admin/mail-center'))
     || (href === '/system/warehouse' && path.startsWith('/system/warehouse'))
     || (href === '/system/customer-risk' && path.startsWith('/system/customer-risk'))
+    || (href === '/system/intelligence' && path.startsWith('/system/intelligence'))
     || (href === '/system/orders' && path.startsWith('/system/orders/'))
     || (href === '/system/after-sales' && path.startsWith('/system/after-sales/'))
     || (href === '/system/service-center' && path.startsWith('/system/service-center/cases/'));

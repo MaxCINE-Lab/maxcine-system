@@ -3,9 +3,11 @@ import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } from './api';
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
+import { IntelligencePortal } from './IntelligencePortal';
 import { OperationsPortal } from './OperationsPortal';
 import { ServiceCenterPortal } from './ServiceCenterPortal';
-import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
+import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasIntelligenceAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
+import { ToastProvider, useToast } from './Toast';
 
 type Route = string;
 type Toast = { tone: 'info' | 'error'; message: string } | null;
@@ -103,11 +105,35 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
   const [loading, setLoading] = useState(false);
   async function submit(event: FormEvent) {
     event.preventDefault(); setLoading(true); setMessage(null);
-    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = `#${defaultSystemRoute(result.user)}`; }
+    try { const result = await api<LoginResponse>('/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) }); onLogin(result.user); location.hash = result.user.mustChangePassword ? '#/system/change-password' : `#${defaultSystemRoute(result.user)}`; }
     catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
   return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">STAFF ACCESS</span><h1>大中枢访问控制器</h1><p>请输入已授权的 AD 账号和密码。</p><label>AD账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
+}
+
+function ChangePassword({ user, onChanged }: { user: SessionUser; onChanged: (user: SessionUser) => void }) {
+  const toast = useToast();
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [nextPassword, setNextPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (nextPassword !== confirmPassword) return toast({ tone: 'error', text: '两次输入的新密码不一致。' });
+    setLoading(true);
+    try {
+      const result = await api<{ changed: boolean; user: SessionUser }>('/auth/change-password', { method: 'POST', body: JSON.stringify({ currentPassword, nextPassword }) });
+      onChanged(result.user);
+      toast({ tone: 'success', text: '密码已修改，请继续使用后台。' });
+      location.hash = `#${defaultSystemRoute(result.user)}`;
+    } catch (error) {
+      toast({ tone: 'error', text: error instanceof ApiClientError ? error.message : '密码修改失败，请稍后重试。' });
+    } finally {
+      setLoading(false);
+    }
+  }
+  return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">PASSWORD REQUIRED</span><h1>请先修改密码</h1><p>{user.name}，管理员已重置你的账号密码。继续进入后台前，请设置个人新密码。</p><label>当前临时密码<input type="password" autoComplete="current-password" value={currentPassword} onChange={(event) => setCurrentPassword(event.target.value)} required /></label><label>新密码<input type="password" autoComplete="new-password" value={nextPassword} onChange={(event) => setNextPassword(event.target.value)} minLength={12} required /></label><label>确认新密码<input type="password" autoComplete="new-password" value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} minLength={12} required /></label><Button type="submit" disabled={loading}>{loading ? '正在保存…' : '修改密码并进入后台'}</Button></form></div>;
 }
 
 function Dashboard({ user }: { user: SessionUser }) {
@@ -176,12 +202,14 @@ function isDealerRoute(path: string): boolean {
   return path === '/system/dashboard'
     || path === '/system/inventory'
     || path === '/system/customer-risk'
+    || path === '/system/intelligence'
     || path === '/system/new-order'
     || path === '/system/orders'
     || path.startsWith('/system/orders/')
     || path === '/system/notifications'
     || path === '/system/after-sales'
-    || path.startsWith('/system/after-sales/');
+    || path.startsWith('/system/after-sales/')
+    || path.startsWith('/system/assets/');
 }
 
 function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: SessionUser | null; onLogin: (user: SessionUser) => void; onLogout: () => void }) {
@@ -200,12 +228,14 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (route === '/terms') return <Legal type="terms" />;
   if (route === '/login') return <Login onLogin={onLogin} />;
   if (!user) return <Login onLogin={onLogin} />;
+  if (user.mustChangePassword) return <ChangePassword user={user} onChanged={onLogin} />;
   const path = route.split('?')[0];
-  if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} />;
+  if (path === '/system/intelligence' && hasIntelligenceAccess(user)) return <IntelligencePortal user={user} route={route} logout={onLogout} />;
+  if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
   if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/admin') && hasAdminAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
-  if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} />;
+  if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (route.startsWith('/system')) {
     location.hash = `#${defaultSystemRoute(user)}`;
     return null;
@@ -237,5 +267,5 @@ export function App() {
     if (route.startsWith('/system')) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
   }, [route]);
   const logout = async () => { try { await api('/auth/logout', { method: 'POST' }); } finally { setUser(null); location.hash = '#/login'; } };
-  return <><EnvironmentBadge /><AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />{user && route.startsWith('/system') && <EmployeeWatermark user={user} />}</>;
+  return <ToastProvider><EnvironmentBadge /><AppRouter route={route} user={user} onLogin={setUser} onLogout={logout} />{user && route.startsWith('/system') && <EmployeeWatermark user={user} />}</ToastProvider>;
 }
