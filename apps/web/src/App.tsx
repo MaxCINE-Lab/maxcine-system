@@ -93,7 +93,7 @@ function SystemShell({ user, children, title, subtitle }: { user: SessionUser; c
 function EnvironmentBadge() {
   const envName = import.meta.env.VITE_APP_ENV;
   const host = location.hostname;
-  const isStaging = envName === 'staging' || host.includes('maxcine-web-staging') || host.endsWith('.pages.dev');
+  const isStaging = envName === 'staging' || host.includes('maxcine-web-staging') || host.includes('staging.');
   if (!isStaging) return null;
   return <div className="staging-badge" aria-label="当前为测试环境">测试环境</div>;
 }
