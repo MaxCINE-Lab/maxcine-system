@@ -29,6 +29,7 @@ export type SessionUser = {
   serviceCenterIds: string[];
   storeIds: string[];
   sessionVersion: number;
+  mustChangePassword: boolean;
   watermarkEnabled: boolean;
 };
 

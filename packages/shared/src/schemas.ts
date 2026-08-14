@@ -143,7 +143,8 @@ export const createDealerSchema = z.object({
   province: z.string().trim().max(64).default(''),
   authorizationType: z.string().trim().min(2).max(80).default('授权经销商'),
   serviceCenterId: z.string().uuid().nullable().default(null),
-  contactName: z.string().trim().max(80).default('')
+  contactName: z.string().trim().max(80).default(''),
+  notificationEmail: z.string().trim().email('请填写正确的通知邮箱').max(254).transform((value) => value.toLowerCase()).or(z.literal('')).default('')
 });
 
 export const updateDealerSchema = createDealerSchema.omit({ code: true }).extend({
