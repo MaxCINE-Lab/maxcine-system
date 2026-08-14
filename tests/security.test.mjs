@@ -258,6 +258,7 @@ test('factory photos are internal R2-only metadata and never exposed by public w
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   const migration = readFileSync(new URL('../apps/api/migrations/0021_public_warranty_and_factory_photos.sql', import.meta.url), 'utf8');
   const multiPhotoMigration = readFileSync(new URL('../apps/api/migrations/0022_factory_photos_multi_upload.sql', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
   assert.match(migration, /CREATE TABLE IF NOT EXISTS asset_factory_photos/);
   assert.match(migration, /object_key TEXT NOT NULL/);
   assert.match(multiPhotoMigration, /asset_factory_photos_v2/);
@@ -265,11 +266,28 @@ test('factory photos are internal R2-only metadata and never exposed by public w
   assert.match(source, /图片存储尚未启用/);
   assert.match(source, /form\.getAll\('files'\)/);
   assert.ok(source.includes('c.env.ASSETS.put'));
+  assert.match(source, /factory-photos\/photo_\$\{Date\.now\(\)\}_\$\{randomParts\}\.\$\{extension\}/);
+  assert.doesNotMatch(source, /factory-photos-\$\{asset\.id\}-\$\{Date\.now\(\)\}/);
+  assert.doesNotMatch(source, /factory-photos\/p_\$\{photoId/);
+  assert.match(packageJson.devDependencies.wrangler, /\^4\.(12[3-9]|1[3-9]\d|[2-9]\d{2,})\./);
   assert.doesNotMatch(source, /ON CONFLICT\(asset_id, photo_type\)/);
   assert.doesNotMatch(migration, /data_url/);
   assert.doesNotMatch(source, /asset_factory_photos[\\s\\S]*data_url/);
   const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
   assert.doesNotMatch(publicWarrantyRoute, /factoryPhotos/);
+});
+
+test('factory photo deletion verifies the exact R2 object before removing D1 metadata', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const deleteRoute = source.slice(source.indexOf("app.delete('/admin/assets/:id/factory-photos/:photoId'"), source.indexOf("app.get('/admin/audit-logs'"));
+  assert.match(deleteRoute, /object_key AS objectKey/);
+  assert.match(deleteRoute, /ASSETS\.head\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.get\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.delete\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.list\(\{\s*prefix: photo\.objectKey/);
+  assert.match(deleteRoute, /R2 图片对象删除失败/);
+  assert.match(deleteRoute, /deleteSafetyDelayMs = 6500/);
+  assert.ok(deleteRoute.indexOf('ASSETS.delete(photo.objectKey)') < deleteRoute.indexOf("DELETE FROM asset_factory_photos"));
 });
 
 test('website keeps the original static architecture while warranty query uses the public API', () => {

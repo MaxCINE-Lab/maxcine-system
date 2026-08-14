@@ -114,6 +114,10 @@ function assertAssetReadAccess(user: SessionUser): void {
   if (!hasAssetCenterReadAccess(user)) throw forbidden();
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function normalizeLookup(value: string): string {
   return value.replace(/[\r\n\t]/g, '').trim().toUpperCase();
 }
@@ -3397,9 +3401,21 @@ app.post('/admin/assets/:id/factory-photos', requireAuth, async (c) => {
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest(`图片仅支持 JPG、PNG 或 WebP：${file.name || '未命名图片'}`);
     if (file.size > 8 * 1024 * 1024) throw badRequest(`单张图片不能超过 8MB：${file.name || '未命名图片'}`);
     const photoId = id();
-    const safeFilename = (file.name || 'photo').replace(/[^\w.-]+/g, '_').slice(0, 120) || 'photo';
-    const objectKey = `factory-photos-${asset.id}-${Date.now()}-${crypto.randomUUID()}-${safeFilename}`;
-    await c.env.ASSETS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type } });
+    const extension = file.type === 'image/png' ? 'png' : file.type === 'image/webp' ? 'webp' : 'jpg';
+    const randomParts = Array.from(crypto.getRandomValues(new Uint32Array(2)), (part) => part.toString(36)).join('');
+    const objectKey = `factory-photos/photo_${Date.now()}_${randomParts}.${extension}`;
+    // Keep MIME metadata in D1 and set the response header in the authenticated
+    // read API. The R2 key intentionally avoids asset IDs, original filenames,
+    // and pure UUID/hex filenames; Staging showed those key shapes are harder
+    // to reason about when verifying physical deletion from Wrangler.
+    const multipartUpload = await c.env.ASSETS.createMultipartUpload(objectKey);
+    try {
+      const uploadedPart = await multipartUpload.uploadPart(1, await file.arrayBuffer());
+      await multipartUpload.complete([uploadedPart]);
+    } catch (error) {
+      await multipartUpload.abort();
+      throw error;
+    }
     statements.push(c.env.DB.prepare(`INSERT INTO asset_factory_photos (id, asset_id, photo_type, object_key, original_filename, content_type, file_size, remark, uploaded_by)
       VALUES (?, ?, NULL, ?, ?, ?, ?, '', ?)`)
       .bind(photoId, asset.id, objectKey, file.name || 'photo', file.type, file.size, user.id));
@@ -3428,12 +3444,26 @@ app.get('/assets/:id/factory-photos/:photoId/content', requireAuth, async (c) =>
 app.delete('/admin/assets/:id/factory-photos/:photoId', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'asset:manage');
-  const photo = await one<{ id: string; objectKey: string; photoType: string | null }>(c.env.DB, 'SELECT id, object_key AS objectKey, photo_type AS photoType FROM asset_factory_photos WHERE id = ? AND asset_id = ?', c.req.param('photoId'), c.req.param('id'));
+  const photo = await one<{ id: string; objectKey: string; photoType: string | null; ageSeconds: number | null }>(c.env.DB,
+    `SELECT id, object_key AS objectKey, photo_type AS photoType,
+      CAST(strftime('%s','now') - strftime('%s', uploaded_at) AS INTEGER) AS ageSeconds
+      FROM asset_factory_photos WHERE id = ? AND asset_id = ?`, c.req.param('photoId'), c.req.param('id'));
   if (!photo) throw notFound('未找到该出厂照片');
   if (c.env.ASSETS) {
-    await c.env.ASSETS.delete([photo.objectKey]);
-    const remaining = await c.env.ASSETS.head(photo.objectKey);
-    if (remaining) throw conflict('R2 图片对象删除失败，请稍后重试');
+    const deleteSafetyDelayMs = 6500;
+    const ageMs = typeof photo.ageSeconds === 'number' ? photo.ageSeconds * 1000 : deleteSafetyDelayMs;
+    if (ageMs >= 0 && ageMs < deleteSafetyDelayMs) await sleep(deleteSafetyDelayMs - ageMs);
+    const beforeHead = await c.env.ASSETS.head(photo.objectKey);
+    const beforeObject = await c.env.ASSETS.get(photo.objectKey);
+    const existedBeforeDelete = Boolean(beforeHead || beforeObject);
+    await c.env.ASSETS.delete(photo.objectKey);
+    await sleep(5000);
+    const [remainingHead, remainingObject] = await Promise.all([
+      c.env.ASSETS.head(photo.objectKey),
+      c.env.ASSETS.get(photo.objectKey),
+    ]);
+    const remainingList = await c.env.ASSETS.list({ prefix: photo.objectKey, limit: 1 });
+    if (existedBeforeDelete && (remainingHead || remainingObject || remainingList.objects.some((object) => object.key === photo.objectKey))) throw conflict('R2 图片对象删除失败，请稍后重试');
   }
   await c.env.DB.batch([
     c.env.DB.prepare('DELETE FROM asset_factory_photos WHERE id = ?').bind(photo.id),
