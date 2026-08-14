@@ -10,11 +10,14 @@ function isStagingHost(hostname) {
 }
 
 function defaultApiOrigin(hostname) {
-  return isStagingHost(hostname) ? STAGING_API_ORIGIN : PRODUCTION_API_ORIGIN;
+  if (isStagingHost(hostname)) return STAGING_API_ORIGIN;
+  if (hostname === 'dealersystem.maxcine.cn') return PRODUCTION_API_ORIGIN;
+  return 'https://maxcine-api.maxcine-lab.workers.dev';
 }
 
 function defaultAppOrigin(hostname) {
-  return isStagingHost(hostname) ? STAGING_APP_ORIGIN : PRODUCTION_APP_ORIGIN;
+  if (isStagingHost(hostname)) return STAGING_APP_ORIGIN;
+  return PRODUCTION_APP_ORIGIN;
 }
 
 export default {
