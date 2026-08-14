@@ -213,7 +213,7 @@ test('global toast and forced password change use a viewport-fixed notification 
   const cssSource = readFileSync(new URL('../apps/web/src/design-system.css', import.meta.url), 'utf8');
   const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   const authSource = readFileSync(new URL('../apps/api/src/auth.ts', import.meta.url), 'utf8');
-  const migration = readFileSync(new URL('../apps/api/migrations/0021_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0023_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
   assert.match(appSource, /ToastProvider/);
   assert.match(appSource, /\/system\/change-password/);
   assert.match(appSource, /user\.mustChangePassword/);
@@ -235,7 +235,7 @@ test('dealer shipment notifications use dealer notification email and never roll
   const schemasSource = readFileSync(new URL('../packages/shared/src/schemas.ts', import.meta.url), 'utf8');
   const adminUiSource = readFileSync(new URL('../apps/web/src/AdminManagementPortal.tsx', import.meta.url), 'utf8');
   const operationsUiSource = readFileSync(new URL('../apps/web/src/OperationsPortal.tsx', import.meta.url), 'utf8');
-  const migration = readFileSync(new URL('../apps/api/migrations/0021_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0023_password_reset_and_dealer_notifications.sql', import.meta.url), 'utf8');
   assert.match(schemasSource, /notificationEmail/);
   assert.match(adminUiSource, /通知邮箱/);
   assert.match(migration, /notification_email/);
