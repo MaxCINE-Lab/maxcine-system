@@ -54,11 +54,6 @@ migrations_dir = "migrations"
 binding = "ASSETS"
 bucket_name = "maxcine-assets-production"
 
-[[env.production.routes]]
-pattern = "api.maxcine.cn"
-custom_domain = true
-zone_name = "maxcine.cn"
-
 [env.production.vars]
 APP_ORIGIN = "https://dealersystem.maxcine.cn"
 PUBLIC_ORIGIN = "https://maxcine-website.pages.dev"

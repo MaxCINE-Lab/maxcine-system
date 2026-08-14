@@ -2,7 +2,7 @@
 
 const STAGING_API_ORIGIN = 'https://maxcine-api-staging.maxcine-lab.workers.dev';
 const STAGING_APP_ORIGIN = 'https://maxcine-web-staging.pages.dev';
-const PRODUCTION_API_ORIGIN = 'https://api.maxcine.cn';
+const PRODUCTION_API_ORIGIN = 'https://maxcine-api.maxcine-lab.workers.dev';
 const PRODUCTION_APP_ORIGIN = 'https://dealersystem.maxcine.cn';
 
 function isStagingHost(hostname) {
@@ -11,8 +11,7 @@ function isStagingHost(hostname) {
 
 function defaultApiOrigin(hostname) {
   if (isStagingHost(hostname)) return STAGING_API_ORIGIN;
-  if (hostname === 'dealersystem.maxcine.cn') return PRODUCTION_API_ORIGIN;
-  return 'https://maxcine-api.maxcine-lab.workers.dev';
+  return PRODUCTION_API_ORIGIN;
 }
 
 function defaultAppOrigin(hostname) {
