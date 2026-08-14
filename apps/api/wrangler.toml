@@ -50,8 +50,12 @@ database_name = "maxcine-production-db"
 database_id = "f89d68f9-4d92-41e0-ac77-5e6492153759"
 migrations_dir = "migrations"
 
+[[env.production.r2_buckets]]
+binding = "ASSETS"
+bucket_name = "maxcine-assets-production"
+
 [env.production.vars]
-APP_ORIGIN = "https://maxcine-web.pages.dev"
+APP_ORIGIN = "https://dealersystem.maxcine.cn"
 PUBLIC_ORIGIN = "https://maxcine-website.pages.dev"
 COOKIE_SAMESITE = "None"
 EMAIL_PROVIDER = "mock"

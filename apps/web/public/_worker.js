@@ -2,8 +2,8 @@
 
 const STAGING_API_ORIGIN = 'https://maxcine-api-staging.maxcine-lab.workers.dev';
 const STAGING_APP_ORIGIN = 'https://maxcine-web-staging.pages.dev';
-const PRODUCTION_API_ORIGIN = 'https://maxcine-api.maxcine-lab.workers.dev';
-const PRODUCTION_APP_ORIGIN = 'https://maxcine-web.pages.dev';
+const PRODUCTION_API_ORIGIN = 'https://api.maxcine.cn';
+const PRODUCTION_APP_ORIGIN = 'https://dealersystem.maxcine.cn';
 
 function isStagingHost(hostname) {
   return hostname.includes('maxcine-web-staging') || hostname.includes('staging.');
