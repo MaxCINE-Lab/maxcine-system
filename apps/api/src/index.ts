@@ -3759,7 +3759,7 @@ app.get('/admin/dealers/:id', requireAuth, async (c) => {
   if (!dealer) throw notFound('未找到该经销商');
   const [stores, users, summary] = await Promise.all([
     all(c.env.DB, 'SELECT id, name, platform, status FROM stores WHERE dealer_id = ? ORDER BY name', c.req.param('id')),
-    all(c.env.DB, `SELECT users.id, users.name, users.email FROM dealer_user_assignments JOIN users ON users.id = dealer_user_assignments.user_id WHERE dealer_id = ? AND dealer_user_assignments.status = 'active' ORDER BY users.name`, c.req.param('id')),
+    all(c.env.DB, `SELECT users.id, users.name, users.email FROM dealer_user_assignments JOIN users ON users.id = dealer_user_assignments.user_id WHERE dealer_user_assignments.dealer_id = ? AND dealer_user_assignments.status = 'active' ORDER BY users.name`, c.req.param('id')),
     one(c.env.DB, `SELECT (SELECT COUNT(*) FROM orders WHERE dealer_id = ?) AS orderCount, (SELECT COUNT(*) FROM after_sales_cases WHERE dealer_id = ?) AS afterSalesCount`, c.req.param('id'), c.req.param('id'))
   ]);
   return c.json({ dealer, stores, users, summary });
