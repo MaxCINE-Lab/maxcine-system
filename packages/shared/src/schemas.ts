@@ -492,6 +492,20 @@ export const updateAssetWarrantySchema = z.object({
   if (value.warrantyOverrideStatus && !value.warrantyOverrideReason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['warrantyOverrideReason'], message: '设置人工保修状态时必须填写原因' });
 });
 
+export const updatePublicWarrantySchema = z.object({
+  publicWarrantyStartDate: isoDateSchema.nullable(),
+  publicWarrantyEndDate: isoDateSchema.nullable(),
+  publicWarrantyStatus: z.enum(['auto', 'pending', 'active', 'expired', 'no_warranty', 'blocked', 'hidden', 'unknown']),
+  publicNote: z.string().trim().max(1000).default(''),
+  isPublicQueryEnabled: z.boolean()
+}).superRefine((value, context) => {
+  if (value.publicWarrantyStartDate && value.publicWarrantyEndDate && value.publicWarrantyEndDate < value.publicWarrantyStartDate) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicWarrantyEndDate'], message: '公开保修结束日期不能早于开始日期' });
+  }
+});
+
+export const factoryPhotoTypeSchema = z.enum(['front', 'back', 'sn_plate', 'package', 'other']);
+
 export const updateAssetSchema = z.object({
   currentSn: z.string().transform((value) => value.replace(/[\r\n\t]/g, '').trim().toUpperCase()).pipe(z.string().min(1).max(100)).optional(),
   originalSn: z.string().trim().max(100).nullable().optional(),

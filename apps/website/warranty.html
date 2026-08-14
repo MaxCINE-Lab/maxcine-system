@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>设备信息查询 - MaxCINE</title>
+
+  <style>
+    body {
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto;
+      background:#f5f5f5;
+      color:#111;
+    }
+
+    /* ===== Header ===== */
+    .mc-header {
+      background:#fff;
+      border-bottom:1px solid #eee;
+      height:60px;
+      display:flex;
+      align-items:center;
+      padding:0 20px;
+    }
+
+    .mc-left {
+      display:flex;
+      align-items:center;
+      gap:12px;
+      height:100%;
+    }
+
+    .mc-logo {
+      height:24px;
+      display:block;
+    }
+
+    .mc-header {
+  background:#fff;
+  border-bottom:1px solid #eee;
+  height:60px;
+
+  display:flex;
+  align-items:center;
+  padding:0 20px;
+}
+
+.mc-left {
+  display:flex;
+  align-items:center;
+  gap:12px;
+}
+
+/* ⭐ logo */
+.mc-logo {
+  height:24px;
+  display:block;
+}
+
+/* ⭐ 真正正确写法 */
+.mc-nav-text {
+  font-size:18px;      /* ⭐ 关键：不是20 */
+  font-weight:500;
+
+  height:24px;         /* ⭐ 核心：和logo一样 */
+  display:flex;
+  align-items:center;
+
+  color:#222;
+}
+    /* ===== Main ===== */
+    .mc-container {
+      max-width:900px;
+      margin:0 auto;
+      padding:60px 20px;
+      text-align:center;
+    }
+
+    h1 {
+      font-size:28px;
+      margin-bottom:10px;
+    }
+
+    .mc-desc {
+      color:#666;
+      margin-bottom:30px;
+      font-size:14px;
+    }
+
+    /* ===== Input ===== */
+    .mc-search {
+      display:flex;
+      justify-content:center;
+      gap:10px;
+      margin-bottom:20px;
+    }
+
+    .mc-input {
+      padding:12px;
+      width:280px;
+      border:1px solid #ddd;
+      border-radius:8px;
+      font-size:14px;
+      transition: all 0.25s ease;
+    }
+
+    .mc-input:focus {
+      outline:none;
+      border-color:#000;
+      box-shadow: 0 0 0 3px rgba(0,0,0,0.08);
+      transform: translateY(-1px);
+    }
+
+    .mc-btn {
+      padding:12px 20px;
+      border:none;
+      background:#111;
+      color:#fff;
+      border-radius:8px;
+      cursor:pointer;
+    }
+
+    .mc-slider {
+      width:min(420px, 100%);
+      margin:0 auto 18px;
+      background:#fff;
+      border:1px solid #e5e5e5;
+      border-radius:12px;
+      padding:14px;
+      text-align:left;
+    }
+
+    .mc-slider label {
+      display:block;
+      font-size:13px;
+      color:#555;
+      margin-bottom:8px;
+    }
+
+    .mc-slider input {
+      width:100%;
+      accent-color:#111;
+    }
+
+    .mc-slider small {
+      color:#777;
+      display:block;
+      margin-top:8px;
+    }
+
+    .mc-message {
+      min-height:20px;
+      color:#666;
+      font-size:14px;
+      margin:8px 0 0;
+    }
+
+    /* ===== Loading ===== */
+    #loading {
+      display:none;
+      margin-top:20px;
+    }
+
+    .mc-loader {
+      width:32px;
+      height:32px;
+      border:3px solid #ddd;
+      border-top:3px solid #111;
+      border-radius:50%;
+      margin:0 auto;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    /* ===== Result ===== */
+    .mc-main {
+      display:none;
+      margin-top:20px;
+    }
+
+    .mc-img {
+      width:140px;
+      margin:20px auto;
+      object-fit:contain;
+    }
+
+    .mc-sn {
+      color:#666;
+      font-size:14px;
+    }
+
+    .mc-card {
+      background:white;
+      margin-top:30px;
+      padding:24px;
+      border-radius:12px;
+      text-align:left;
+    }
+
+    .mc-row {
+      display:flex;
+      justify-content:space-between;
+      margin-bottom:12px;
+      font-size:14px;
+    }
+
+    .ok { color:#00a86b; }
+    .bad { color:#d33; }
+
+    @media(max-width:600px){
+      .mc-search {
+        flex-direction:column;
+      }
+      .mc-input {
+        width:100%;
+      }
+      .mc-nav-text {
+        font-size:16px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+<!-- Header -->
+<div class="mc-header">
+  <div class="mc-left">
+    <img src="./assets/logo2.png" class="mc-logo">
+    <div class="mc-nav-text">设备信息与权益</div>
+  </div>
+</div>
+
+<div class="mc-container">
+
+  <h1>设备信息查询</h1>
+  <div class="mc-desc">查询设备激活时间、保修状态及售后记录</div>
+
+  <div class="mc-slider">
+    <label for="slider-input">请先将滑块拖到最右端完成验证</label>
+    <input id="slider-input" type="range" min="0" max="100" value="0">
+    <small id="slider-status">未完成验证</small>
+  </div>
+
+  <!-- 输入 -->
+  <div class="mc-search">
+    <input id="sn-input" class="mc-input" placeholder="请输入序列号">
+   <button id="sn-btn" class="mc-btn">
+  <span class="btn-text">查询</span>
+  <span class="btn-loader"></span>
+  <span class="btn-check">✔</span>
+</button>
+  </div>
+
+  <p id="message" class="mc-message"></p>
+
+  <!-- loading -->
+  <div id="loading">
+    <div class="mc-loader"></div>
+  </div>
+
+  <!-- 结果 -->
+  <div id="main" class="mc-main">
+    <img id="img" class="mc-img">
+    <h2 id="name"></h2>
+    <p id="sn" class="mc-sn"></p>
+    <p id="date" class="mc-sn"></p>
+
+    <div class="mc-card">
+      <h3>保修期</h3>
+      <div class="mc-row"><span>状态</span><span id="status"></span></div>
+      <div class="mc-row"><span>保修开始</span><span id="start"></span></div>
+      <div class="mc-row"><span>保修结束</span><span id="end"></span></div>
+    </div>
+
+    <div class="mc-card">
+      <h3>售后服务记录</h3>
+      <div class="mc-row"><span>维修记录</span><span id="repair"></span></div>
+    </div>
+  </div>
+
+</div>
+
+<script src="warranty.js"></script>
+</body>
+</html>

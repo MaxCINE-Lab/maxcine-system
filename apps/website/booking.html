@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>立即预约 | MaxCINE ND滤镜</title>
+
+  <style>
+    body {
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto;
+      background:#000;
+      color:#fff;
+    }
+
+    .wrap {
+      max-width:720px;
+      margin:80px auto;
+      padding:24px;
+    }
+
+    .hero {
+      text-align:center;
+      margin-bottom:40px;
+    }
+
+    .hero h1 {
+      font-size:42px;
+      margin-bottom:8px;
+    }
+
+    .hero p {
+      opacity:0.7;
+    }
+
+    .card {
+      background:rgba(255,255,255,0.05);
+      border-radius:16px;
+      padding:20px;
+      margin-bottom:20px;
+    }
+
+    .card h3 {
+      margin-bottom:12px;
+      font-size:18px;
+    }
+
+    .card ul {
+      padding-left:18px;
+      line-height:1.7;
+      opacity:0.9;
+    }
+
+    .highlight {
+      text-align:center;
+      font-size:15px;
+      line-height:1.6;
+    }
+
+    .form {
+      margin-top:30px;
+      display:flex;
+      flex-direction:column;
+      gap:14px;
+    }
+
+    .form input,
+    .form textarea,
+    .form select {
+      padding:12px;
+      border-radius:10px;
+      border:none;
+      background:rgba(255,255,255,0.08);
+      color:#fff;
+    }
+
+    .form button {
+      padding:14px;
+      border-radius:999px;
+      border:none;
+      background:#fff;
+      color:#000;
+      font-weight:600;
+      cursor:pointer;
+    }
+
+    .form button:hover {
+      opacity:0.85;
+    }
+
+    .footer {
+      margin-top:30px;
+      text-align:center;
+      font-size:13px;
+      opacity:0.6;
+      line-height:1.6;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="wrap">
+
+  <!-- 标题 -->
+  <div class="hero">
+    <h1>光影尽现</h1>
+    <p>适用于 MAVIC 4 Pro的专业级航拍无人机ND滤镜系统</p>
+  </div>
+
+  <!-- 首发福利 -->
+  <div class="card highlight">
+    🎯 前300名客户可享 <strong>免费LOGO定制（滤镜收纳盒）</strong><br>
+     📅当前预约人数：96（每日更新）
+  </div>
+
+  <!-- 产品亮点 -->
+  <div class="card">
+    <h3>产品亮点</h3>
+    <ul>
+      <li>DJl原装ND镜片，画质更纯净</li>
+      <li>1:1原厂结构设计，无需改装</li>
+      <li>PA工程材料外框，稳定耐用</li>
+      <li>ND8 / ND16 / ND32 / ND64 四档覆盖</li>
+      <li>原厂同款收纳盒设计，安全便携</li>
+    </ul>
+  </div>
+
+  <!-- 流程 -->
+  <div class="card">
+    <h3>预定流程</h3>
+    <p>支付定金 → 锁定首发名额 → 支付尾款 → 发货</p>
+  </div>
+
+  <!-- 时间 -->
+  <div class="card">
+    <h3>时间安排</h3>
+    <p>尾款支付时间：2026年6月1日</p>
+    <p>发货时间：第一批 6月6日｜第二批 6月8日</p>
+  </div>
+
+  <!-- 套餐 -->
+  <div class="card">
+    <h3>搭配MaxCINE增广镜购买更享优惠（可选）</h3>
+    <p>额外购买标准套装：¥359</p>
+    <p>额外购买增强套装：¥519</p>
+    <p>上述价格为搭配ND滤镜套装专属的增广镜价格</p>
+  </div>
+
+  <!-- 表单（核心） -->
+  <form id="bookingForm" action="https://formspree.io/f/mdabgddp" method="POST" class="form">
+
+    <input name="name" placeholder="姓名" required>
+    <input name="contact" placeholder="联系方式（邮箱）" required>
+    <input name="address" placeholder="收货地址" required>
+    <input name="telephone" placeholder="收货电话" required>
+    <input name="quantity" placeholder="预定数量（套）" required>
+    <select name="package" required>
+      <option value="">请选择是否需要定制LOGO</option>
+      <option>默认MaxCINE收纳盒LOGO</option>
+      <option>需要定制收纳盒LOGO</option>
+    </select>
+
+    <textarea name="remark" placeholder="备注（可选）"></textarea>
+
+    <!-- 防垃圾 -->
+    <input type="text" name="_gotcha" style="display:none">
+
+    <button type="submit" id="submitBtn">点击提交预约申请，定金支付链接将在12小时内通过预留邮箱发送
+    </button>
+
+  </form>
+
+  <!-- 售后 -->
+  <div class="footer">
+    🛡 MaxCINE官方提供180天全国联保<br>
+    📌 本产品为预售商品，数量有限，建议尽早锁定名额<br>
+    🔥 掌控光线，定义画面。让光，听你的
+  </div>
+
+</div>
+<script>
+const form = document.getElementById("bookingForm");
+const btn = document.getElementById("submitBtn");
+
+const MAX_SUBMIT = 2;
+
+form.addEventListener("submit", function (e) {
+
+  let count = parseInt(localStorage.getItem("submitCount") || 0);
+
+  if (count >= MAX_SUBMIT) {
+    e.preventDefault();
+    alert("您已提交过预约，请勿重复提交⚠️恶意刷单将被系统自动拉黑⚠️");
+    return;
+  }
+
+  localStorage.setItem("submitCount", count + 1);
+
+  btn.disabled = true;
+  btn.innerText = "提交中...";
+});
+</script>
+</body>
+</html>

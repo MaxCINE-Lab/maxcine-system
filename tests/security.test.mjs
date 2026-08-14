@@ -211,6 +211,96 @@ test('shipment warranty rules use the confirmed SKU durations only', () => {
   assert.equal(shipmentWarrantyRule('W124')?.durationDays, 90);
   assert.equal(shipmentWarrantyRule('W114'), null);
   assert.deepEqual(shipmentWarrantyDates('2026-07-27 08:00:00', 90), { startAt: '2026-07-30', endAt: '2026-10-27' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-12 16:30:00', 90), { startAt: '2026-08-15', endAt: '2026-11-12' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-31 23:59:00', 90), { startAt: '2026-09-03', endAt: '2026-12-01' });
+  assert.deepEqual(shipmentWarrantyDates('2026-12-31 23:59:00', 90), { startAt: '2027-01-03', endAt: '2027-04-02' });
+  assert.deepEqual(shipmentWarrantyDates('2026-08-12T16:30:00+08:00', 90), { startAt: '2026-08-15', endAt: '2026-11-12' });
+  assert.deepEqual(shipmentWarrantyDates(new Date('2026-08-12T15:59:59.000Z'), 180), { startAt: '2026-08-15', endAt: '2027-02-10' });
+});
+
+test('public warranty API uses slider token, Fujian edge check and an explicit safe DTO', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const config = readFileSync(new URL('../apps/api/wrangler.toml', import.meta.url), 'utf8');
+  assert.match(source, /\/public\/warranty\/challenges/);
+  assert.match(source, /sliderValue < 98/);
+  assert.match(source, /consumePublicWarrantyToken/);
+  assert.match(source, /used_at = CURRENT_TIMESTAMP/);
+  assert.match(source, /isPublicPath\(pathname\) && isFujianRequest/);
+  assert.ok(source.includes("cf?.country !== 'CN'"));
+  assert.match(source, /'fujian', '福建', '福建省'/);
+  assert.match(source, /'fj', 'cn-fj'/);
+  assert.ok(source.includes('serialNumber: row.serialNumber'));
+  assert.ok(source.includes('productName: row.productName'));
+  assert.match(source, /warrantyStatus: publicWarrantyStatus/);
+  const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
+  assert.ok(publicWarrantyRoute.length > 0);
+  assert.doesNotMatch(publicWarrantyRoute, /SELECT \*/);
+  assert.doesNotMatch(publicWarrantyRoute, /object_key AS objectKey/);
+  assert.doesNotMatch(publicWarrantyRoute, /factory/i);
+  assert.ok(config.includes('PUBLIC_ORIGIN = "https://maxcine-website-staging.pages.dev"'));
+});
+
+test('public and internal warranties are initialized together but edited independently', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_public_warranty_and_factory_photos.sql', import.meta.url), 'utf8');
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS asset_public_warranties/);
+  assert.match(migration, /UNIQUE REFERENCES assets/);
+  assert.match(source, /INSERT OR IGNORE INTO asset_public_warranties/);
+  assert.match(source, /shouldInitializeInternalWarranty/);
+  assert.ok(source.includes('asset.public_warranty_update'));
+  const publicWarrantyUpdateRoute = source.slice(source.indexOf("app.patch('/admin/assets/:id/public-warranty'"), source.indexOf("app.post('/admin/assets/:id/factory-photos'"));
+  const internalWarrantyUpdateRoute = source.slice(source.indexOf("app.patch('/admin/assets/:id/warranty'"), source.indexOf("app.patch('/admin/assets/:id/public-warranty'"));
+  assert.doesNotMatch(publicWarrantyUpdateRoute, /UPDATE assets SET warranty_/);
+  assert.doesNotMatch(internalWarrantyUpdateRoute, /asset_public_warranties/);
+});
+
+test('factory photos are internal R2-only metadata and never exposed by public warranty', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0021_public_warranty_and_factory_photos.sql', import.meta.url), 'utf8');
+  const multiPhotoMigration = readFileSync(new URL('../apps/api/migrations/0022_factory_photos_multi_upload.sql', import.meta.url), 'utf8');
+  const packageJson = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.match(migration, /CREATE TABLE IF NOT EXISTS asset_factory_photos/);
+  assert.match(migration, /object_key TEXT NOT NULL/);
+  assert.match(multiPhotoMigration, /asset_factory_photos_v2/);
+  assert.doesNotMatch(multiPhotoMigration, /UNIQUE\(asset_id, photo_type\)/);
+  assert.match(source, /图片存储尚未启用/);
+  assert.match(source, /form\.getAll\('files'\)/);
+  assert.ok(source.includes('c.env.ASSETS.put'));
+  assert.match(source, /factory-photos\/photo_\$\{Date\.now\(\)\}_\$\{randomParts\}\.\$\{extension\}/);
+  assert.doesNotMatch(source, /factory-photos-\$\{asset\.id\}-\$\{Date\.now\(\)\}/);
+  assert.doesNotMatch(source, /factory-photos\/p_\$\{photoId/);
+  assert.match(packageJson.devDependencies.wrangler, /\^4\.(12[3-9]|1[3-9]\d|[2-9]\d{2,})\./);
+  assert.doesNotMatch(source, /ON CONFLICT\(asset_id, photo_type\)/);
+  assert.doesNotMatch(migration, /data_url/);
+  assert.doesNotMatch(source, /asset_factory_photos[\\s\\S]*data_url/);
+  const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
+  assert.doesNotMatch(publicWarrantyRoute, /factoryPhotos/);
+});
+
+test('factory photo deletion verifies the exact R2 object before removing D1 metadata', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const deleteRoute = source.slice(source.indexOf("app.delete('/admin/assets/:id/factory-photos/:photoId'"), source.indexOf("app.get('/admin/audit-logs'"));
+  assert.match(deleteRoute, /object_key AS objectKey/);
+  assert.match(deleteRoute, /ASSETS\.head\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.get\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.delete\(photo\.objectKey\)/);
+  assert.match(deleteRoute, /ASSETS\.list\(\{\s*prefix: photo\.objectKey/);
+  assert.match(deleteRoute, /R2 图片对象删除失败/);
+  assert.match(deleteRoute, /deleteSafetyDelayMs = 6500/);
+  assert.ok(deleteRoute.indexOf('ASSETS.delete(photo.objectKey)') < deleteRoute.indexOf("DELETE FROM asset_factory_photos"));
+});
+
+test('website keeps the original static architecture while warranty query uses the public API', () => {
+  const warrantyJs = readFileSync(new URL('../apps/website/warranty.js', import.meta.url), 'utf8');
+  const middleware = readFileSync(new URL('../apps/website/functions/_middleware.js', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../apps/website/warranty.html', import.meta.url), 'utf8');
+  assert.match(warrantyJs, /MAXCINE_PUBLIC_API_BASE/);
+  assert.ok(warrantyJs.includes('/public/warranty/challenges'));
+  assert.ok(warrantyJs.includes('/public/warranty/${encodeURIComponent(normalized)}'));
+  assert.ok(!warrantyJs.includes('/data/'));
+  assert.match(html, /slider-input/);
+  assert.match(middleware, /request\.cf/);
+  assert.match(middleware, /您访问的页面不存在/);
 });
 
 test('historical warranty records preserve warnings without rejecting a whole batch', () => {

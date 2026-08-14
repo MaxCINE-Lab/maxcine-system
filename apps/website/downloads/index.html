@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>产品下载中心 - MaxCINE</title>
+
+  <style>
+    body {
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto;
+      background:#f5f5f5;
+      color:#111;
+    }
+
+    .mc-header {
+      background:#fff;
+      border-bottom:1px solid #eee;
+      height:60px;
+      display:flex;
+      align-items:center;
+      padding:0 20px;
+    }
+
+    .mc-left {
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+
+    .mc-logo {
+      height:24px;
+    }
+
+    .mc-nav-text {
+      font-size:18px;
+      font-weight:500;
+      height:24px;
+      display:flex;
+      align-items:center;
+    }
+
+    .mc-container {
+      max-width:900px;
+      margin:0 auto;
+      padding:60px 20px;
+      text-align:center;
+    }
+
+    h1 {
+      font-size:28px;
+      margin-bottom:10px;
+    }
+
+    .mc-desc {
+      color:#666;
+      margin-bottom:30px;
+      font-size:14px;
+    }
+
+    .mc-search {
+      display:flex;
+      justify-content:center;
+      gap:10px;
+      margin-bottom:20px;
+    }
+
+    .mc-input {
+      padding:12px;
+      width:280px;
+      border:1px solid #ddd;
+      border-radius:8px;
+    }
+
+    .mc-btn {
+      padding:12px 20px;
+      border:none;
+      background:#111;
+      color:#fff;
+      border-radius:8px;
+      cursor:pointer;
+    }
+
+    .mc-main {
+      display:none;
+      margin-top:20px;
+    }
+
+    .mc-img {
+      width:140px;
+      margin:20px auto;
+      object-fit:contain;
+    }
+
+    .mc-card {
+      background:white;
+      margin-top:30px;
+      padding:24px;
+      border-radius:12px;
+      text-align:left;
+    }
+
+    .download-btn {
+      display:block;
+      padding:12px;
+      margin-top:12px;
+      background:#111;
+      color:#fff;
+      border-radius:8px;
+      text-align:center;
+      text-decoration:none;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="mc-header">
+  <div class="mc-left">
+    <img src="../assets/logo2.png" class="mc-logo">
+    <div class="mc-nav-text">产品下载中心</div>
+  </div>
+</div>
+
+<div class="mc-container">
+
+  <h1>资源下载</h1>
+  <div class="mc-desc">输入设备序列号以解锁对应产品资源</div>
+
+  <div class="mc-search">
+    <input id="sn-input" class="mc-input" placeholder="请输入序列号">
+    <button id="sn-btn" class="mc-btn">验证</button>
+  </div>
+
+  <div id="main" class="mc-main">
+    <img id="img" class="mc-img">
+    <h2 id="name"></h2>
+
+    <div class="mc-card">
+      <p>该设备已通过验证，可下载专属资源</p>
+
+      <a href="./ps/maxcine_ps_v1.zip" class="download-btn" download>Photoshop CameraRaw</a>
+      <a href="./ps/maxcine_lr_v1.zip" class="download-btn" download>Lightroom</a>
+      <a href="./ps/maxcine_davinci_v1.zip" class="download-btn" download>DaVinci DRX</a>
+    </div>
+  </div>
+
+</div>
+
+<script>
+const btn = document.getElementById("sn-btn");
+const input = document.getElementById("sn-input");
+const main = document.getElementById("main");
+
+const img = document.getElementById("img");
+const name = document.getElementById("name");
+
+btn.onclick = async () => {
+
+  const sn = input.value.trim();
+
+  if (!sn) {
+    alert("请输入序列号");
+    return;
+  }
+
+  btn.innerText = "验证中...";
+
+  try {
+    const res = await fetch("../data/" + sn + ".json?t=" + Date.now());
+    main.style.display = "none";   
+    
+if (!res.ok) throw new Error();
+
+const data = await res.json();
+
+// ⭐ ND新品不开放下载
+if (data.verify_code === "0") {
+  alert("该产品暂未开放下载");
+
+  btn.innerText = "验证";
+  return;
+}
+
+// ⭐ 正常产品
+name.textContent = data.version;
+img.src = "../assets/products/" + data.image;
+
+// ⭐ 显示下载区域
+main.style.display = "block";
+
+// ⭐ 恢复按钮
+btn.innerText = "✔ 已验证";
+
+  } catch {
+    btn.innerText = "验证失败";
+    setTimeout(() => {
+      btn.innerText = "验证";
+    }, 1500);
+  }
+};
+</script>
+
+</body>
+</html>

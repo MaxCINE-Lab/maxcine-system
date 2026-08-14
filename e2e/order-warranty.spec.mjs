@@ -94,5 +94,42 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   expect(detail.body.asset.currentSn).toBe(selectedSn);
   expect(detail.body.asset.warrantyStartAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(detail.body.asset.warrantyEndAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+  expect(detail.body.publicWarranty.publicWarrantyStartDate).toBe(detail.body.asset.warrantyStartAt);
+  expect(detail.body.publicWarranty.publicWarrantyEndDate).toBe(detail.body.asset.warrantyEndAt);
   expect(detail.body.events.some((event) => event.eventType === 'warranty_started' && event.title.includes('90'))).toBe(true);
+
+  const publicLookupWithoutSlider = await request(page, `/public/warranty/${encodeURIComponent(selectedSn)}`);
+  expect(publicLookupWithoutSlider.status).toBe(403);
+  const challenge = await request(page, '/public/warranty/challenges', 'POST');
+  expect(challenge.status).toBe(201);
+  const completed = await request(page, `/public/warranty/challenges/${challenge.body.challengeId}/complete`, 'POST', { sliderValue: 100 });
+  expect(completed.status).toBe(200);
+  const publicLookup = await request(page, `/public/warranty/${encodeURIComponent(selectedSn)}?challengeId=${encodeURIComponent(challenge.body.challengeId)}&token=${encodeURIComponent(completed.body.token)}`);
+  expect(publicLookup.status).toBe(200);
+  expect(Object.keys(publicLookup.body).sort()).toEqual(['productName', 'productVersion', 'publicNote', 'serialNumber', 'warrantyEndDate', 'warrantyStartDate', 'warrantyStatus'].sort());
+  expect(publicLookup.body.serialNumber).toBe(selectedSn);
+  expect(publicLookup.body.warrantyStartDate).toBe(detail.body.asset.warrantyStartAt);
+  expect(JSON.stringify(publicLookup.body)).not.toMatch(/internal|factory|photo|object_key|dealer|customer|admin_private/i);
+  const reusedTokenLookup = await request(page, `/public/warranty/${encodeURIComponent(selectedSn)}?challengeId=${encodeURIComponent(challenge.body.challengeId)}&token=${encodeURIComponent(completed.body.token)}`);
+  expect(reusedTokenLookup.status).toBe(403);
+
+  const internalChanged = await request(page, `/admin/assets/${lookup.body.items[0].id}/warranty`, 'PATCH', { warrantyOverrideStatus: 'exception', warrantyOverrideReason: 'E2E 内部保修覆盖' });
+  expect(internalChanged.status).toBe(200);
+  const afterInternalChange = await request(page, `/assets/${lookup.body.items[0].id}`);
+  expect(afterInternalChange.status).toBe(200);
+  expect(afterInternalChange.body.asset.warrantyOverrideStatus).toBe('exception');
+  expect(afterInternalChange.body.publicWarranty.publicNote).toBe(detail.body.publicWarranty.publicNote);
+
+  const publicChanged = await request(page, `/admin/assets/${lookup.body.items[0].id}/public-warranty`, 'PATCH', {
+    publicWarrantyStartDate: detail.body.publicWarranty.publicWarrantyStartDate,
+    publicWarrantyEndDate: detail.body.publicWarranty.publicWarrantyEndDate,
+    publicWarrantyStatus: 'unknown',
+    publicNote: 'E2E 公开保修备注',
+    isPublicQueryEnabled: true
+  });
+  expect(publicChanged.status).toBe(200);
+  const afterPublicChange = await request(page, `/assets/${lookup.body.items[0].id}`);
+  expect(afterPublicChange.status).toBe(200);
+  expect(afterPublicChange.body.publicWarranty.publicNote).toBe('E2E 公开保修备注');
+  expect(afterPublicChange.body.asset.warrantyOverrideStatus).toBe('exception');
 });

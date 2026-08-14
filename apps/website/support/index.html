@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>产品应用与技术支持 - MaxCINE</title>
+
+  <style>
+    body {
+      margin:0;
+      font-family:-apple-system,BlinkMacSystemFont,Segoe UI,Roboto;
+      background:#f5f5f5;
+      color:#111;
+    }
+
+    .mc-header {
+      background:#fff;
+      border-bottom:1px solid #eee;
+      height:60px;
+      display:flex;
+      align-items:center;
+      padding:0 20px;
+    }
+
+    .mc-left {
+      display:flex;
+      align-items:center;
+      gap:12px;
+    }
+
+    .mc-logo { height:24px; }
+
+    .mc-container {
+      max-width:900px;
+      margin:0 auto;
+      padding:60px 20px;
+      text-align:center;
+    }
+
+    .mc-search {
+      display:flex;
+      justify-content:center;
+      gap:10px;
+      margin-bottom:20px;
+    }
+
+    .mc-input {
+      padding:12px;
+      width:280px;
+      border:1px solid #ddd;
+      border-radius:8px;
+    }
+
+    .mc-btn {
+      padding:12px 20px;
+      background:#007bff;
+      color:#fff;
+      border:none;
+      border-radius:8px;
+      cursor:pointer;
+    }
+
+    .mc-main {
+      display:none;
+      margin-top:20px;
+    }
+
+    .mc-img {
+      width:120px;
+      height:120px;
+      object-fit:contain;
+      margin:20px auto;
+      background:#fff;
+      border-radius:12px;
+      border:1px solid #eee;
+    }
+
+    .mc-card {
+      background:#fff;
+      margin-top:20px;
+      padding:20px;
+      border-radius:12px;
+      text-align:left;
+    }
+
+    .download-btn {
+      display:block;
+      padding:12px;
+      margin-top:12px;
+      background:#007bff;
+      color:#fff;
+      border-radius:8px;
+      text-decoration:none;
+      text-align:center;
+    }
+  </style>
+</head>
+
+<body>
+
+<div class="mc-header">
+  <div class="mc-left">
+    <img src="../assets/logo2.png" class="mc-logo">
+    <div>产品应用与技术支持</div>
+  </div>
+</div>
+
+<div class="mc-container">
+
+  <h1>我们很乐意提供帮助</h1>
+  <p style="color:#666;">请输入设备序列号以获取对应的支持</p>
+
+  <div class="mc-search">
+    <input id="sn-input" class="mc-input" placeholder="请输入序列号">
+    <button id="sn-btn" class="mc-btn">验证</button>
+  </div>
+
+  <div id="main" class="mc-main">
+
+    <!-- 产品 -->
+    <img id="img" class="mc-img">
+    <h2 id="name"></h2>
+
+    <!-- 售后 -->
+    <div class="mc-card">
+
+  <h3 style="margin-bottom:16px;">告诉我们你遇到的问题，我们会协助你找到最合适的服务或维修方案。</h3>
+
+  <!-- ⭐ 主按钮（放最明显） -->
+<form action="https://formspree.io/f/xqerobov" method="POST" class="mc-card" style="margin-top:20px;">
+
+  <h3 style="margin-bottom:16px;">
+    请填写以下自助寄修服务登记，以便我们的支持团队及时与您取得联系
+  </h3>
+
+  <!-- 称呼 -->
+  <input name="name" placeholder="我们该如何称呼您？" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;">
+
+  <!-- SN -->
+  <input name="sn" id="form-sn" placeholder="您的产品序列号" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;">
+
+  <!-- 购买渠道 -->
+  <select name="channel" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;">
+    
+    <option value="">请选择购买渠道</option>
+    <option>MaxCINE官方自营店</option>
+    <option>极致工作室官方自营店</option>
+    <option>MaxCINE聚影官方自营店</option>
+    <option>MaxCINE官方自营店（新加坡）</option>
+    <option>MaxCINE智选授权专营店</option>
+    <option>MaxCINE-臻品工作室授权专营店</option>
+    <option>MaxCINE新风影像授权专营店</option>
+    <option>MaxCINE天枢科技淘宝授权专营店</option>
+    <option>MaxCINE-不知名飞手授权专营店</option>
+    <option>MaxCINE-Forever授权专营店</option>
+    <option>其他非官方授权渠道</option>
+  </select>
+
+  <!-- 购买日期 -->
+  <label style="font-size:13px; color:#666;">购买日期</label>
+<input type="date" name="buy_date" required
+  style="width:100%; padding:12px; margin-bottom:12px; border-radius:8px; border:1px solid #ddd;">
+   
+
+  <!-- 故障问题 -->
+  <textarea name="issue" placeholder="产品故障问题（请尽量详细描述）" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;"></textarea>
+
+  <!-- 故障时间 -->
+  <label style="font-size:13px; color:#666;">故障日期</label>
+<input type="date" name="issue_date" required
+  style="width:100%; padding:12px; margin-bottom:12px; border-radius:8px; border:1px solid #ddd;">
+    
+
+  <!-- 寄回地址 -->
+  <textarea name="address" placeholder="您的寄回地址" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;"></textarea>
+
+  <!-- 联系方式 -->
+  <input name="contact" placeholder="您的联系方式（微信，电话与邮箱缺一不可）" required
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;">
+
+  <!-- 备注 -->
+  <textarea name="remark" placeholder="备注（可选）"
+    style="width:100%; padding:12px; margin-bottom:10px; border-radius:8px; border:1px solid #ddd;"></textarea>
+
+  <!-- 防垃圾 -->
+  <input type="text" name="_gotcha" style="display:none">
+
+  <!-- 提交 -->
+  <button type="submit" class="mc-btn" style="width:100%;">
+    提交自助寄修服务申请
+  </button>
+
+</form>
+  <!-- 分割 -->
+  <div style="margin:24px 0; height:1px; background:#eee;"></div>
+
+  <!-- 联系 -->
+  <div style="text-align:center;">
+
+    <p style="font-size:14px; color:#666; margin-bottom:16px;">
+      或联系在线技术顾问获取支持
+      （如果您位于中国大陆，请添加技术顾问的企业微信；如果您位于其他地区，请通过WhatsApp联系）
+    </p>
+
+    <!-- 横向排列（关键优化点） -->
+    <div style="display:flex; justify-content:center; gap:20px; flex-wrap:wrap;">
+
+      <!-- 微信 -->
+      <div style="text-align:center;">
+        <img src="../assets/wechat.jpg" style="width:120px; border-radius:8px;">
+        <div style="font-size:12px; color:#888; margin-top:6px;">企业微信在线技术顾问</div>
+      </div>
+
+     <a id="wa-link" class="wa-btn" target="_blank">
+  <span class="wa-icon">🟢</span>
+  WhatsApp联系在线技术支持
+     </a>
+
+    </div>
+
+  </div>
+
+</div>
+<script>
+const btn = document.getElementById("sn-btn");
+const input = document.getElementById("sn-input");
+const main = document.getElementById("main");
+
+const img = document.getElementById("img");
+const name = document.getElementById("name");
+
+btn.onclick = async () => {
+
+  const sn = input.value.trim();
+  if (!sn) return alert("请输入序列号");
+
+  try {
+    const res = await fetch("../data/" + sn + ".json?t=" + Date.now());
+    if (!res.ok) throw new Error();
+
+    const data = await res.json();
+
+    document.getElementById("form-sn").value = sn;
+
+    // 产品名
+    name.textContent = data.version;
+
+    // ===== 产品图（严格按 JSON）=====
+    if (data.image && data.image.includes(".")) {
+      const path = "../assets/products/" + data.image + "?t=" + Date.now();
+      console.log("加载图片:", path);
+
+      img.src = path;
+
+      img.onerror = () => {
+        console.error("图片失败:", path);
+        img.src = "../assets/products/default.png";
+      };
+    } else {
+      img.src = "../assets/products/default.png";
+    }
+
+    // ===== WhatsApp =====
+    const phone = "6593537378"; // 必须纯数字
+    const text = encodeURIComponent("Hello, SN: " + sn);
+
+    document.getElementById("wa-link").href =
+      `https://wa.me/${phone}?text=${text}`;
+
+    main.style.display = "block";
+
+  } catch {
+    alert("序列号无效");
+  }
+};
+</script>
+
+</body>
+</html>
