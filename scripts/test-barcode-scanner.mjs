@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { chromium } from '@playwright/test';
 import bwipjs from 'bwip-js';
 import { canAcceptScan, isValidEan, MultiFrameConsensus, normalizeScannerValue, parseQrPayload, parseScannedValue } from '../packages/shared/dist/scanner.js';
@@ -104,6 +105,17 @@ ok('业务校验失败场景保持可识别错误', () => {
   assert.match(missing.message, /不存在/);
   assert.match(shipped.message, /已经发货/);
   assert.match(bound.message, /已绑定/);
+});
+
+ok('扫码成功和取消共用 cleanup 并清空摄像头 video', () => {
+  const source = readFileSync(new URL('../apps/web/src/scanner.ts', import.meta.url), 'utf8');
+  assert.match(source, /private completeScan/);
+  assert.match(source, /finally\s*\{\s*if \(!options\.continuous\) this\.cleanup\(\);/);
+  assert.match(source, /private cleanup/);
+  assert.match(source, /video\.srcObject = null/);
+  assert.match(source, /track\.stop\(\)/);
+  assert.match(source, /this\.overlay\?\.remove\(\)/);
+  assert.match(source, /stop\(\): void \{\s*this\.cleanup\(\);/);
 });
 
 const expected = 'STAGE-GSX-W101-0102';
