@@ -49,9 +49,11 @@ ok('QR Code JSON 解析允许字段', () => {
   assert.equal(parsed.value, 'STAGE-GSX-W101-0102');
 });
 
-ok('未知 QR 内容不录入', () => {
-  const parsed = parseQrPayload('这是一段普通说明，不是 MaxCINE 数据');
-  assert.equal(parsed.ok, false);
+ok('QR Code 普通文本原样返回', () => {
+  const parsed = parseQrPayload('这是一段普通说明');
+  assert.equal(parsed.ok, true);
+  assert.equal(parsed.value, '这是一段普通说明');
+  assert.equal(parsed.kind, 'text');
 });
 
 ok('多帧连续 3 次一致成功', () => {
@@ -74,6 +76,13 @@ ok('5 帧中 4 帧一致成功', () => {
   assert.equal(consensus.push('A'), null);
   assert.equal(consensus.push('A'), null);
   assert.equal(consensus.push('A'), 'A');
+});
+
+ok('同一业务值即使格式抖动也能确认', () => {
+  const consensus = new MultiFrameConsensus();
+  assert.equal(consensus.push('6901649533292'), null);
+  assert.equal(consensus.push('6901649533292'), null);
+  assert.equal(consensus.push('6901649533292'), '6901649533292');
 });
 
 ok('同一条码 2 秒内不重复录入', () => {

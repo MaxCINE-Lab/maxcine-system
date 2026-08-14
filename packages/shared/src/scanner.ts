@@ -80,7 +80,8 @@ export function parseQrPayload(raw: string, format: ScannerSymbology = 'qr_code'
     if (!isScannerSafeCode(value)) return { ok: false, reason: '已识别二维码，但内容不是可用的 MaxCINE 数据', raw, format };
     return { ok: true, value, kind: inferTextKind(value), format, raw };
   } catch {
-    return { ok: false, reason: '已识别二维码，但内容不是可用的 MaxCINE 数据', raw, format };
+    if (text.length > 300) return { ok: false, reason: '已识别二维码，但内容过长，无法自动录入', raw, format };
+    return { ok: true, value: text, kind: 'text', format, raw };
   }
 }
 
