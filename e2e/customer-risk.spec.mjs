@@ -14,12 +14,13 @@ async function login(page, email) {
 async function searchRisk(page, value) {
   await page.goto('/#/system/customer-risk');
   await expect(page.getByRole('heading', { name: 'Customer Risk Center' })).toBeVisible();
+  await page.getByRole('button', { name: '模糊查询' }).click();
   await page.locator('.risk-spotlight input').fill(value);
   await page.keyboard.press('Enter');
   await expect(page.locator('.risk-profile')).toBeVisible();
 }
 
-test('Customer Risk Center supports fast lookup, consultation append and duplicate guard', async ({ page }) => {
+test('Customer Risk Center supports fast lookup, manual blacklist creation and consultation append', async ({ page }) => {
   await login(page, '8016sun@maxcine.cn');
   await page.goto('/#/system/customer-risk');
   await expect(page.getByRole('button', { name: '模糊查询' })).toBeVisible();
@@ -45,11 +46,19 @@ test('Customer Risk Center supports fast lookup, consultation append and duplica
   await page.getByRole('button', { name: '保存咨询记录' }).click();
   await expect(page.getByText('浏览器验收追加咨询记录。')).toBeVisible();
 
+  const manualNickname = `e2eNick_${Date.now()}`;
   await page.getByRole('button', { name: '新建黑名单' }).click();
-  await page.locator('.risk-spotlight textarea').fill('tbNick_91xpa\n何满堂\n18191316611\n陕西省渭南市大荔县城关街道东大街21号\nIP：陕西省');
-  await page.getByRole('button', { name: '自动识别' }).click();
-  await expect(page.getByText('发现现有客户档案')).toBeVisible();
-  await expect(page.getByRole('button', { name: '创建黑名单档案' })).toBeDisabled();
+  await expect(page.getByText('人工填写已知身份信息即可')).toBeVisible();
+  await expect(page.getByRole('button', { name: '自动识别' })).toHaveCount(0);
+  await page.locator('.risk-manual-create input').first().fill(manualNickname);
+  await page.getByRole('button', { name: '创建黑名单档案' }).click();
+  await expect(page.locator('.risk-profile')).toBeVisible();
+  await expect(page.getByRole('heading', { name: manualNickname })).toBeVisible();
+  await page.getByRole('button', { name: '新建黑名单' }).click();
+  await expect(page.locator('.risk-manual-create input').first()).toHaveValue('');
+  await expect(page.locator('.risk-manual-create textarea').first()).toHaveValue('');
+  await searchRisk(page, manualNickname);
+  await expect(page.getByRole('heading', { name: manualNickname })).toBeVisible();
 
   await page.goto('/#/login');
   await login(page, '9353xuyan@maxcine.cn');
