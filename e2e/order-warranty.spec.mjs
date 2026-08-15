@@ -49,6 +49,8 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   const selectedSn = `E2E-W101-${unique}`;
   execute(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, data_quality_status, created_at, updated_at)
     VALUES (${sqlString(randomUUID())}, ${sqlString(selectedSn)}, ${sqlString(selectedSn)}, ${sqlString(product.productId)}, ${sqlString(product.name)}, '标准套装', 'active', 'normal', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+  execute(`INSERT INTO serial_numbers (id, product_id, serial_number, state, production_date, warehouse_location, internal_note, created_at, updated_at)
+    VALUES (${sqlString(randomUUID())}, ${sqlString(product.productId)}, ${sqlString(selectedSn)}, 'available', '2026-08-01', 'E2E 山东云仓', 'E2E 可售库存 SN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
   const created = await request(page, '/orders', 'POST', {
     storeId: stores.body.stores[0].id,
     items: [{ productId: product.productId, quantity: 1 }],
@@ -83,7 +85,12 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   expect(warehouseDetail.body.order.salePriceCents).toBeNull();
   expect(warehouseDetail.body.order.customerProfile).toBe('');
   expect(warehouseDetail.body.order.screenshotDataUrl).toBe('');
-  expect((await request(page, `/orders/${created.body.id}/ship`, 'POST', { carrier: '顺丰速运', trackingNumber: `SF-E2E-${unique}`, serialNumbers: [selectedSn] })).status).toBe(200);
+  expect((await request(page, `/orders/${created.body.id}/ship`, 'POST', {
+    carrier: '顺丰速运',
+    trackingNumber: `SF-E2E-${unique}`,
+    serialNumbers: [selectedSn],
+    photos: [{ category: 'box_sn', originalFilename: 'box-sn.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' }]
+  })).status).toBe(200);
 
   await login(page, '9353xuyan@maxcine.cn');
   const lookup = await request(page, `/gsx/search?q=${encodeURIComponent(selectedSn)}`);

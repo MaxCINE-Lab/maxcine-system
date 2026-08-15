@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, bindOrderSerialsSchema, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -73,6 +73,30 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
   assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: { phone: '13800000000' }, riskReasons: ['其他'] }).success, false);
   assert.equal(updateCustomerRiskEventSchema.safeParse({ status: 'watchlist', riskLevel: 'medium', riskReasons: ['大量询价未购买'], consultationResult: '跟进中', note: '更新本人记录' }).success, true);
   assert.equal(updateCustomerRiskProfileSchema.parse({ customer: { platformNickname: 'tbNick_91xpa', ipLocation: '陕西省' }, status: 'blacklist' }).customer.ipLocation, '陕西省');
+});
+
+test('customer risk center keeps blacklist creation minimal and editable', () => {
+  const source = readFileSync(new URL('../apps/web/src/DealerPortal.tsx', import.meta.url), 'utf8');
+  const componentStart = source.indexOf('function CustomerRiskCenter');
+  const componentEnd = source.indexOf('function OrderForm', componentStart);
+  const component = source.slice(componentStart, componentEnd);
+  const renderStart = component.indexOf('return <DealerShell');
+  const renderSource = component.slice(renderStart);
+  const saveBlacklistStart = component.indexOf('const saveBlacklist');
+  const saveBlacklistEnd = component.indexOf('const saveConsultation', saveBlacklistStart);
+  const saveBlacklistSource = component.slice(saveBlacklistStart, saveBlacklistEnd);
+  assert.match(component, /function parseCustomerRiskSmartInput|parseCustomerRiskSmartInput/);
+  assert.match(component, /resetCreateState/);
+  assert.match(component, /setMode\('search'\)/);
+  assert.match(component, /平台昵称/);
+  assert.match(component, /手机号/);
+  assert.match(component, /收件人/);
+  assert.match(component, /微信昵称/);
+  assert.match(component, /IP 信息/);
+  assert.match(component, /地址/);
+  assert.match(component, /识别不到的字段可以留空/);
+  assert.doesNotMatch(renderSource, /确认识别结果|补充信息|收起补充信息|Telegram|WhatsApp|QQ/);
+  assert.doesNotMatch(saveBlacklistSource, /请选择至少一个风险原因/);
 });
 
 test('quote workflow requires explicit preview state and a unique send idempotency key', () => {
@@ -156,11 +180,11 @@ test('submitted-order fields accept bounded image data and reject unsafe screens
   assert.equal(createOrderSchema.safeParse({ ...input, screenshotDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }).success, false);
 });
 
-test('shipment confirmation accepts optional categorized outbound photos and still rejects unsafe image data', () => {
+test('shipment confirmation allows missing SN but requires barcode photo and rejects unsafe image data', () => {
   const parsed = shipmentSchema.parse({
     carrier: '顺丰速运',
     trackingNumber: 'SF1234567890',
-    serialNumbers: ['STAGE-GSX-W101-0102'],
+    serialNumbers: [],
     photos: [
       { category: 'box_sn', originalFilename: 'box-sn.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
       { category: 'packed_photo_1', originalFilename: 'packed-1.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
@@ -169,10 +193,49 @@ test('shipment confirmation accepts optional categorized outbound photos and sti
   });
   assert.equal(parsed.photos.length, 3);
   assert.equal(shipmentSchema.safeParse({ ...parsed, photos: [{ ...parsed.photos[0], dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }] }).success, false);
-  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', serialNumbers: ['STAGE-GSX-W101-0102'] }).photos.length, 0);
+  assert.equal(shipmentSchema.safeParse({ carrier: '顺丰速运', serialNumbers: [] }).success, false);
+  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', photos: [parsed.photos[0]] }).serialNumbers.length, 0);
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /确认发货前请上传/);
   assert.match(source, /shipment_photos/);
+});
+
+test('post-shipment SN binding uses the original shipment time and writes audit history', () => {
+  const parsed = bindOrderSerialsSchema.parse({ serialNumbers: [' mx-post-ship-001 '] });
+  assert.deepEqual(parsed.serialNumbers, ['MX-POST-SHIP-001']);
+  assert.equal(bindOrderSerialsSchema.safeParse({ serialNumbers: [] }).success, false);
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const operationsUiSource = readFileSync(new URL('../apps/web/src/OperationsPortal.tsx', import.meta.url), 'utf8');
+  assert.match(source, /\/orders\/:id\/bind-serials/);
+  assert.match(source, /bindingStatementsForShippedOrder/);
+  assert.match(source, /shipment\.shippedAt/);
+  assert.match(source, /shipmentWarrantyDates\(input\.shippedAt/);
+  assert.match(source, /order\.bind_serials_after_shipment/);
+  assert.match(source, /INSERT OR IGNORE INTO asset_public_warranties/);
+  assert.match(operationsUiSource, /已发货 · 待绑定 SN/);
+  assert.match(operationsUiSource, /后补绑定 SN/);
+  assert.match(operationsUiSource, /条码 \/ SN 标签照片/);
+});
+
+test('inventory serial ledger requires product selection and keeps inbound separated from shipment warranty', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const migration = readFileSync(new URL('../apps/api/migrations/0024_inventory_serial_ledger.sql', import.meta.url), 'utf8');
+  const parsed = createInventorySerialSchema.parse({
+    productId: '40000000-0000-4000-8000-000000000001',
+    serialNumber: ' mx-test-sn-0001 ',
+    productionDate: '2026-08-15',
+    warehouseLocation: '山东云仓',
+    internalNote: '入库测试，不触发销售。'
+  });
+  assert.equal(parsed.serialNumber, 'MX-TEST-SN-0001');
+  assert.equal(createInventorySerialSchema.safeParse({ serialNumber: 'MX-TEST-SN-0001' }).success, false);
+  assert.equal(updateInventorySerialSchema.safeParse({ state: 'shipped' }).success, false);
+  assert.equal(updateInventorySerialSchema.safeParse({ state: 'blocked', internalNote: '管理员标记异常' }).success, true);
+  assert.match(migration, /production_date/);
+  assert.match(migration, /warehouse_location/);
+  assert.match(source, /inventory\.serial_create/);
+  assert.match(source, /transaction_type, quantity_delta, note, created_by\)\s*VALUES \(\?, \?, \?, 'inbound', 1/);
+  assert.doesNotMatch(source, /asset_public_warranties[\s\S]{0,220}inventory\.serial_create/);
 });
 
 test('MaxCINE Intelligence is a disabled coming-soon entry without AI provider calls', () => {

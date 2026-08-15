@@ -162,7 +162,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
     });
   }
   if (hasWarehouseAccess(user)) {
-    groups.push({ label: '仓库', items: [['发货', '/system/warehouse']] });
+    groups.push({ label: '仓库', items: [['发货', '/system/warehouse'], ['库存明细', '/system/warehouse/inventory']] });
   }
   if (hasServiceCenterAccess(user)) {
     groups.push({ label: '工程师', items: [['服务中心工单', '/system/service-center'], ['SN 查询', '/system/service-center/assets']] });
@@ -178,7 +178,7 @@ export function systemNavActive(path: string, href: string): boolean {
     || (href === '/system/admin/dealers' && (path.startsWith('/system/admin/dealers') || path.startsWith('/system/admin/stores')))
     || (href === '/system/admin/orders' && path.startsWith('/system/admin/order/'))
     || (href === '/system/admin/mail-center' && path.startsWith('/system/admin/mail-center'))
-    || (href === '/system/warehouse' && path.startsWith('/system/warehouse'))
+    || (href === '/system/warehouse' && (path === '/system/warehouse' || path.startsWith('/system/warehouse/order/')))
     || (href === '/system/customer-risk' && path.startsWith('/system/customer-risk'))
     || (href === '/system/intelligence' && path.startsWith('/system/intelligence'))
     || (href === '/system/orders' && path.startsWith('/system/orders/'))

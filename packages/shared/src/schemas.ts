@@ -51,7 +51,7 @@ const afterSalesCaseTypeSchema = z.enum([
 export const shipmentSchema = z.object({
   carrier: z.string().trim().min(2).max(40).default('顺丰速运'),
   trackingNumber: optionalTrackingSchema.default(''),
-  serialNumbers: z.array(serialInputSchema).min(1, '确认发货前必须录入产品 SN').max(100),
+  serialNumbers: z.array(serialInputSchema).max(100).default([]),
   photos: z.array(z.object({
     category: z.enum(['box_sn', 'packed_photo_1', 'packed_photo_2']),
     originalFilename: z.string().trim().min(1).max(180),
@@ -61,6 +61,14 @@ export const shipmentSchema = z.object({
       '出库照片仅支持 PNG、JPG 或 WebP 图片'
     )
   })).max(3).default([])
+}).superRefine((value, context) => {
+  if (!value.photos.some((photo) => photo.category === 'box_sn')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['photos'], message: '确认发货前请拍摄或上传条码 / SN 照片' });
+  }
+});
+
+export const bindOrderSerialsSchema = z.object({
+  serialNumbers: z.array(serialInputSchema).min(1, '请至少选择或填写一个 SN').max(100)
 });
 
 const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'outbound_product_back', 'outbound_all_items']);
@@ -135,6 +143,30 @@ export const updateProductSchema = createProductSchema.extend({
 export const adjustInventorySchema = z.object({
   quantityDelta: z.number().int().min(-999999).max(999999).refine((value) => value !== 0, '调整数量不能为零'),
   note: z.string().trim().min(3).max(500)
+});
+
+export const inventorySerialStateSchema = z.enum(['available', 'blocked']);
+
+export const createInventorySerialSchema = z.object({
+  productId: z.string().uuid('请选择产品 / P/N'),
+  serialNumber: serialInputSchema,
+  productionDate: isoDateSchema.optional().or(z.literal('')).default(''),
+  warehouseLocation: z.string().trim().max(120).default(''),
+  storageBox: z.string().trim().max(120).default(''),
+  cartonNumber: z.string().trim().max(120).default(''),
+  internalNote: z.string().trim().max(1000).default(''),
+  confirmExistingAsset: z.boolean().default(false)
+});
+
+export const updateInventorySerialSchema = z.object({
+  productId: z.string().uuid().optional(),
+  productionDate: isoDateSchema.optional().or(z.literal('')).default(''),
+  warehouseLocation: z.string().trim().max(120).default(''),
+  storageBox: z.string().trim().max(120).default(''),
+  cartonNumber: z.string().trim().max(120).default(''),
+  internalNote: z.string().trim().max(1000).default(''),
+  state: inventorySerialStateSchema.optional(),
+  confirmProductChange: z.boolean().default(false)
 });
 
 export const createDealerSchema = z.object({

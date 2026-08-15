@@ -25,8 +25,128 @@ function Empty({ text = '暂无内容。' }: { text?: string }) { return <div cl
 function useOptions() { const [options, setOptions] = useState<Options | null>(null); useEffect(() => { void api<Options>('/admin/options').then(setOptions); }, []); return options; }
 
 type Product = { id: string; sku: string; name: string; description: string; productVersion: string; specification: string; unitPriceCents: number; reorderLevel: number; isActive: number; availableQuantity: number; reservedQuantity: number; createdAt: string; updatedAt: string };
+type InventorySerialRow = { id: string; serialNumber: string; state: string; productionDate: string | null; warehouseLocation: string; storageBox: string; cartonNumber: string; internalNote: string; createdAt: string; updatedAt: string; orderItemId: string | null; shipmentId: string | null; productId: string; productName: string; sku: string; productVersion: string; specification: string; assetId: string | null; factoryPhotoCount: number };
+type InventorySerialDetail = { serial: InventorySerialRow; asset: { id: string; currentSn: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string } | null; factoryPhotos: Array<{ id: string; originalFilename: string; contentUrl: string; uploadedAt: string; uploadedByName: string | null }> };
 const freshProduct = () => ({ sku: '', name: '', description: '', productVersion: '', specification: '', unitPriceCents: '', reorderLevel: '0', isActive: true });
-function Products({ user, route, logout }: Props) { const [items, setItems] = useState<Product[] | null>(null); const [form, setForm] = useState(freshProduct()); const [editing, setEditing] = useState<string | null>(null); const [search, setSearch] = useState(''); const [active, setActive] = useState(''); const [notice, setNotice] = useState<Notice>(null); const load = () => api<{ products: Product[] }>(`/admin/products?search=${encodeURIComponent(search)}${active ? `&active=${active}` : ''}`).then((data) => setItems(data.products)).catch((e) => setNotice({ tone: 'error', text: errorText(e) })); useEffect(() => { void load(); }, [search, active]); const edit = (item: Product) => { setEditing(item.id); setForm({ sku: item.sku, name: item.name, description: item.description, productVersion: item.productVersion, specification: item.specification, unitPriceCents: String(item.unitPriceCents), reorderLevel: String(item.reorderLevel), isActive: Boolean(item.isActive) }); }; const submit = async (event: FormEvent) => { event.preventDefault(); if (!form.sku || !form.name || Number(form.unitPriceCents) < 0) return setNotice({ tone: 'error', text: '请完整填写产品名称、SKU 和价格。' }); try { const body = { ...form, unitPriceCents: Number(form.unitPriceCents), reorderLevel: Number(form.reorderLevel) }; await api(editing ? `/admin/products/${editing}` : '/admin/products', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(body) }); setNotice({ tone: 'success', text: editing ? '产品已更新。' : '产品已新增。' }); setEditing(null); setForm(freshProduct()); void load(); } catch (e) { setNotice({ tone: 'error', text: errorText(e) }); } }; return <Shell user={user} route={route} logout={logout} title="产品管理" text="新增、编辑产品，并维护经销商价格和库存预警。"><Feedback notice={notice} /><section className="toolbar"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索产品名称或 SKU" /><select value={active} onChange={(e) => setActive(e.target.value)}><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select><Button secondary onClick={() => { setEditing(null); setForm(freshProduct()); }}>新增产品</Button></section><form className="panel" onSubmit={submit}><h2>{editing ? '编辑产品' : '新增产品'}</h2><div className="form-layout"><label>产品名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><label>SKU<input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value.toUpperCase() })} /></label><label>产品版本<input value={form.productVersion} onChange={(e) => setForm({ ...form, productVersion: e.target.value })} /></label><label>产品规格<input value={form.specification} onChange={(e) => setForm({ ...form, specification: e.target.value })} /></label><label>经销商价格（分）<input type="number" min="0" value={form.unitPriceCents} onChange={(e) => setForm({ ...form, unitPriceCents: e.target.value })} /></label><label>库存预警值<input type="number" min="0" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} /></label><label>产品简介<textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label><label><input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} /> 启用产品</label></div><div className="action-list"><Button type="submit">保存</Button>{editing && <Button secondary onClick={() => { setEditing(null); setForm(freshProduct()); }}>取消编辑</Button>}</div></form>{!items ? <p>正在加载…</p> : items.length ? <div className="table-wrap"><table><thead><tr><th>产品</th><th>SKU</th><th>版本／规格</th><th>价格</th><th>库存</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.sku}</td><td>{item.productVersion || '—'} / {item.specification || '—'}</td><td>{money(item.unitPriceCents)}</td><td>{item.availableQuantity} 可用 / {item.reservedQuantity} 预留</td><td>{item.isActive ? '已启用' : '已停用'}</td><td>{date(item.updatedAt)}</td><td><Button secondary onClick={() => edit(item)}>编辑</Button></td></tr>)}</tbody></table></div> : <Empty text="未找到符合条件的产品。" />}</Shell>; }
+const freshSerialForm = () => ({ productId: '', serialNumber: '', productionDate: '', warehouseLocation: '山东云仓', storageBox: '', cartonNumber: '', internalNote: '', state: 'available' });
+const serialStateText = (value: string) => ({ available: '可售', allocated: '预留', shipped: '已售出', returned: '已退回', blocked: '异常' } as Record<string, string>)[value] ?? value;
+
+function InventoryPhotoGrid({ user, detail, canEdit, onReload, onNotice }: { user: SessionUser; detail: InventorySerialDetail; canEdit: boolean; onReload: () => void; onNotice: (notice: Notice) => void }) {
+  const [viewer, setViewer] = useState<InventorySerialDetail['factoryPhotos'][number] | null>(null);
+  const [pending, setPending] = useState<File[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const addFiles = (files: FileList | null) => {
+    const list = Array.from(files ?? []).filter((file) => file.size > 0);
+    setPending((current) => [...current, ...list].slice(0, 30));
+  };
+  const upload = async () => {
+    if (!pending.length) return;
+    setUploading(true);
+    try {
+      const ensured = await api<{ assetId: string; uploadUrl: string }>(`/admin/inventory/serials/${detail.serial.id}/factory-photos`, { method: 'POST', body: JSON.stringify({}) });
+      const form = new FormData();
+      pending.forEach((file) => form.append('files', file));
+      await api(`/admin/assets/${ensured.assetId}/factory-photos`, { method: 'POST', body: form });
+      setPending([]);
+      onNotice({ tone: 'success', text: '出厂照片已上传。' });
+      onReload();
+    } catch (error) {
+      onNotice({ tone: 'error', text: errorText(error) });
+    } finally {
+      setUploading(false);
+    }
+  };
+  return <section className="panel panel--nested"><div className="panel-title"><h2>出厂照片（{detail.factoryPhotos.length}）</h2><span>{canEdit ? '可拍照或一次选择多张图片上传。' : '只读查看。'}</span></div>{canEdit && <><div className="photo-upload-actions"><label className="button button--secondary">拍照 / 上传照片<input hidden type="file" accept="image/png,image/jpeg,image/webp" multiple capture="environment" onChange={(event) => { addFiles(event.target.files); event.currentTarget.value = ''; }} /></label><CameraPhotoButton label="摄像头拍照" fileNamePrefix="factory-photo" watermarkLines={captureWatermarkLines(user)} onCapture={(file) => setPending((current) => [...current, file])} onError={(text) => onNotice({ tone: 'error', text })} />{pending.length > 0 && <Button disabled={uploading} onClick={() => void upload()}>{uploading ? '正在上传…' : `提交 ${pending.length} 张照片`}</Button>}</div>{pending.length > 0 && <div className="image-grid">{pending.map((file, index) => <figure key={`${file.name}-${index}`}><img src={URL.createObjectURL(file)} alt={file.name} /><figcaption>{file.name}</figcaption><button type="button" onClick={() => setPending((current) => current.filter((_, itemIndex) => itemIndex !== index))}>移除</button></figure>)}</div>}</>}{detail.factoryPhotos.length ? <div className="factory-photo-grid">{detail.factoryPhotos.map((photo) => <figure className="factory-photo-card" key={photo.id}><button type="button" className="factory-photo-thumb" onClick={() => setViewer(photo)}><img src={`${apiBaseUrl}${photo.contentUrl}`} alt={photo.originalFilename || '出厂照片'} /></button><figcaption><strong>{photo.originalFilename || '出厂照片'}</strong><span>{date(photo.uploadedAt)}</span></figcaption></figure>)}</div> : <p>暂无出厂照片。</p>}{viewer && <div className="service-photo-viewer" role="dialog" aria-modal="true" onClick={() => setViewer(null)}><div className="service-photo-viewer__dialog" onClick={(event) => event.stopPropagation()}><header><strong>{viewer.originalFilename || '出厂照片'} · {date(viewer.uploadedAt)}</strong><button type="button" onClick={() => setViewer(null)} aria-label="关闭图片预览">×</button></header><img src={`${apiBaseUrl}${viewer.contentUrl}`} alt={viewer.originalFilename || '出厂照片'} /></div></div>}</section>;
+}
+
+function InventoryLedger({ user, products, canEdit }: { user: SessionUser; products: Product[]; canEdit: boolean }) {
+  const toast = useToast();
+  const [rows, setRows] = useState<InventorySerialRow[]>([]);
+  const [detail, setDetail] = useState<InventorySerialDetail | null>(null);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [search, setSearch] = useState('');
+  const [productId, setProductId] = useState('');
+  const [state, setState] = useState('');
+  const [warehouse, setWarehouse] = useState('');
+  const [warehouses, setWarehouses] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ page: 1, total: 0, totalPages: 1 });
+  const [form, setForm] = useState(freshSerialForm());
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [showEditor, setShowEditor] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const params = `search=${encodeURIComponent(search)}&productId=${encodeURIComponent(productId)}&state=${encodeURIComponent(state)}&warehouse=${encodeURIComponent(warehouse)}&page=${page}&limit=30`;
+  const load = () => api<{ serials: InventorySerialRow[]; warehouses: string[]; pagination: typeof pagination }>(`/admin/inventory/serials?${params}`).then((data) => { setRows(data.serials); setWarehouses(data.warehouses); setPagination(data.pagination); }).catch((error) => setNotice({ tone: 'error', text: errorText(error) }));
+  useEffect(() => { void load(); }, [search, productId, state, warehouse, page]);
+  const openDetail = async (idValue: string) => {
+    try {
+      const data = await api<InventorySerialDetail>(`/admin/inventory/serials/${idValue}`);
+      setDetail(data);
+      setEditingId(null);
+    } catch (error) {
+      setNotice({ tone: 'error', text: errorText(error) });
+    }
+  };
+  const startEdit = (row: InventorySerialRow) => {
+    setEditingId(row.id);
+    setShowEditor(true);
+    setForm({ productId: row.productId, serialNumber: row.serialNumber, productionDate: row.productionDate || '', warehouseLocation: row.warehouseLocation || '', storageBox: row.storageBox || '', cartonNumber: row.cartonNumber || '', internalNote: row.internalNote || '', state: row.state === 'blocked' ? 'blocked' : 'available' });
+  };
+  const submitSerial = async (event: FormEvent) => {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const productChanged = Boolean(editingId && detail && form.productId !== detail.serial.productId);
+      if (productChanged && !window.confirm('确认修改该 SN 的 P/N 归属吗？这会调整产品库存数量。')) return;
+      const body = { productId: form.productId, serialNumber: form.serialNumber, productionDate: form.productionDate, warehouseLocation: form.warehouseLocation, storageBox: form.storageBox, cartonNumber: form.cartonNumber, internalNote: form.internalNote, state: form.state, confirmProductChange: productChanged, confirmExistingAsset: false };
+      await api(editingId ? `/admin/inventory/serials/${editingId}` : '/admin/inventory/serials', { method: editingId ? 'PATCH' : 'POST', body: JSON.stringify(body) }).catch(async (error) => {
+        if (!editingId && error instanceof ApiClientError && error.message.includes('历史 GSX') && window.confirm(`${error.message}\n\n确认继续创建库存 SN 吗？`)) {
+          await api('/admin/inventory/serials', { method: 'POST', body: JSON.stringify({ ...body, confirmExistingAsset: true }) });
+          return;
+        }
+        throw error;
+      });
+      setForm(freshSerialForm());
+      setEditingId(null);
+      setShowEditor(false);
+      const text = editingId ? '库存 SN 已更新。' : '库存 SN 已创建。';
+      setNotice({ tone: 'success', text });
+      toast({ tone: 'success', text });
+      void load();
+      if (detail) void openDetail(detail.serial.id);
+    } catch (error) {
+      const text = errorText(error);
+      setNotice({ tone: 'error', text });
+      toast({ tone: 'error', text });
+    } finally {
+      setBusy(false);
+    }
+  };
+  return <section className="inventory-ledger"><Feedback notice={notice} /><div className="panel-title"><h2>库存明细表</h2><span>按 SN 查看完整库存台账，库存数量由流水自动维护。</span></div><section className="toolbar"><input value={search} onChange={(event) => { setPage(1); setSearch(event.target.value); }} placeholder="搜索 SN / P/N / 产品 / 备注" /><select value={productId} onChange={(event) => { setPage(1); setProductId(event.target.value); }}><option value="">全部产品 / P/N</option>{products.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select><select value={state} onChange={(event) => { setPage(1); setState(event.target.value); }}><option value="">全部状态</option><option value="available">可售</option><option value="allocated">预留</option><option value="shipped">已售出</option><option value="blocked">异常</option><option value="returned">已退回</option></select><select value={warehouse} onChange={(event) => { setPage(1); setWarehouse(event.target.value); }}><option value="">全部仓库</option>{warehouses.map((item) => <option key={item}>{item}</option>)}</select>{canEdit && <Button onClick={() => { setEditingId(null); setDetail(null); setForm(freshSerialForm()); setShowEditor(true); }}>新建库存</Button>}</section>{canEdit && showEditor && <form className="panel" onSubmit={submitSerial}><h3>{editingId ? '编辑库存 SN' : '新建库存'}</h3><div className="form-layout"><label>SN<input value={form.serialNumber} disabled={Boolean(editingId)} onChange={(event) => setForm({ ...form, serialNumber: event.target.value.toUpperCase() })} /></label><label>产品版本 / P/N<select value={form.productId} onChange={(event) => setForm({ ...form, productId: event.target.value })}><option value="">请选择 P/N</option>{products.map((item) => <option key={item.id} value={item.id}>{item.sku} · {item.name}</option>)}</select></label><label>生产日期<input type="date" value={form.productionDate} onChange={(event) => setForm({ ...form, productionDate: event.target.value })} /></label><label>存放仓库<input value={form.warehouseLocation} onChange={(event) => setForm({ ...form, warehouseLocation: event.target.value })} /></label><label>收纳盒<input value={form.storageBox} onChange={(event) => setForm({ ...form, storageBox: event.target.value })} /></label><label>箱号<input value={form.cartonNumber} onChange={(event) => setForm({ ...form, cartonNumber: event.target.value })} /></label>{editingId && <label>库存状态<select value={form.state} onChange={(event) => setForm({ ...form, state: event.target.value })}><option value="available">可售</option><option value="blocked">异常</option></select></label>}<label>内部备注<textarea value={form.internalNote} onChange={(event) => setForm({ ...form, internalNote: event.target.value })} placeholder="瑕疵、体质、镜片状态、特殊说明等" /></label></div><div className="action-list"><Button type="submit" disabled={busy}>{busy ? '保存中…' : '保存'}</Button><Button secondary onClick={() => { setEditingId(null); setShowEditor(false); setForm(freshSerialForm()); }}>取消</Button></div></form>}<div className="table-wrap"><table><thead><tr><th>SN</th><th>产品名称</th><th>P/N</th><th>产品版本</th><th>生产日期</th><th>库存状态</th><th>存放仓库</th><th>收纳盒</th><th>箱号</th><th>内部备注</th><th>照片</th><th>创建时间</th><th>更新时间</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id} className="clickable-row" onClick={() => void openDetail(row.id)}><td>{row.serialNumber}</td><td>{row.productName}</td><td>{row.sku}</td><td>{row.productVersion || row.specification || '—'}</td><td>{row.productionDate || '—'}</td><td>{serialStateText(row.state)}</td><td>{row.warehouseLocation || '—'}</td><td>{row.storageBox || '—'}</td><td>{row.cartonNumber || '—'}</td><td>{row.internalNote || '—'}</td><td>{row.factoryPhotoCount ? `${row.factoryPhotoCount} 张` : '—'}</td><td>{date(row.createdAt)}</td><td>{date(row.updatedAt)}</td></tr>)}</tbody></table>{!rows.length && <Empty text="暂无库存 SN。" />}</div><div className="pagination"><Button secondary disabled={page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}>上一页</Button><span>第 {pagination.page} / {pagination.totalPages} 页 · 共 {pagination.total} 条</span><Button secondary disabled={page >= pagination.totalPages} onClick={() => setPage((value) => value + 1)}>下一页</Button></div>{detail && <aside className="detail-panel inventory-detail-panel"><button className="panel-close" onClick={() => { setDetail(null); setEditingId(null); setShowEditor(false); }} aria-label="关闭">×</button><span className="eyebrow">库存详情</span><h2>{detail.serial.serialNumber}</h2><dl><dt>产品</dt><dd>{detail.serial.productName}</dd><dt>P/N</dt><dd>{detail.serial.sku}</dd><dt>版本</dt><dd>{detail.serial.productVersion || detail.serial.specification || '—'}</dd><dt>状态</dt><dd>{serialStateText(detail.serial.state)}</dd><dt>仓库</dt><dd>{detail.serial.warehouseLocation || '—'}</dd><dt>备注</dt><dd>{detail.serial.internalNote || '—'}</dd><dt>GSX 资产</dt><dd>{detail.asset ? <a href={`#/system/admin/assets/${detail.asset.id}`}>查看资产详情</a> : '未关联'}</dd></dl>{canEdit && <Button secondary onClick={() => startEdit(detail.serial)}>编辑该 SN</Button>}<InventoryPhotoGrid user={user} detail={detail} canEdit={canEdit} onReload={() => void openDetail(detail.serial.id)} onNotice={(value) => { setNotice(value); if (value) toast({ tone: value.tone, text: value.text }); }} /></aside>}</section>;
+}
+
+function Products({ user, route, logout }: Props) {
+  const [items, setItems] = useState<Product[] | null>(null);
+  const [form, setForm] = useState(freshProduct());
+  const [editing, setEditing] = useState<string | null>(null);
+  const [search, setSearch] = useState('');
+  const [active, setActive] = useState('');
+  const [notice, setNotice] = useState<Notice>(null);
+  const load = () => api<{ products: Product[] }>(`/admin/products?search=${encodeURIComponent(search)}${active ? `&active=${active}` : ''}`).then((data) => setItems(data.products)).catch((e) => setNotice({ tone: 'error', text: errorText(e) }));
+  useEffect(() => { void load(); }, [search, active]);
+  const edit = (item: Product) => { setEditing(item.id); setForm({ sku: item.sku, name: item.name, description: item.description, productVersion: item.productVersion, specification: item.specification, unitPriceCents: String(item.unitPriceCents), reorderLevel: String(item.reorderLevel), isActive: Boolean(item.isActive) }); };
+  const submit = async (event: FormEvent) => {
+    event.preventDefault();
+    if (!form.sku || !form.name || Number(form.unitPriceCents) < 0) return setNotice({ tone: 'error', text: '请完整填写产品名称、SKU 和价格。' });
+    try {
+      const body = { ...form, unitPriceCents: Number(form.unitPriceCents), reorderLevel: Number(form.reorderLevel) };
+      await api(editing ? `/admin/products/${editing}` : '/admin/products', { method: editing ? 'PATCH' : 'POST', body: JSON.stringify(body) });
+      setNotice({ tone: 'success', text: editing ? '产品已更新。' : '产品已新增。' });
+      setEditing(null); setForm(freshProduct()); void load();
+    } catch (e) { setNotice({ tone: 'error', text: errorText(e) }); }
+  };
+  return <Shell user={user} route={route} logout={logout} title="产品管理" text="维护产品主数据，并按 SN 查看完整库存台账。"><Feedback notice={notice} /><section className="toolbar"><input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="搜索产品名称或 SKU" /><select value={active} onChange={(e) => setActive(e.target.value)}><option value="">全部状态</option><option value="true">已启用</option><option value="false">已停用</option></select><Button secondary onClick={() => { setEditing(null); setForm(freshProduct()); }}>新增产品</Button></section><form className="panel" onSubmit={submit}><h2>{editing ? '编辑产品' : '新增产品'}</h2><div className="form-layout"><label>产品名称<input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} /></label><label>SKU<input value={form.sku} onChange={(e) => setForm({ ...form, sku: e.target.value.toUpperCase() })} /></label><label>产品版本<input value={form.productVersion} onChange={(e) => setForm({ ...form, productVersion: e.target.value })} /></label><label>产品规格<input value={form.specification} onChange={(e) => setForm({ ...form, specification: e.target.value })} /></label><label>经销商价格（分）<input type="number" min="0" value={form.unitPriceCents} onChange={(e) => setForm({ ...form, unitPriceCents: e.target.value })} /></label><label>库存预警值<input type="number" min="0" value={form.reorderLevel} onChange={(e) => setForm({ ...form, reorderLevel: e.target.value })} /></label><label>产品简介<textarea value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} /></label><label><input type="checkbox" checked={form.isActive} onChange={(e) => setForm({ ...form, isActive: e.target.checked })} /> 启用产品</label></div><div className="action-list"><Button type="submit">保存</Button>{editing && <Button secondary onClick={() => { setEditing(null); setForm(freshProduct()); }}>取消编辑</Button>}</div></form>{!items ? <p>正在加载…</p> : items.length ? <div className="table-wrap"><table><thead><tr><th>产品</th><th>SKU / P/N</th><th>版本／规格</th><th>价格</th><th>库存</th><th>状态</th><th>更新时间</th><th>操作</th></tr></thead><tbody>{items.map((item) => <tr key={item.id}><td>{item.name}</td><td>{item.sku}</td><td>{item.productVersion || '—'} / {item.specification || '—'}</td><td>{money(item.unitPriceCents)}</td><td>{item.availableQuantity} 可用 / {item.reservedQuantity} 预留</td><td>{item.isActive ? '已启用' : '已停用'}</td><td>{date(item.updatedAt)}</td><td><Button secondary onClick={() => edit(item)}>编辑</Button></td></tr>)}</tbody></table></div> : <Empty text="未找到符合条件的产品。" />}<InventoryLedger user={user} products={items ?? []} canEdit={true} /></Shell>;
+}
 
 type Dealer = { id: string; code: string; name: string; province: string; authorizationType: string; contactName: string; notificationEmail: string; serviceCenterName: string | null; status: string; storeCount: number; userCount: number; updatedAt: string };
 const freshDealer = () => ({ code: '', name: '', province: '', authorizationType: '授权经销商', serviceCenterId: '', contactName: '', notificationEmail: '', status: 'active' });
