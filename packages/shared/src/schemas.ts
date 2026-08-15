@@ -51,7 +51,7 @@ const afterSalesCaseTypeSchema = z.enum([
 export const shipmentSchema = z.object({
   carrier: z.string().trim().min(2).max(40).default('顺丰速运'),
   trackingNumber: optionalTrackingSchema.default(''),
-  serialNumbers: z.array(serialInputSchema).min(1, '确认发货前必须录入产品 SN').max(100),
+  serialNumbers: z.array(serialInputSchema).max(100).default([]),
   photos: z.array(z.object({
     category: z.enum(['box_sn', 'packed_photo_1', 'packed_photo_2']),
     originalFilename: z.string().trim().min(1).max(180),
@@ -61,6 +61,10 @@ export const shipmentSchema = z.object({
       '出库照片仅支持 PNG、JPG 或 WebP 图片'
     )
   })).max(3).default([])
+}).superRefine((value, context) => {
+  if (!value.photos.some((photo) => photo.category === 'box_sn')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['photos'], message: '确认发货前请拍摄或上传条码 / SN 照片' });
+  }
 });
 
 const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'outbound_product_back', 'outbound_all_items']);

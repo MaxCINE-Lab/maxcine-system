@@ -156,11 +156,11 @@ test('submitted-order fields accept bounded image data and reject unsafe screens
   assert.equal(createOrderSchema.safeParse({ ...input, screenshotDataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }).success, false);
 });
 
-test('shipment confirmation accepts optional categorized outbound photos and still rejects unsafe image data', () => {
+test('shipment confirmation allows missing SN but requires barcode photo and rejects unsafe image data', () => {
   const parsed = shipmentSchema.parse({
     carrier: '顺丰速运',
     trackingNumber: 'SF1234567890',
-    serialNumbers: ['STAGE-GSX-W101-0102'],
+    serialNumbers: [],
     photos: [
       { category: 'box_sn', originalFilename: 'box-sn.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
       { category: 'packed_photo_1', originalFilename: 'packed-1.jpg', contentType: 'image/jpeg', dataUrl: 'data:image/jpeg;base64,aGVsbG8=' },
@@ -169,7 +169,8 @@ test('shipment confirmation accepts optional categorized outbound photos and sti
   });
   assert.equal(parsed.photos.length, 3);
   assert.equal(shipmentSchema.safeParse({ ...parsed, photos: [{ ...parsed.photos[0], dataUrl: 'data:text/html;base64,PHNjcmlwdD4=' }] }).success, false);
-  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', serialNumbers: ['STAGE-GSX-W101-0102'] }).photos.length, 0);
+  assert.equal(shipmentSchema.safeParse({ carrier: '顺丰速运', serialNumbers: [] }).success, false);
+  assert.equal(shipmentSchema.parse({ carrier: '顺丰速运', photos: [parsed.photos[0]] }).serialNumbers.length, 0);
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /确认发货前请上传/);
   assert.match(source, /shipment_photos/);

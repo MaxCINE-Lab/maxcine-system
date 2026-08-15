@@ -504,20 +504,24 @@ async function allocationStatementsForSerials(db: D1Database, input: { orderId: 
       continue;
     }
     if (input.allowExistingOnly) throw conflict(`该 SN 与管理员预留 SN 不一致：${serialNumber}`);
-    const existing = await one<{ id: string; state: string; orderId: string | null }>(db,
-      `SELECT serial_numbers.id, serial_numbers.state, order_items.order_id AS orderId
+    const existing = await one<{ id: string; state: string; productId: string | null; orderId: string | null }>(db,
+      `SELECT serial_numbers.id, serial_numbers.state, serial_numbers.product_id AS productId, order_items.order_id AS orderId
        FROM serial_numbers LEFT JOIN order_items ON order_items.id = serial_numbers.order_item_id
        WHERE serial_numbers.serial_number = ? COLLATE NOCASE LIMIT 1`, serialNumber);
     if (existing?.state === 'shipped') throw conflict(`该 SN 已经发货：${serialNumber}`);
     if (existing?.orderId && existing.orderId !== input.orderId) throw conflict(`该 SN 已绑定其他订单：${serialNumber}`);
     const asset = await findAssetByIdentifier(db, serialNumber);
-    if (!asset) throw notFound(`该 SN 不存在：${serialNumber}`);
-    if (asset.dataQualityStatus !== 'normal' || !asset.currentSn) throw conflict(`该 SN 属于待确认异常标签，不能发货：${serialNumber}`);
-    const item = asset.productId
-      ? items.find((value) => value.productId === asset.productId)
-      : items.find((value) => asset.version && [value.productVersion, value.specification].filter(Boolean).includes(asset.version))
-        ?? items.find((value) => asset.productName && asset.productName.includes(value.name))
-        ?? (items.length === 1 ? items[0] : null);
+    if (!existing && !asset) throw notFound(`该 SN 不存在：${serialNumber}`);
+    if (asset && (asset.dataQualityStatus !== 'normal' || !asset.currentSn)) throw conflict(`该 SN 属于待确认异常标签，不能发货：${serialNumber}`);
+    const item = existing?.productId
+      ? items.find((value) => value.productId === existing.productId)
+      : asset?.productId
+        ? items.find((value) => value.productId === asset.productId)
+        : asset
+          ? items.find((value) => asset.version && [value.productVersion, value.specification].filter(Boolean).includes(asset.version))
+            ?? items.find((value) => asset.productName && asset.productName.includes(value.name))
+            ?? (items.length === 1 ? items[0] : null)
+          : null;
     if (!item) throw conflict(`该 SN 不属于本订单产品：${serialNumber}`);
     if ((counts.get(item.id) ?? 0) >= item.quantity) throw conflict(`产品 ${item.name} 已达到订单数量，不能继续绑定 SN`);
     counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
@@ -547,10 +551,9 @@ async function randomAvailableSerials(db: D1Database, orderId: string): Promise<
     const needed = item.quantity - already.filter((serial) => serial.productId === item.productId).length;
     if (needed <= 0) continue;
     const rows = await all<{ currentSn: string }>(db,
-      `SELECT assets.current_sn AS currentSn FROM assets
-       WHERE assets.current_sn IS NOT NULL AND assets.product_id = ? AND assets.asset_status IN ('active','returned_to_inventory','refurbished','unknown')
-       AND NOT EXISTS (SELECT 1 FROM serial_numbers WHERE serial_numbers.serial_number = assets.current_sn COLLATE NOCASE AND serial_numbers.state IN ('allocated','shipped'))
-       ORDER BY assets.updated_at DESC, assets.current_sn LIMIT ?`, item.productId, needed);
+      `SELECT serial_number AS currentSn FROM serial_numbers
+       WHERE product_id = ? AND state = 'available'
+       ORDER BY updated_at ASC, serial_number COLLATE NOCASE LIMIT ?`, item.productId, needed);
     if (rows.length < needed) throw conflict(`产品 ${item.name} 可用 SN 不足，无法随机分配`);
     result.push(...rows.map((row) => row.currentSn));
   }
@@ -1895,26 +1898,24 @@ app.get('/orders/:id/available-serials', requireAuth, async (c) => {
       assetNote: string | null;
       allocatedToThisOrder: number;
       updatedAt: string;
-    }>(c.env.DB, `SELECT assets.id AS assetId, assets.current_sn AS serialNumber, assets.original_sn AS originalSn,
-        assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus, assets.source_channel AS sourceChannel,
-        assets.shipping_warehouse AS shippingWarehouse, COALESCE(products.description, '') AS productNote,
+    }>(c.env.DB, `SELECT serial_numbers.id AS assetId, serial_numbers.serial_number AS serialNumber, assets.original_sn AS originalSn,
+        COALESCE(assets.asset_status, serial_numbers.state) AS assetStatus,
+        COALESCE(assets.data_quality_status, 'normal') AS dataQualityStatus,
+        COALESCE(assets.source_channel, 'inventory') AS sourceChannel,
+        COALESCE(NULLIF(serial_numbers.warehouse_location, ''), assets.shipping_warehouse, '') AS shippingWarehouse,
+        COALESCE(products.description, '') AS productNote,
         (SELECT GROUP_CONCAT(content, '；') FROM (SELECT content FROM asset_notes WHERE asset_id = assets.id ORDER BY created_at DESC LIMIT 3)) AS assetNote,
         CASE WHEN assigned_items.order_id = ? THEN 1 ELSE 0 END AS allocatedToThisOrder,
-        assets.updated_at AS updatedAt
-      FROM assets
-      LEFT JOIN products ON products.id = assets.product_id
-      LEFT JOIN serial_numbers ON serial_numbers.serial_number = assets.current_sn COLLATE NOCASE AND serial_numbers.state IN ('allocated','shipped')
+        serial_numbers.updated_at AS updatedAt
+      FROM serial_numbers
+      JOIN products ON products.id = serial_numbers.product_id
       LEFT JOIN order_items AS assigned_items ON assigned_items.id = serial_numbers.order_item_id
-      WHERE assets.current_sn IS NOT NULL AND (assets.product_id = ? OR (assets.product_id IS NULL AND (
-          (? <> '' AND assets.version_snapshot = ?)
-          OR (? <> '' AND assets.version_snapshot = ?)
-          OR (? <> '' AND assets.product_name_snapshot = ?)
-          OR assets.product_name_snapshot LIKE '%' || ? || '%'
-        )))
-        AND assets.asset_status IN ('active','returned_to_inventory','refurbished','unknown')
-        AND (serial_numbers.id IS NULL OR assigned_items.order_id = ?)
-      ORDER BY allocatedToThisOrder DESC, assets.updated_at DESC, assets.current_sn COLLATE NOCASE
-      LIMIT 200`, order.id, item.productId, item.productVersion ?? '', item.productVersion ?? '', item.specification ?? '', item.specification ?? '', item.name, item.name, item.name, order.id);
+      LEFT JOIN assets ON assets.current_sn = serial_numbers.serial_number COLLATE NOCASE
+      WHERE serial_numbers.product_id = ?
+        AND (serial_numbers.state = 'available' OR assigned_items.order_id = ?)
+        AND COALESCE(assets.data_quality_status, 'normal') = 'normal'
+      ORDER BY allocatedToThisOrder DESC, serial_numbers.updated_at ASC, serial_numbers.serial_number COLLATE NOCASE
+      LIMIT 200`, order.id, item.productId, order.id);
     return {
       productId: item.productId,
       productName: item.name,
@@ -2109,7 +2110,10 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
   if (existingTracking) throw conflict('该运单号已被使用');
   const items = await orderItemsForFulfillment(c.env.DB, order.id);
   const preallocated = await allocatedSerialsForOrder(c.env.DB, order.id);
-  const allocation = await allocationStatementsForSerials(c.env.DB, { orderId: order.id, serialNumbers: input.serialNumbers, actorId: user.id, allowExistingOnly: preallocated.length > 0 });
+  const inputSerialNumbers = input.serialNumbers ?? [];
+  const allocation = inputSerialNumbers.length
+    ? await allocationStatementsForSerials(c.env.DB, { orderId: order.id, serialNumbers: inputSerialNumbers, actorId: user.id, allowExistingOnly: preallocated.length > 0 })
+    : { statements: [] as D1PreparedStatement[], serials: preallocated };
   const itemById = new Map(items.map((item) => [item.id, item]));
   const serials = allocation.serials.map((serial) => {
     const item = itemById.get(serial.orderItemId);
