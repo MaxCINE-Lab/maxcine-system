@@ -75,6 +75,30 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
   assert.equal(updateCustomerRiskProfileSchema.parse({ customer: { platformNickname: 'tbNick_91xpa', ipLocation: '陕西省' }, status: 'blacklist' }).customer.ipLocation, '陕西省');
 });
 
+test('customer risk center keeps blacklist creation minimal and editable', () => {
+  const source = readFileSync(new URL('../apps/web/src/DealerPortal.tsx', import.meta.url), 'utf8');
+  const componentStart = source.indexOf('function CustomerRiskCenter');
+  const componentEnd = source.indexOf('function OrderForm', componentStart);
+  const component = source.slice(componentStart, componentEnd);
+  const renderStart = component.indexOf('return <DealerShell');
+  const renderSource = component.slice(renderStart);
+  const saveBlacklistStart = component.indexOf('const saveBlacklist');
+  const saveBlacklistEnd = component.indexOf('const saveConsultation', saveBlacklistStart);
+  const saveBlacklistSource = component.slice(saveBlacklistStart, saveBlacklistEnd);
+  assert.match(component, /function parseCustomerRiskSmartInput|parseCustomerRiskSmartInput/);
+  assert.match(component, /resetCreateState/);
+  assert.match(component, /setMode\('search'\)/);
+  assert.match(component, /平台昵称/);
+  assert.match(component, /手机号/);
+  assert.match(component, /收件人/);
+  assert.match(component, /微信昵称/);
+  assert.match(component, /IP 信息/);
+  assert.match(component, /地址/);
+  assert.match(component, /识别不到的字段可以留空/);
+  assert.doesNotMatch(renderSource, /确认识别结果|补充信息|收起补充信息|Telegram|WhatsApp|QQ/);
+  assert.doesNotMatch(saveBlacklistSource, /请选择至少一个风险原因/);
+});
+
 test('quote workflow requires explicit preview state and a unique send idempotency key', () => {
   const quote = quoteDraftSchema.parse({
     inspectionSummary: '验收检测结论',
