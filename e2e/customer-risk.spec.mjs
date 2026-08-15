@@ -14,6 +14,7 @@ async function login(page, email) {
 async function searchRisk(page, value) {
   await page.goto('/#/system/customer-risk');
   await expect(page.getByRole('heading', { name: 'Customer Risk Center' })).toBeVisible();
+  await page.getByRole('button', { name: '模糊查询' }).click();
   await page.locator('.risk-spotlight input').fill(value);
   await page.keyboard.press('Enter');
   await expect(page.locator('.risk-profile')).toBeVisible();
