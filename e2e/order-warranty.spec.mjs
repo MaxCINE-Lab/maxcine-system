@@ -49,6 +49,8 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   const selectedSn = `E2E-W101-${unique}`;
   execute(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, data_quality_status, created_at, updated_at)
     VALUES (${sqlString(randomUUID())}, ${sqlString(selectedSn)}, ${sqlString(selectedSn)}, ${sqlString(product.productId)}, ${sqlString(product.name)}, '标准套装', 'active', 'normal', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+  execute(`INSERT INTO serial_numbers (id, product_id, serial_number, state, production_date, warehouse_location, internal_note, created_at, updated_at)
+    VALUES (${sqlString(randomUUID())}, ${sqlString(product.productId)}, ${sqlString(selectedSn)}, 'available', '2026-08-01', 'E2E 山东云仓', 'E2E 可售库存 SN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
   const created = await request(page, '/orders', 'POST', {
     storeId: stores.body.stores[0].id,
     items: [{ productId: product.productId, quantity: 1 }],

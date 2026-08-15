@@ -67,6 +67,10 @@ export const shipmentSchema = z.object({
   }
 });
 
+export const bindOrderSerialsSchema = z.object({
+  serialNumbers: z.array(serialInputSchema).min(1, '请至少选择或填写一个 SN').max(100)
+});
+
 const afterSalesOutboundPhotoSlotSchema = z.enum(['outbound_product_front', 'outbound_product_back', 'outbound_all_items']);
 
 export const afterSalesOutboundShipmentSchema = z.object({

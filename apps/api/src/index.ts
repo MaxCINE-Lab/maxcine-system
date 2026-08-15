@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
-  createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
+  bindOrderSerialsSchema, createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
@@ -448,10 +448,10 @@ async function allocatedSerialsForOrder(db: D1Database, orderId: string): Promis
      WHERE order_items.order_id = ? AND serial_numbers.state IN ('allocated','shipped')`, orderId);
 }
 
-async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string } | null> {
-  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string }>(db,
+async function findAssetByIdentifier(db: D1Database, serialNumber: string): Promise<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string; warrantyStartAt: string | null; warrantyEndAt: string | null } | null> {
+  return one<{ id: string; currentSn: string | null; productId: string | null; productName: string; version: string; assetStatus: string; dataQualityStatus: string; warrantyStartAt: string | null; warrantyEndAt: string | null }>(db,
     `SELECT assets.id, assets.current_sn AS currentSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version,
-      assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus
+      assets.asset_status AS assetStatus, assets.data_quality_status AS dataQualityStatus, assets.warranty_start_at AS warrantyStartAt, assets.warranty_end_at AS warrantyEndAt
      FROM assets LEFT JOIN asset_identifiers ON asset_identifiers.asset_id = assets.id
      WHERE assets.current_sn = ? COLLATE NOCASE OR assets.original_sn = ? COLLATE NOCASE OR asset_identifiers.identifier_value = ? COLLATE NOCASE
      ORDER BY CASE WHEN assets.current_sn = ? COLLATE NOCASE THEN 0 WHEN assets.original_sn = ? COLLATE NOCASE THEN 1 ELSE 2 END, assets.updated_at DESC
@@ -558,6 +558,76 @@ async function randomAvailableSerials(db: D1Database, orderId: string): Promise<
     result.push(...rows.map((row) => row.currentSn));
   }
   return result;
+}
+
+async function bindingStatementsForShippedOrder(db: D1Database, input: { orderId: string; shipmentId: string; shippedAt: string; serialNumbers: string[]; actorId: string }): Promise<{ statements: D1PreparedStatement[]; serials: Array<{ serialNumber: string; productId: string; orderItemId: string }>; createdAssets: number }> {
+  const items = await orderItemsForFulfillment(db, input.orderId);
+  const existingForOrder = await allocatedSerialsForOrder(db, input.orderId);
+  const counts = new Map(items.map((item) => [item.id, existingForOrder.filter((serial) => serial.orderItemId === item.id).length]));
+  const serialNumbers = input.serialNumbers.map(normalizeLookup).filter(Boolean);
+  const seen = new Set<string>();
+  for (const serialNumber of serialNumbers) {
+    if (seen.has(serialNumber)) throw conflict(`该 SN 已重复填写：${serialNumber}`);
+    seen.add(serialNumber);
+  }
+  const statements: D1PreparedStatement[] = [];
+  const serials: Array<{ serialNumber: string; productId: string; orderItemId: string }> = [];
+  let createdAssets = 0;
+  for (const serialNumber of serialNumbers) {
+    const existing = await one<{ id: string; state: string; productId: string; orderId: string | null }>(db,
+      `SELECT serial_numbers.id, serial_numbers.state, serial_numbers.product_id AS productId, order_items.order_id AS orderId
+       FROM serial_numbers LEFT JOIN order_items ON order_items.id = serial_numbers.order_item_id
+       WHERE serial_numbers.serial_number = ? COLLATE NOCASE LIMIT 1`, serialNumber);
+    if (!existing) throw notFound(`该 SN 不在库存台账中：${serialNumber}`);
+    if (existing.state === 'shipped') throw conflict(`该 SN 已经发货：${serialNumber}`);
+    if (existing.orderId && existing.orderId !== input.orderId) throw conflict(`该 SN 已绑定其他订单：${serialNumber}`);
+    if (!['available', 'allocated'].includes(existing.state)) throw conflict(`该 SN 当前不可绑定：${serialNumber}`);
+    const item = items.find((value) => value.productId === existing.productId);
+    if (!item) throw conflict(`该 SN 不属于本订单产品：${serialNumber}`);
+    if ((counts.get(item.id) ?? 0) >= item.quantity) throw conflict(`产品 ${item.name} 已达到订单数量，不能继续绑定 SN`);
+    counts.set(item.id, (counts.get(item.id) ?? 0) + 1);
+    statements.push(db.prepare(`UPDATE serial_numbers SET state = 'shipped', order_item_id = ?, shipment_id = ?, bound_at = COALESCE(bound_at, CURRENT_TIMESTAMP),
+      updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND state IN ('available','allocated')`)
+      .bind(item.id, input.shipmentId, input.actorId, existing.id));
+    const asset = await findAssetByIdentifier(db, serialNumber);
+    const rule = shipmentWarrantyRule(item.sku);
+    const dates = rule ? shipmentWarrantyDates(input.shippedAt, rule.durationDays) : null;
+    const warrantyPolicy = rule && rule.durationDays > 90 ? 'extended' : rule ? 'standard' : 'unknown';
+    const assetId = asset?.id ?? id();
+    if (asset) {
+      statements.push(db.prepare(`UPDATE assets SET product_id = ?, product_name_snapshot = ?, version_snapshot = ?, asset_status = 'in_service',
+        warranty_policy = CASE WHEN warranty_start_at IS NULL AND warranty_end_at IS NULL THEN ? ELSE warranty_policy END,
+        warranty_start_at = CASE WHEN warranty_start_at IS NULL AND warranty_end_at IS NULL THEN ? ELSE warranty_start_at END,
+        warranty_end_at = CASE WHEN warranty_start_at IS NULL AND warranty_end_at IS NULL THEN ? ELSE warranty_end_at END,
+        dealer_id = (SELECT dealer_id FROM orders WHERE id = ?), store_id = (SELECT store_id FROM orders WHERE id = ?), latest_order_id = ?,
+        updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+        .bind(item.productId, item.name, item.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, input.orderId, input.orderId, input.orderId, input.actorId, assetId));
+    } else {
+      createdAssets += 1;
+      statements.push(db.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
+        warranty_policy, warranty_start_at, warranty_end_at, source_channel, dealer_id, store_id, latest_order_id, data_quality_status, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '管理员后补发货 SN', (SELECT dealer_id FROM orders WHERE id = ?), (SELECT store_id FROM orders WHERE id = ?), ?, 'normal', ?, ?)`)
+        .bind(assetId, serialNumber, serialNumber, item.productId, item.name, item.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, input.orderId, input.orderId, input.orderId, input.actorId, input.actorId));
+      statements.push(db.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_from, reason, source, created_by)
+        VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '管理员后补发货 SN', '订单发货后补绑定', ?)`)
+        .bind(id(), assetId, serialNumber, input.actorId));
+    }
+    statements.push(db.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
+      operator_user_id, visibility, source) VALUES (?, ?, 'shipped', ?, '订单已发货后补绑定 SN', ?, ?, ?, 'dealer', '订单履约')`)
+      .bind(id(), assetId, input.shippedAt, `管理员根据出库条码照片后补绑定 SN：${serialNumber}`, input.orderId, input.actorId));
+    if (rule && dates) {
+      statements.push(db.prepare(`INSERT OR IGNORE INTO asset_public_warranties (id, asset_id, serial_number_snapshot, product_name_snapshot, product_version_snapshot,
+        public_warranty_start_date, public_warranty_end_date, public_warranty_status, public_note, is_public_query_enabled,
+        initialized_from_order_id, initialized_from_shipment_id, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'auto', '', 1, ?, ?, ?, ?)`)
+        .bind(id(), assetId, serialNumber, item.name, item.productVersion ?? '', dates.startAt, dates.endAt, input.orderId, input.shipmentId, input.actorId, input.actorId));
+      statements.push(db.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
+        operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', ?, ?, ?, ?, ?, 'dealer', '订单履约')`)
+        .bind(id(), assetId, input.shippedAt, rule.label, `保修有效期：${dates.startAt} 至 ${dates.endAt}`, input.orderId, input.actorId));
+    }
+    serials.push({ serialNumber, productId: item.productId, orderItemId: item.id });
+  }
+  return { statements, serials, createdAssets };
 }
 
 const afterSalesCaseTypeLabel: Record<string, string> = {
@@ -1814,6 +1884,7 @@ app.get('/orders', requireAuth, async (c) => {
     }
   }
   if (status === 'pending_shipment') where.push(`orders.status IN ('approved','picking','packed')`);
+  else if (status === 'pending_serial_binding') where.push(`orders.status = 'shipped' AND COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) > COALESCE((SELECT COUNT(*) FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = orders.id) AND state = 'shipped'), 0)`);
   else if (status && ['draft', 'submitted', 'approved', 'rejected', 'picking', 'packed', 'shipped', 'delivered', 'cancelled'].includes(status)) { where.push('orders.status = ?'); params.push(status); }
   if (search) { where.push('orders.order_no LIKE ?'); params.push(`%${search}%`); }
   if (storeId) {
@@ -1824,13 +1895,15 @@ app.get('/orders', requireAuth, async (c) => {
   if (to) { where.push('orders.created_at <= ?'); params.push(`${to} 23:59:59`); }
   const clause = where.length ? ` WHERE ${where.join(' AND ')}` : '';
   const count = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM orders${clause}`, ...params);
-  const orders = await all<OrderRow & { storeName: string; dealerName: string; itemCount: number; itemSummary: string; serialSummary: string }>(c.env.DB,
+  const orders = await all<OrderRow & { storeName: string; dealerName: string; itemCount: number; boundSerialCount: number; pendingSerialCount: number; itemSummary: string; serialSummary: string }>(c.env.DB,
     `SELECT orders.id, orders.order_no AS orderNo, orders.dealer_id AS dealerId, orders.store_id AS storeId, orders.status, orders.total_cents AS totalCents, orders.note,
       orders.review_note AS reviewNote,
       orders.sale_price_cents AS salePriceCents, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, orders.screenshot_data_url AS screenshotDataUrl,
       orders.package_materials AS packageMaterials, orders.fulfillment_carrier AS fulfillmentCarrier, orders.fulfillment_tracking_number AS fulfillmentTrackingNumber, orders.fulfillment_updated_at AS fulfillmentUpdatedAt,
       orders.created_at AS createdAt, orders.updated_at AS updatedAt, orders.submitted_at AS submittedAt, orders.reviewed_at AS reviewedAt, stores.name AS storeName, dealers.name AS dealerName,
       COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) AS itemCount,
+      COALESCE((SELECT COUNT(*) FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = orders.id) AND state IN ('allocated','shipped')), 0) AS boundSerialCount,
+      MAX(0, COALESCE((SELECT SUM(quantity) FROM order_items WHERE order_id = orders.id), 0) - COALESCE((SELECT COUNT(*) FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = orders.id) AND state IN ('allocated','shipped')), 0)) AS pendingSerialCount,
       COALESCE((SELECT GROUP_CONCAT(product_name_snapshot || ' ×' || quantity, '、') FROM order_items WHERE order_id = orders.id), '') AS itemSummary,
       COALESCE((SELECT GROUP_CONCAT(serial_number, '、') FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = orders.id) AND state IN ('allocated','shipped')), '') AS serialSummary
      FROM orders JOIN stores ON stores.id = orders.store_id JOIN dealers ON dealers.id = orders.dealer_id${clause} ORDER BY orders.created_at DESC LIMIT ? OFFSET ?`, ...params, limit, (page - 1) * limit);
@@ -1859,8 +1932,10 @@ app.get('/orders/:id', requireAuth, async (c) => {
     ...(order.reviewedAt ? [{ label: statusLabel(order.status), at: order.reviewedAt }] : []),
     ...(shipment?.shippedAt ? [{ label: '订单已发货', at: shipment.shippedAt }] : [])
   ];
+  const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+  const boundSerialCount = serials.filter((serial) => ['allocated', 'shipped'].includes(serial.state)).length;
   return c.json({
-    order: { ...orderForViewer(user, order), ...overview },
+    order: { ...orderForViewer(user, order), ...overview, itemCount: totalQuantity, boundSerialCount, pendingSerialCount: Math.max(0, totalQuantity - boundSerialCount) },
     items: items.map((item) => ({ ...item, materialCode: item.sku, warrantyDays: shipmentWarrantyRule(item.sku)?.durationDays ?? null })),
     serials,
     shipment,
@@ -1877,6 +1952,26 @@ app.get('/orders/:id', requireAuth, async (c) => {
     }),
     timeline
   });
+});
+
+app.post('/orders/:id/bind-serials', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'order:review');
+  const input = await parseBody(c.req.raw, bindOrderSerialsSchema);
+  const order = await getOrder(c.env.DB, c.req.param('id'));
+  assertOrderAccess(user, order);
+  if (order.status !== 'shipped') throw conflict('只有已发货且待绑定 SN 的订单可以后补绑定');
+  const shipment = await one<{ id: string; shippedAt: string }>(c.env.DB, 'SELECT id, shipped_at AS shippedAt FROM shipments WHERE order_id = ?', order.id);
+  if (!shipment) throw conflict('该订单缺少发货记录，不能后补绑定 SN');
+  const total = await one<{ count: number }>(c.env.DB, 'SELECT COALESCE(SUM(quantity), 0) AS count FROM order_items WHERE order_id = ?', order.id);
+  const bound = await one<{ count: number }>(c.env.DB, `SELECT COUNT(*) AS count FROM serial_numbers WHERE order_item_id IN (SELECT id FROM order_items WHERE order_id = ?) AND state IN ('allocated','shipped')`, order.id);
+  if ((bound?.count ?? 0) >= (total?.count ?? 0)) throw conflict('该订单已完成全部 SN 绑定');
+  const binding = await bindingStatementsForShippedOrder(c.env.DB, { orderId: order.id, shipmentId: shipment.id, shippedAt: shipment.shippedAt, serialNumbers: input.serialNumbers, actorId: user.id });
+  await c.env.DB.batch([
+    ...binding.statements,
+    dbAudit(c.env.DB, { actorId: user.id, action: 'order.bind_serials_after_shipment', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { serialNumbers: binding.serials.map((serial) => serial.serialNumber), shippedAt: shipment.shippedAt, createdAssets: binding.createdAssets } })
+  ]);
+  return c.json({ id: order.id, serialNumbers: binding.serials.map((serial) => serial.serialNumber), bound: binding.serials.length });
 });
 
 app.get('/orders/:id/available-serials', requireAuth, async (c) => {
