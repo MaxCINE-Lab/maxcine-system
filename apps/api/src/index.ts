@@ -1477,7 +1477,8 @@ app.get('/customer-risk', requireAuth, async (c) => {
   if (rawQuery) {
     const exact = rawQuery.toUpperCase();
     const compact = rawQuery.replace(/\s+/g, '').toUpperCase();
-    const phone = rawQuery.replace(/\D/g, '');
+    const rawPhone = rawQuery.replace(/\D/g, '');
+    const phone = rawPhone.length >= 7 ? rawPhone : '';
     const prefix = riskPrefixPattern(rawQuery);
     const pattern = riskLikePattern(rawQuery);
     const compactPattern = riskLikePattern(rawQuery.replace(/\s+/g, ''));

@@ -70,6 +70,9 @@ test('customer risk center keeps dealer flow create-only and accepts IP location
   });
   assert.equal(record.productScope, 'MAVIC_4_PRO_ANAMORPHIC');
   assert.equal(record.customer.ipLocation, '陕西省');
+  assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: { platformNickname: 'tbNick_only' }, status: 'blacklist' }).success, true);
+  assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: { shippingAddress: '山东省济南市历下区测试路 1 号' }, status: 'blacklist' }).success, true);
+  assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: {}, status: 'blacklist' }).success, false);
   assert.equal(createCustomerRiskRecordSchema.safeParse({ customer: { phone: '13800000000' }, riskReasons: ['其他'] }).success, false);
   assert.equal(updateCustomerRiskEventSchema.safeParse({ status: 'watchlist', riskLevel: 'medium', riskReasons: ['大量询价未购买'], consultationResult: '跟进中', note: '更新本人记录' }).success, true);
   assert.equal(updateCustomerRiskProfileSchema.parse({ customer: { platformNickname: 'tbNick_91xpa', ipLocation: '陕西省' }, status: 'blacklist' }).customer.ipLocation, '陕西省');
@@ -85,18 +88,23 @@ test('customer risk center keeps blacklist creation minimal and editable', () =>
   const saveBlacklistStart = component.indexOf('const saveBlacklist');
   const saveBlacklistEnd = component.indexOf('const saveConsultation', saveBlacklistStart);
   const saveBlacklistSource = component.slice(saveBlacklistStart, saveBlacklistEnd);
-  assert.match(component, /function parseCustomerRiskSmartInput|parseCustomerRiskSmartInput/);
+  const apiSource = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.match(component, /resetCreateState/);
+  assert.match(component, /setBlacklistDraft\(emptyRiskDraft\(\)\)/);
   assert.match(component, /setMode\('search'\)/);
+  assert.match(component, /人工填写已知身份信息即可/);
+  assert.match(component, /任意一项有值即可创建/);
   assert.match(component, /平台昵称/);
   assert.match(component, /手机号/);
   assert.match(component, /收件人/);
   assert.match(component, /微信昵称/);
   assert.match(component, /IP 信息/);
   assert.match(component, /地址/);
-  assert.match(component, /识别不到的字段可以留空/);
-  assert.doesNotMatch(renderSource, /确认识别结果|补充信息|收起补充信息|Telegram|WhatsApp|QQ/);
+  assert.match(saveBlacklistSource, /payloadCustomer\.platformNickname, payloadCustomer\.phone, payloadCustomer\.name, payloadCustomer\.shippingAddress, payloadCustomer\.ipLocation/);
+  assert.doesNotMatch(renderSource, /粘贴客户昵称|自动识别|确认识别结果|补充信息|收起补充信息|Telegram|WhatsApp|QQ/);
+  assert.doesNotMatch(component, /parseCustomerRiskSmartInput|recognizeBlacklist|setRecognizedValue|duplicateMatches|recognized/);
   assert.doesNotMatch(saveBlacklistSource, /请选择至少一个风险原因/);
+  assert.match(apiSource, /const phone = rawPhone\.length >= 7 \? rawPhone : ''/);
 });
 
 test('quote workflow requires explicit preview state and a unique send idempotency key', () => {

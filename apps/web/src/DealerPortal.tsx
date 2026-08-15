@@ -146,35 +146,11 @@ const emptyRiskDraft = (): CustomerRiskDraft => ({
   note: ''
 });
 
-function parseCustomerRiskSmartInput(value: string): Partial<CustomerRiskDraft> {
-  const text = value.replace(/\r/g, '\n').trim();
-  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
-  const compact = text.replace(/\s+/g, ' ');
-  const pick = (patterns: RegExp[]) => {
-    for (const pattern of patterns) {
-      const match = compact.match(pattern) || lines.map((line) => line.match(pattern)).find(Boolean);
-      if (match?.[1]) return match[1].trim().replace(/^@/, '');
-    }
-    return '';
-  };
-  const phone = compact.match(/(?:\+?86[-\s]?)?(1[3-9]\d[-\s]?\d{4}[-\s]?\d{4})/)?.[1]?.replace(/\D/g, '') ?? '';
-  const wechatNickname = pick([/(?:微信|VX|V信|WeChat)[:：\s]*([A-Za-z0-9_-]{2,40})/i]);
-  const labelledNickname = pick([/(?:平台昵称|昵称|闲鱼|淘宝|小红书|抖音|快手)[:：\s]*([^\s，,；;]{2,80})/i]);
-  const rawIp = pick([/(?:IP|ip|所属地|IP所属地|省份IP)[:：\s]*([A-Za-z0-9.\-\u4e00-\u9fa5]{2,80})/i]);
-  const ipv4 = compact.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/)?.[0] ?? '';
-  const ipLocation = rawIp || ipv4;
-  const addressLine = lines.find((line) => /(?:省|市|区|县|镇|街|路|号|村|小区|大厦|科技园|室)/.test(line) && !/^(?:IP|ip)[:：]/.test(line) && line.replace(/\s/g, '').length >= 8) ?? '';
-  const city = (addressLine.match(/([\u4e00-\u9fa5]{2,12})市/)?.[1] ?? '').replace(/^(.*省)?/, '');
-  const nameLine = lines.find((line) => /^[\u4e00-\u9fa5]{2,6}$/.test(line) && !/(?:省|市|区|县|路|街|号|微信|昵称)/.test(line)) ?? '';
-  const platformNickname = labelledNickname || lines.find((line) => /^(?:tbNick_)?[A-Za-z0-9][A-Za-z0-9_.-]{2,79}$/.test(line) && line !== phone && line !== ipv4) || '';
-  const keyword = [city, addressLine.match(/科技园|小区|大厦|黑名单|同行|骗保|砍价|退款|辱骂/)?.[0] ?? ''].filter(Boolean).join(' ');
-  return { name: nameLine, recipientName: nameLine, phone, platformNickname, wechatNickname, shippingAddress: addressLine, city, ipLocation, keyword };
-}
-
 function platformNicknameWithPrefix(prefix: string, value: string): string {
   const next = value.trim();
   if (!next) return '';
   if (!prefix || next.toLowerCase().startsWith(prefix.toLowerCase())) return next;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{2,79}$/.test(next)) return next;
   return `${prefix}${next}`;
 }
 
@@ -192,10 +168,8 @@ function CustomerRiskCenter({ user, route }: { user: SessionUser; route: string 
   const [notice, setNotice] = useState<NoticeState>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [createRaw, setCreateRaw] = useState('');
-  const [recognized, setRecognized] = useState<Partial<CustomerRiskDraft> | null>(null);
+  const [blacklistDraft, setBlacklistDraft] = useState(() => emptyRiskDraft());
   const [nicknamePrefix, setNicknamePrefix] = useState('tbNick_');
-  const [duplicateMatches, setDuplicateMatches] = useState<CustomerRiskSummary[]>([]);
   const [newEventOpen, setNewEventOpen] = useState(false);
   const [eventDraft, setEventDraft] = useState(() => emptyRiskDraft());
   const [profileEdit, setProfileEdit] = useState<CustomerRiskDraft | null>(null);
@@ -226,9 +200,7 @@ function CustomerRiskCenter({ user, route }: { user: SessionUser; route: string 
     return data.items;
   };
   const resetCreateState = () => {
-    setCreateRaw('');
-    setRecognized(null);
-    setDuplicateMatches([]);
+    setBlacklistDraft(emptyRiskDraft());
     setBlacklistRiskLevel('medium');
     setBlacklistReasons([]);
     setBlacklistOtherReason('');
@@ -274,50 +246,26 @@ function CustomerRiskCenter({ user, route }: { user: SessionUser; route: string 
     return () => document.removeEventListener('keydown', onKeyDown);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, searchInput]);
-  const recognizeBlacklist = async () => {
-    const parsed = parseCustomerRiskSmartInput(createRaw);
-    const normalizedPlatform = platformNicknameWithPrefix(nicknamePrefix, parsed.platformNickname ?? '');
-    const next = { ...parsed, platformNickname: normalizedPlatform };
-    setRecognized(next);
-    setDuplicateMatches([]);
-    setNotice(null);
-    const candidates = [normalizedPlatform, parsed.phone, parsed.ipLocation, parsed.name, parsed.shippingAddress].filter((item): item is string => Boolean(item?.trim()));
-    if (candidates.length) {
-      try {
-        const foundMap = new Map<string, CustomerRiskSummary>();
-        for (const candidate of candidates) {
-          const matches = await fetchMatches(candidate);
-          matches.forEach((item) => foundMap.set(item.id, item));
-        }
-        setDuplicateMatches(Array.from(foundMap.values()));
-      } catch {
-        setDuplicateMatches([]);
-      }
-    }
-    if (!Object.values(next).some((value) => String(value ?? '').trim())) setNotice({ tone: 'error', text: '没有识别到有效客户信息，请补充平台昵称、手机号、姓名、地址或 IP。' });
-  };
-  const setRecognizedValue = <K extends keyof CustomerRiskDraft>(key: K, value: CustomerRiskDraft[K]) => setRecognized((current) => ({ ...(current ?? {}), [key]: value }));
   const saveBlacklist = async () => {
-    if (!recognized) return setNotice({ tone: 'error', text: '请先自动识别客户信息。' });
-    const platformNickname = platformNicknameWithPrefix(nicknamePrefix, recognized.platformNickname ?? '');
+    const platformNickname = platformNicknameWithPrefix(nicknamePrefix, blacklistDraft.platformNickname);
     const payloadCustomer = {
-      name: recognized.name ?? '',
-      phone: recognized.phone ?? '',
-      recipientName: recognized.recipientName ?? recognized.name ?? '',
+      name: blacklistDraft.name,
+      phone: blacklistDraft.phone,
+      recipientName: blacklistDraft.recipientName || blacklistDraft.name,
       platformNickname,
-      wechatNickname: recognized.wechatNickname ?? '',
-      qqNickname: recognized.qqNickname ?? '',
-      telegram: recognized.telegram ?? '',
-      whatsapp: recognized.whatsapp ?? '',
-      shippingAddress: recognized.shippingAddress ?? '',
-      city: recognized.city ?? '',
-      ipLocation: recognized.ipLocation ?? '',
-      keyword: recognized.keyword ?? '',
+      wechatNickname: blacklistDraft.wechatNickname,
+      qqNickname: '',
+      telegram: '',
+      whatsapp: '',
+      shippingAddress: blacklistDraft.shippingAddress,
+      city: blacklistDraft.city,
+      ipLocation: blacklistDraft.ipLocation,
+      keyword: blacklistDraft.keyword,
       note: blacklistNote
     };
-    if (!Object.values(payloadCustomer).some((value) => String(value).trim())) return setNotice({ tone: 'error', text: '请至少保留一项客户识别信息。' });
+    const hasIdentity = [payloadCustomer.platformNickname, payloadCustomer.phone, payloadCustomer.name, payloadCustomer.shippingAddress, payloadCustomer.ipLocation].some((value) => value.trim());
+    if (!hasIdentity) return setNotice({ tone: 'error', text: '请至少填写平台昵称、手机号、姓名、地址或 IP 信息中的一项。' });
     if (blacklistReasons.includes('其他') && !blacklistOtherReason.trim()) return setNotice({ tone: 'error', text: '选择“其他”风险原因时，请填写其他原因说明。' });
-    if (duplicateMatches.length && !isManager) return setNotice({ tone: 'error', text: '发现现有客户档案，请先查看现有档案或为现有客户新增咨询记录。' });
     setSaving(true); setNotice(null);
     try {
       const result = await api<{ customerId: string; eventId: string; merged: boolean }>('/customer-risk', { method: 'POST', body: JSON.stringify({
@@ -471,11 +419,21 @@ function CustomerRiskCenter({ user, route }: { user: SessionUser; route: string 
           <ActionButton type="submit" disabled={loading}>{loading ? '查询中…' : '查询'}</ActionButton>
         </form>
         {tbNickSuggestion && <button className="risk-suggestion" onClick={() => { setSearchInput(tbNickSuggestion); void runSearch(tbNickSuggestion); }}>使用 {tbNickSuggestion} 查询</button>}
-      </div> : <div className="risk-spotlight">
+      </div> : <div className="risk-spotlight risk-manual-create">
         <h2>新建共享黑名单</h2>
-        <p>粘贴客户昵称、手机号、姓名、地址、聊天内容等；识别不到的字段可以留空，后续由管理员编辑档案补充。</p>
-        <textarea autoFocus value={createRaw} onChange={(event) => setCreateRaw(event.target.value)} placeholder={'粘贴客户昵称、手机号、姓名、地址、聊天内容等\n例如：tbNick_91xpa'} />
-        <div className="action-list"><ActionButton disabled={loading} onClick={() => void recognizeBlacklist()}>自动识别</ActionButton></div>
+        <p>人工填写已知身份信息即可；平台昵称、手机号、姓名、地址、IP 信息任意一项有值即可创建。</p>
+        <div className="form-layout">
+          <label>平台昵称<div className="risk-prefix-row"><select value={nicknamePrefix} onChange={(event) => setNicknamePrefix(event.target.value)}><option value="tbNick_">tbNick_ 快捷</option><option value="">无前缀</option></select><input autoFocus value={blacklistDraft.platformNickname} onChange={(event) => setBlacklistDraft({ ...blacklistDraft, platformNickname: event.target.value })} placeholder="例如 91xpa 或 tbNick_91xpa" /></div></label>
+          <label>手机号<input value={blacklistDraft.phone} onChange={(event) => setBlacklistDraft({ ...blacklistDraft, phone: event.target.value })} placeholder="可选" /></label>
+          <label>姓名<input value={blacklistDraft.name} onChange={(event) => setBlacklistDraft({ ...blacklistDraft, name: event.target.value, recipientName: event.target.value })} placeholder="可选" /></label>
+          <label>IP 所属地<input value={blacklistDraft.ipLocation} onChange={(event) => setBlacklistDraft({ ...blacklistDraft, ipLocation: event.target.value })} placeholder="例如 广东省" /></label>
+        </div>
+        <label>地址<textarea value={blacklistDraft.shippingAddress} onChange={(event) => setBlacklistDraft({ ...blacklistDraft, shippingAddress: event.target.value })} placeholder="可选填写收货地址或地址片段" /></label>
+        <div className="form-layout"><label>风险等级<select value={blacklistRiskLevel} onChange={(event) => setBlacklistRiskLevel(event.target.value as CustomerRiskLevel)}>{riskLevelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div>
+        <div><span className="form-label">风险原因</span><div className="checkbox-grid">{riskReasonOptions.map((reason) => <label key={reason}><input type="checkbox" checked={blacklistReasons.includes(reason)} onChange={(event) => toggleBlacklistReason(reason, event.target.checked)} />{reason}</label>)}</div></div>
+        {blacklistReasons.includes('其他') && <label>其他原因说明<input value={blacklistOtherReason} onChange={(event) => setBlacklistOtherReason(event.target.value)} placeholder="请填写其他风险原因" /></label>}
+        <label>管理员备注<textarea value={blacklistNote} onChange={(event) => setBlacklistNote(event.target.value)} placeholder="可选" /></label>
+        <div className="sticky-action"><span>状态固定为共享黑名单；创建后可继续编辑档案完善资料。</span><ActionButton disabled={saving} onClick={() => void saveBlacklist()}>{saving ? '创建中…' : '创建黑名单档案'}</ActionButton></div>
       </div>}
     </section>
 
@@ -494,7 +452,6 @@ function CustomerRiskCenter({ user, route }: { user: SessionUser; route: string 
       <section className="panel risk-section"><div className="panel-title"><h2>新增咨询记录</h2>{!newEventOpen && <button className="table-action" onClick={() => setNewEventOpen(true)}>新增</button>}</div>{newEventOpen ? <div className="risk-compact-form"><label>咨询结果<select value={eventDraft.consultationResult} onChange={(event) => setEventDraft({ ...eventDraft, consultationResult: event.target.value as CustomerRiskResult })}>{riskResultOptions.map((value) => <option key={value} value={value}>{riskResultLabel(value)}</option>)}</select></label><div><span className="form-label">风险原因</span><div className="checkbox-grid">{riskReasonOptions.map((reason) => <label key={reason}><input type="checkbox" checked={eventDraft.riskReasons.includes(reason)} onChange={(event) => toggleDraftReason(reason, event.target.checked)} />{reason}</label>)}</div></div>{eventDraft.riskReasons.includes('其他') && <label>其他原因说明<input value={eventDraft.otherReason} onChange={(event) => setEventDraft({ ...eventDraft, otherReason: event.target.value })} placeholder="请填写其他风险原因" /></label>}<label>本次咨询备注<textarea value={eventDraft.note} onChange={(event) => setEventDraft({ ...eventDraft, note: event.target.value })} placeholder="记录本次咨询的关键情况" /></label><div className="action-list"><ActionButton disabled={saving} onClick={() => void saveConsultation()}>{saving ? '保存中…' : '保存咨询记录'}</ActionButton><ActionButton secondary onClick={() => setNewEventOpen(false)}>取消</ActionButton></div></div> : <p className="soft-text">只记录本次咨询结果、风险原因和备注，不重复填写客户身份信息。</p>}</section>
     </section>}
 
-    {mode === 'create' && recognized && <section className="panel risk-create-confirm"><div className="panel-title"><h2>识别结果</h2><span>状态固定为共享黑名单；识别不到的字段可留空，后续编辑档案补充。</span></div><div className="risk-info-grid">{recognized.platformNickname && <label><span>平台昵称</span><div className="risk-prefix-row"><select value={nicknamePrefix} onChange={(event) => setNicknamePrefix(event.target.value)}><option value="tbNick_">tbNick_</option><option value="">无前缀</option></select><input value={recognized.platformNickname.toLowerCase().startsWith('tbnick_') ? recognized.platformNickname : recognized.platformNickname.replace(/^tbNick_/i, '')} onChange={(event) => setRecognizedValue('platformNickname', platformNicknameWithPrefix(nicknamePrefix, event.target.value))} /></div></label>}{recognized.phone && <label><span>手机号</span><input value={recognized.phone} onChange={(event) => setRecognizedValue('phone', event.target.value)} /></label>}{recognized.name && <label><span>姓名 / 收件人</span><input value={recognized.name} onChange={(event) => { setRecognizedValue('name', event.target.value); setRecognizedValue('recipientName', event.target.value); }} /></label>}{recognized.shippingAddress && <label><span>地址</span><textarea value={recognized.shippingAddress} onChange={(event) => setRecognizedValue('shippingAddress', event.target.value)} /></label>}{recognized.wechatNickname && <label><span>微信昵称</span><input value={recognized.wechatNickname} onChange={(event) => setRecognizedValue('wechatNickname', event.target.value)} /></label>}{recognized.ipLocation && <label><span>IP 信息</span><input value={recognized.ipLocation} onChange={(event) => setRecognizedValue('ipLocation', event.target.value)} /></label>}</div>{duplicateMatches.length > 0 && <div className="risk-duplicate-box"><strong>发现现有客户档案</strong><p>为避免重复建档，请先查看现有档案，或直接为现有客户新增咨询记录。</p>{duplicateMatches.map((item) => <div key={item.id}><span>{displayTitle(item)} · {item.statusText}</span><div className="inline-actions"><button className="table-action" onClick={() => { resetCreateState(); setMode('search'); void loadDetail(item.id); }}>查看现有档案</button><button className="table-action" onClick={() => { resetCreateState(); setMode('search'); void loadDetail(item.id, true); }}>为现有客户新增咨询记录</button></div></div>)}</div>}<div className="form-layout"><label>风险等级<select value={blacklistRiskLevel} onChange={(event) => setBlacklistRiskLevel(event.target.value as CustomerRiskLevel)}>{riskLevelOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label></div><div><span className="form-label">风险原因</span><div className="checkbox-grid">{riskReasonOptions.map((reason) => <label key={reason}><input type="checkbox" checked={blacklistReasons.includes(reason)} onChange={(event) => toggleBlacklistReason(reason, event.target.checked)} />{reason}</label>)}</div></div>{blacklistReasons.includes('其他') && <label>其他原因说明<input value={blacklistOtherReason} onChange={(event) => setBlacklistOtherReason(event.target.value)} placeholder="请填写其他风险原因" /></label>}<label>管理员备注或档案备注<textarea value={blacklistNote} onChange={(event) => setBlacklistNote(event.target.value)} /></label><label>本次咨询备注<textarea value={blacklistEventNote} onChange={(event) => setBlacklistEventNote(event.target.value)} /></label><div className="sticky-action"><span>保存后将创建共享黑名单档案，并记录本次咨询。</span><ActionButton disabled={saving || (duplicateMatches.length > 0 && !isManager)} onClick={() => void saveBlacklist()}>{saving ? '创建中…' : '创建黑名单档案'}</ActionButton></div></section>}
   </DealerShell>;
 }
 
