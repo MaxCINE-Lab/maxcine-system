@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { PERMISSIONS, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, bindOrderSerialsSchema, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -174,6 +174,23 @@ test('shipment confirmation allows missing SN but requires barcode photo and rej
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.doesNotMatch(source, /确认发货前请上传/);
   assert.match(source, /shipment_photos/);
+});
+
+test('post-shipment SN binding uses the original shipment time and writes audit history', () => {
+  const parsed = bindOrderSerialsSchema.parse({ serialNumbers: [' mx-post-ship-001 '] });
+  assert.deepEqual(parsed.serialNumbers, ['MX-POST-SHIP-001']);
+  assert.equal(bindOrderSerialsSchema.safeParse({ serialNumbers: [] }).success, false);
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const operationsUiSource = readFileSync(new URL('../apps/web/src/OperationsPortal.tsx', import.meta.url), 'utf8');
+  assert.match(source, /\/orders\/:id\/bind-serials/);
+  assert.match(source, /bindingStatementsForShippedOrder/);
+  assert.match(source, /shipment\.shippedAt/);
+  assert.match(source, /shipmentWarrantyDates\(input\.shippedAt/);
+  assert.match(source, /order\.bind_serials_after_shipment/);
+  assert.match(source, /INSERT OR IGNORE INTO asset_public_warranties/);
+  assert.match(operationsUiSource, /已发货 · 待绑定 SN/);
+  assert.match(operationsUiSource, /后补绑定 SN/);
+  assert.match(operationsUiSource, /条码 \/ SN 标签照片/);
 });
 
 test('inventory serial ledger requires product selection and keeps inbound separated from shipment warranty', () => {
