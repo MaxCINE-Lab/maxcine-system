@@ -17,15 +17,16 @@ export const siteContent = {
     { label: "支持", href: "/support/" }
   ],
   hero: {
-    eyebrow: "MaxCINE",
-    title: "Mavic 4 Pro 增广镜",
-    tagline: "视界尽展",
-    body:
-      "为 DJI Mavic 4 Pro 打造的专业增广镜系统，让航拍画面拥有更完整的空间、边缘和层次。",
+    eyebrow: "专业级航拍无人机增广镜",
+    title: "视界尽展",
+    tagline: "适用于 DJI Mavic 4 Pro",
+    body: "",
     primaryAction: { label: "了解详情", href: mavic4ProWideAngle.url },
     secondaryAction: { label: "观看样片", action: "sample" },
     video: {
       enabled: false,
+      duration: "30s",
+      purpose: "product-brand-atmosphere",
       desktopSrc: "/assets/video/hero-desktop.mp4",
       mobileSrc: "/assets/video/hero-mobile.mp4",
       posterDesktop: mavic4ProWideAngle.media.heroPosterDesktop,
@@ -182,4 +183,3 @@ export const siteContent = {
 };
 
 export { mavic4ProWideAngle };
-

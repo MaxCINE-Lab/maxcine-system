@@ -46,7 +46,9 @@ function createImage(src, alt) {
 
 function setText(selector, text) {
   const node = qs(selector);
-  if (node) node.textContent = text;
+  if (!node) return;
+  node.textContent = text;
+  node.hidden = text === "";
 }
 
 function buttonLikeLink(item) {
@@ -160,6 +162,22 @@ function setupHero() {
   video.play().catch(() => {
     video.hidden = true;
   });
+}
+
+function loadSampleVideo() {
+  const sample = mavic4ProWideAngle.sampleFilm;
+  const video = qs("[data-sample-video]");
+  if (!video || video.dataset.loaded === "true" || sample.status === "placeholder") return;
+  const source = document.createElement("source");
+  source.src = window.matchMedia("(max-width: 760px)").matches
+    ? sample.mobileSrc
+    : sample.desktopSrc;
+  source.type = "video/mp4";
+  video.append(source);
+  video.dataset.loaded = "true";
+  video.hidden = false;
+  qs("[data-sample-poster]")?.setAttribute("hidden", "");
+  video.load();
 }
 
 function renderStatement(target, section) {
@@ -395,7 +413,18 @@ function buildSampleModal() {
   close.dataset.sampleClose = "";
 
   const media = el("div", "sample-media");
-  media.append(createImage(sample.poster, ""));
+  const poster = el("div", "sample-poster");
+  poster.dataset.samplePoster = "";
+  poster.append(createImage(sample.poster, ""));
+  const video = document.createElement("video");
+  video.className = "sample-video";
+  video.controls = true;
+  video.playsInline = true;
+  video.preload = "metadata";
+  video.poster = sample.poster;
+  video.hidden = true;
+  video.dataset.sampleVideo = "";
+  media.append(poster, video);
   const badge = el("span", "sample-badge", sample.note);
   media.append(badge);
 
@@ -422,6 +451,7 @@ function openSampleModal() {
   lastFocusedElement = document.activeElement;
   modal.hidden = false;
   document.body.classList.add("modal-open");
+  loadSampleVideo();
   qs("[data-sample-close]", modal)?.focus();
 }
 
