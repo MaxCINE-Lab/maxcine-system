@@ -22,6 +22,28 @@ function clear(node) {
   if (node) node.replaceChildren();
 }
 
+function optimizedImageVariant(src, extension) {
+  return src.replace(/\.(jpe?g|png)$/i, `.${extension}`);
+}
+
+function createImage(src, alt) {
+  const picture = document.createElement("picture");
+  if (/^\/assets\/optimized\/.+\.(jpe?g|png)$/i.test(src)) {
+    const avif = document.createElement("source");
+    avif.type = "image/avif";
+    avif.srcset = optimizedImageVariant(src, "avif");
+    const webp = document.createElement("source");
+    webp.type = "image/webp";
+    webp.srcset = optimizedImageVariant(src, "webp");
+    picture.append(avif, webp);
+  }
+  const image = document.createElement("img");
+  image.src = src;
+  image.alt = alt;
+  picture.append(image);
+  return picture;
+}
+
 function setText(selector, text) {
   const node = qs(selector);
   if (node) node.textContent = text;
@@ -154,10 +176,7 @@ function renderPerformance() {
   if (!target || !section) return;
   clear(target);
   const media = el("figure", "wide-media");
-  const image = document.createElement("img");
-  image.src = section.media;
-  image.alt = "MaxCINE Mavic 4 Pro 增广镜实际影像表现占位图";
-  media.append(image);
+  media.append(createImage(section.media, "MaxCINE Mavic 4 Pro 增广镜实际影像表现占位图"));
   const copy = el("div", "section-copy");
   copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
   const metrics = el("div", "metric-row");
@@ -173,10 +192,7 @@ function renderFeatureBand(target, section) {
   copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
   if (section.media) {
     const media = el("figure", "side-media");
-    const image = document.createElement("img");
-    image.src = section.media;
-    image.alt = section.title;
-    media.append(image);
+    media.append(createImage(section.media, section.title));
     target.append(copy, media);
   } else {
     target.append(copy);
@@ -270,10 +286,7 @@ function renderProduct() {
       const copy = el("div", "section-copy");
       copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
       const media = el("figure", "side-media");
-      const image = document.createElement("img");
-      image.src = index % 2 ? mavic4ProWideAngle.media.engineeringImage : mavic4ProWideAngle.media.opticsImage;
-      image.alt = section.title;
-      media.append(image);
+      media.append(createImage(index % 2 ? mavic4ProWideAngle.media.engineeringImage : mavic4ProWideAngle.media.opticsImage, section.title));
       row.append(copy, media);
       list.append(row);
     });
@@ -382,10 +395,7 @@ function buildSampleModal() {
   close.dataset.sampleClose = "";
 
   const media = el("div", "sample-media");
-  const img = document.createElement("img");
-  img.src = sample.poster;
-  img.alt = "";
-  media.append(img);
+  media.append(createImage(sample.poster, ""));
   const badge = el("span", "sample-badge", sample.note);
   media.append(badge);
 

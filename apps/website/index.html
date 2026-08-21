@@ -12,8 +12,8 @@
     <meta property="og:image" content="https://maxcine-website-staging.pages.dev/assets/optimized/hero-poster-desktop.jpg">
     <meta name="theme-color" content="#000000">
     <link rel="icon" href="/assets/logo2.png">
-    <link rel="preload" as="image" href="/assets/optimized/hero-poster-desktop.jpg" media="(min-width: 761px)">
-    <link rel="preload" as="image" href="/assets/optimized/hero-poster-mobile.jpg" media="(max-width: 760px)">
+    <link rel="preload" as="image" href="/assets/optimized/hero-poster-desktop.avif" type="image/avif" media="(min-width: 761px)">
+    <link rel="preload" as="image" href="/assets/optimized/hero-poster-mobile.avif" type="image/avif" media="(max-width: 760px)">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body data-page="home">
@@ -21,6 +21,10 @@
     <main id="main-content">
       <section class="hero" aria-labelledby="hero-title">
         <picture class="hero-poster" aria-hidden="true">
+          <source type="image/avif" media="(max-width: 760px)" srcset="/assets/optimized/hero-poster-mobile.avif">
+          <source type="image/avif" srcset="/assets/optimized/hero-poster-desktop.avif">
+          <source type="image/webp" media="(max-width: 760px)" srcset="/assets/optimized/hero-poster-mobile.webp">
+          <source type="image/webp" srcset="/assets/optimized/hero-poster-desktop.webp">
           <source media="(max-width: 760px)" srcset="/assets/optimized/hero-poster-mobile.jpg">
           <img src="/assets/optimized/hero-poster-desktop.jpg" alt="">
         </picture>

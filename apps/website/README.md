@@ -41,6 +41,8 @@ Sample film modal is also wired with placeholder state:
 
 When final video files are added, update `content/site.js` and `content/product.js` only. Keep posters optimized for first-screen performance.
 
+Images under `assets/optimized/` should keep AVIF and WebP variants next to the JPEG/PNG fallback. The static verifier requires those variants for the current V2 media set.
+
 ## Staging
 
 Cloudflare Pages staging project:

@@ -19,10 +19,20 @@ const required = [
   'warranty.js',
   'styles.css',
   'assets/optimized/hero-poster-desktop.jpg',
+  'assets/optimized/hero-poster-desktop.webp',
+  'assets/optimized/hero-poster-desktop.avif',
   'assets/optimized/hero-poster-mobile.jpg',
+  'assets/optimized/hero-poster-mobile.webp',
+  'assets/optimized/hero-poster-mobile.avif',
   'assets/optimized/product-wide-angle.png',
+  'assets/optimized/product-wide-angle.webp',
+  'assets/optimized/product-wide-angle.avif',
   'assets/optimized/optics-detail.jpg',
-  'assets/optimized/engineering.jpg'
+  'assets/optimized/optics-detail.webp',
+  'assets/optimized/optics-detail.avif',
+  'assets/optimized/engineering.jpg',
+  'assets/optimized/engineering.webp',
+  'assets/optimized/engineering.avif'
 ];
 
 function urlFor(path) {
@@ -93,6 +103,8 @@ for (const token of [
   'hero-mobile.mp4',
   'sample-desktop.mp4',
   'sample-mobile.mp4',
+  'type="image/avif"',
+  'type="image/webp"',
   'CG.W101',
   'CG.W102',
   'CG.W103'
@@ -104,10 +116,20 @@ for (const token of [
 
 for (const file of [
   'assets/optimized/hero-poster-desktop.jpg',
+  'assets/optimized/hero-poster-desktop.webp',
+  'assets/optimized/hero-poster-desktop.avif',
   'assets/optimized/hero-poster-mobile.jpg',
+  'assets/optimized/hero-poster-mobile.webp',
+  'assets/optimized/hero-poster-mobile.avif',
   'assets/optimized/optics-detail.jpg',
+  'assets/optimized/optics-detail.webp',
+  'assets/optimized/optics-detail.avif',
   'assets/optimized/engineering.jpg',
-  'assets/optimized/product-wide-angle.png'
+  'assets/optimized/engineering.webp',
+  'assets/optimized/engineering.avif',
+  'assets/optimized/product-wide-angle.png',
+  'assets/optimized/product-wide-angle.webp',
+  'assets/optimized/product-wide-angle.avif'
 ]) {
   const size = statSync(urlFor(file)).size;
   if (size > 900 * 1024) {

@@ -45,6 +45,10 @@ video {
   max-width: 100%;
 }
 
+picture {
+  display: block;
+}
+
 a {
   color: inherit;
   text-decoration: none;
@@ -178,6 +182,7 @@ button {
   inset: 0;
 }
 
+.hero-poster picture,
 .hero-poster img,
 .hero-video {
   width: 100%;
@@ -353,10 +358,16 @@ button {
   background: var(--surface);
 }
 
+.wide-media picture,
+.side-media picture,
 .wide-media img,
 .side-media img {
   width: 100%;
   height: 100%;
+}
+
+.wide-media img,
+.side-media img {
   min-height: 360px;
   object-fit: cover;
 }
@@ -553,9 +564,13 @@ button {
   padding: 26px;
 }
 
+.product-hero-media picture,
 .product-hero-media img {
   width: 100%;
   aspect-ratio: 1;
+}
+
+.product-hero-media img {
   object-fit: contain;
 }
 
@@ -873,9 +888,13 @@ button {
   background: var(--surface);
 }
 
+.sample-media picture,
 .sample-media img {
   width: 100%;
   height: 100%;
+}
+
+.sample-media img {
   object-fit: cover;
 }
 
