@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
   AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
-  bindOrderSerialsSchema, createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
+  bindOrderSerialsSchema, closeAfterSalesSchema, createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
@@ -2795,6 +2795,25 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
     }
   }
   return c.json({ id: serviceCase.id, accepted: input.accepted, shippingAddressMailStatus });
+});
+
+app.post('/after-sales/:id/close', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const input = await parseBody(c.req.raw, closeAfterSalesSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (serviceCase.status === 'closed' || serviceCase.serviceStage === 'CLOSED') throw conflict('该售后工单已经关闭');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET status = 'closed', workflow_stage = 'closed', service_stage = 'CLOSED',
+      final_decision = CASE WHEN ? <> '' THEN ? ELSE final_decision END,
+      updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.note, input.note, user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO after_sales_timeline (id, case_id, event_type, title, description, actor_id)
+      VALUES (?, ?, 'closed', '管理员关闭售后工单', ?, ?)`)
+      .bind(id(), serviceCase.id, input.note || '管理员手动关闭工单', user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.close', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: { status: 'closed', serviceStage: 'CLOSED', note: input.note } })
+  ]);
+  return c.json({ id: serviceCase.id, status: 'closed', serviceStage: 'CLOSED' });
 });
 
 app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {

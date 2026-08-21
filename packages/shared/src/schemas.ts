@@ -330,6 +330,10 @@ export const adminReviewAfterSalesSchema = z.object({
   if (value.accepted && value.requiresShipment && !value.serviceCenterId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['serviceCenterId'], message: '需要寄修时必须分配授权服务中心' });
 });
 
+export const closeAfterSalesSchema = z.object({
+  note: z.string().trim().max(1000).default('')
+});
+
 export const inboundShipmentSchema = z.object({
   carrier: z.string().trim().min(2).max(40),
   trackingNumber: z.string().trim().min(3).max(80).regex(/^[A-Za-z0-9._\-/]+$/, '寄修单号只能包含字母、数字和常用连接符'),
@@ -432,7 +436,7 @@ export const confirmQuoteSendSchema = z.object({
   recipientEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()).optional()
 });
 
-export const mailTemplateKeySchema = z.enum(['system_test', 'after_sales_quote', 'service_report', 'shipment_notice', 'password_reset']);
+export const mailTemplateKeySchema = z.enum(['system_test', 'after_sales_quote', 'after_sales_shipping_address', 'service_report', 'shipment_notice', 'password_reset']);
 
 export const mailTestSchema = z.object({
   template: mailTemplateKeySchema.default('system_test'),
