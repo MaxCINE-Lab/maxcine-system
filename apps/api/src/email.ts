@@ -3,7 +3,7 @@ export const FUNCTIONAL_EMAILS = {
   notifications: 'notification@maxcine.cn'
 } as const;
 
-export type MailTemplateKey = 'system_test' | 'after_sales_quote' | 'service_report' | 'shipment_notice' | 'password_reset';
+export type MailTemplateKey = 'system_test' | 'after_sales_quote' | 'after_sales_shipping_address' | 'service_report' | 'shipment_notice' | 'password_reset';
 
 export type MailMessage = {
   from: string;
@@ -92,6 +92,7 @@ export type MailTemplateData = {
 export const mailTemplates: Record<MailTemplateKey, { name: string; subject: string; description: string }> = {
   system_test: { name: '系统测试邮件', subject: '系统测试邮件', description: '用于验证 Resend、发件人、Reply-To 和模板渲染。' },
   after_sales_quote: { name: '售后报价', subject: '售后报价通知', description: '发送售后报价或产品服务报告书。' },
+  after_sales_shipping_address: { name: '寄修地址通知', subject: '售后寄修地址通知', description: '管理员受理售后并分配服务中心后，向客户发送寄修地址。' },
   service_report: { name: '售后服务报告', subject: '售后服务报告书', description: '发送检测结果、处理方式和审批结论。' },
   shipment_notice: { name: '发货通知', subject: '发货通知', description: '通知经销商或客户订单已发货。' },
   password_reset: { name: '密码重置', subject: '密码重置', description: '发送员工账号密码重置通知。' }

@@ -811,6 +811,7 @@ function mailSampleData(env: Env, template: MailTemplateKey): MailTemplateData {
   const fields: Record<MailTemplateKey, Array<[string, string]>> = {
     system_test: [['当前 Provider', env.EMAIL_PROVIDER || 'mock'], ['发件人', `${sender.name} <${sender.address}>`], ['Reply-To', `${sender.replyToName} <${sender.replyTo}>`]],
     after_sales_quote: [['案例号', 'CAS-ABCDE-12345'], ['产品 SN', '6901649533304'], ['报价总额', '¥180.00']],
+    after_sales_shipping_address: [['案例号', 'CAS-ABCDE-12345'], ['服务中心', 'MaxCINE山东省高级服务中心'], ['联系电话', '15653337426'], ['收件地址', '山东省淄博市张店区体育场街道乔宝路仓库7426（255000）']],
     service_report: [['服务单号', 'CAS-ABCDE-12345'], ['SN', '6901649533304'], ['产品', 'MaxCINE Mavic 4 Pro 增广镜'], ['检测日期', '2026-08-06'], ['保修状态', '保修中']],
     shipment_notice: [['订单号', 'MC-20260806-DEMO'], ['快递公司', '顺丰速运'], ['运单号', 'SF-DEMO-0001']],
     password_reset: [['账号', 'staff@example.test'], ['有效期', '30 分钟']]
@@ -818,6 +819,7 @@ function mailSampleData(env: Env, template: MailTemplateKey): MailTemplateData {
   const sections: Record<MailTemplateKey, MailTemplateData['sections']> = {
     system_test: [{ heading: '测试说明', body: '这是一封 MaxCINE Mail Center 系统测试邮件，用于验证模板、发件人、Reply-To 和邮件服务配置。' }],
     after_sales_quote: [{ heading: '检测结果', body: '经检测，产品需要更换部件并完成基础排查。' }, { heading: '最终处理方案', body: '管理员确认后按报价明细执行。' }],
+    after_sales_shipping_address: [{ heading: '寄送说明', body: '请以顺丰包邮的形式寄回并及时回复本邮件或联系服务顾问提交快递单号，如使用到付/其它快递造成的丢失我们无法承担相关责任，敬请理解。' }],
     service_report: [{ heading: '检测结果', body: '外观与功能检测已完成。' }, { heading: '处理方式', body: '按管理员审批结果执行。' }, { heading: '工程师意见', body: '建议按标准流程维修。' }, { heading: '管理员审批', body: '同意按客户确认结果继续处理。' }, { heading: '免责声明', body: '本报告仅用于本次 MaxCINE 售后服务处理，不作为其他用途证明。' }],
     shipment_notice: [{ heading: '发货说明', body: '订单已完成发货确认，请留意物流状态。' }],
     password_reset: [{ heading: '密码重置说明', body: '请使用管理员提供的临时信息完成密码重置，并尽快修改为个人密码。' }]
@@ -877,6 +879,74 @@ async function sendViaMailCenter(c: Context<App>, input: { template: MailTemplat
     dbAudit(c.env.DB, { actorId: input.actorId, action: delivery.sent ? 'mail.send' : 'mail.send_failed', entityType: 'mail_center_message', entityId: messageId, requestId: c.get('requestId'), after: { template: input.template, provider: delivery.provider, providerMessageId: delivery.providerMessageId, relatedEntityType: input.relatedEntityType, relatedEntityId: input.relatedEntityId } })
   ]);
   return { messageId, sent: delivery.sent, provider: delivery.provider, providerMessageId: delivery.providerMessageId, failureReason: delivery.failureReason };
+}
+
+type ServiceCenterInboundAddress = {
+  recipient: string;
+  phone: string;
+  address: string;
+  businessHours: string;
+};
+
+const inboundShippingNotice = '请以顺丰包邮的形式寄回并及时回复本邮件或联系服务顾问提交快递单号，如使用到付/其它快递造成的丢失我们无法承担相关责任，敬请理解。';
+const serviceCenterBusinessHours = '9:30 AM – 7:00 PM（UTC+8）周末及法定节假日休息';
+
+function inboundAddressForServiceCenter(serviceCenterName: string | null | undefined): ServiceCenterInboundAddress | null {
+  const name = serviceCenterName ?? '';
+  if (name.includes('辽宁')) {
+    return {
+      recipient: 'MaxCINE辽宁省高级服务中心',
+      phone: '15133002880',
+      address: '辽宁省沈阳市和平区商贸国际B座负一层。',
+      businessHours: serviceCenterBusinessHours
+    };
+  }
+  if (name.includes('山东')) {
+    return {
+      recipient: 'MaxCINE山东省高级服务中心',
+      phone: '15653337426',
+      address: '山东省淄博市张店区体育场街道乔宝路仓库7426（255000）',
+      businessHours: serviceCenterBusinessHours
+    };
+  }
+  if (name.includes('安徽')) {
+    return {
+      recipient: 'MaxCINE安徽省授权服务中心',
+      phone: '15209880379',
+      address: '安徽省淮南市凤台县新集镇东朱商贸街',
+      businessHours: serviceCenterBusinessHours
+    };
+  }
+  return null;
+}
+
+function afterSalesShippingAddressMailData(env: Env, input: {
+  caseNo: string;
+  customerName: string;
+  productName: string | null;
+  serialNumber: string | null;
+  serviceCenterName: string;
+  inboundAddress: ServiceCenterInboundAddress;
+}): MailTemplateData {
+  const sender = notificationSender(env);
+  return {
+    title: '售后寄修地址',
+    preheader: `${input.caseNo} 已受理，请按邮件内地址寄回产品。`,
+    logoUrl: sender.logoUrl,
+    reference: `案例号 ${input.caseNo}`,
+    fields: [
+      ['客户', input.customerName || '客户'],
+      ['案例号', input.caseNo],
+      ['产品', input.productName || '暂无数据'],
+      ['产品 SN', input.serialNumber || '暂无数据'],
+      ['服务中心', input.serviceCenterName],
+      ['收件人', input.inboundAddress.recipient],
+      ['联系电话', input.inboundAddress.phone],
+      ['收件地址', input.inboundAddress.address],
+      ['营业时间', input.inboundAddress.businessHours]
+    ],
+    sections: [{ heading: '寄送说明', body: inboundShippingNotice }]
+  };
 }
 
 function quoteHtml(snapshot: QuoteSnapshot): string {
@@ -2667,6 +2737,7 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   if (input.contactEmail !== undefined) { contactUpdates.push('customer_email = ?'); contactParams.push(input.contactEmail); }
   if (input.contactAddress !== undefined) { contactUpdates.push('customer_address = ?'); contactParams.push(input.contactAddress); }
   const contactSql = contactUpdates.length ? `${contactUpdates.join(', ')}, ` : '';
+  let selectedServiceCenter: { id: string; name: string } | null = null;
   if (!input.accepted) {
     statements.push(
       c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}service_stage = 'NEEDS_MORE_INFO', admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, input.reason, user.id, user.id, serviceCase.id),
@@ -2675,8 +2746,9 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   } else {
     const nextStage = input.requiresShipment ? 'WAITING_CUSTOMER_SHIPMENT' : 'PENDING_QUOTE';
     if (input.serviceCenterId) {
-      const center = await one<{ id: string }>(c.env.DB, `SELECT id FROM service_centers WHERE id = ? AND status = 'active'`, input.serviceCenterId);
+      const center = await one<{ id: string; name: string }>(c.env.DB, `SELECT id, name FROM service_centers WHERE id = ? AND status = 'active'`, input.serviceCenterId);
       if (!center) throw badRequest('所选授权服务中心不可用');
+      selectedServiceCenter = center;
       statements.push(c.env.DB.prepare(`INSERT INTO after_sales_assignments (id, case_id, service_center_id, assigned_by) VALUES (?, ?, ?, ?)
         ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
     }
@@ -2687,7 +2759,42 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   }
   statements.push(dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.admin_review', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input }));
   await c.env.DB.batch(statements);
-  return c.json({ id: serviceCase.id, accepted: input.accepted });
+  let shippingAddressMailStatus: 'not_applicable' | 'sent' | 'failed' | 'no_recipient' | 'unsupported_service_center' = 'not_applicable';
+  if (input.accepted && input.requiresShipment && selectedServiceCenter) {
+    const recipientEmail = String(input.contactEmail ?? serviceCase.contactEmail ?? '').trim();
+    const inboundAddress = inboundAddressForServiceCenter(selectedServiceCenter.name);
+    if (!recipientEmail) {
+      shippingAddressMailStatus = 'no_recipient';
+    } else if (!inboundAddress) {
+      shippingAddressMailStatus = 'unsupported_service_center';
+    } else {
+      try {
+        const mailData = afterSalesShippingAddressMailData(c.env, {
+          caseNo: serviceCase.caseNo,
+          customerName: String(input.contactName ?? serviceCase.contactName ?? '客户'),
+          productName: serviceCase.productName,
+          serialNumber: serviceCase.serialNumber,
+          serviceCenterName: selectedServiceCenter.name,
+          inboundAddress
+        });
+        const delivery = await sendViaMailCenter(c, {
+          template: 'after_sales_shipping_address',
+          to: recipientEmail,
+          subject: mailSubject('after_sales_shipping_address', mailEnvironment(c.env), `｜案例 ${serviceCase.caseNo}`),
+          html: renderMailHtml(mailData),
+          text: renderMailText(mailData),
+          idempotencyKey: `after-sales-shipping-address:${serviceCase.id}:${selectedServiceCenter.id}:${recipientEmail.toLowerCase()}`,
+          actorId: user.id,
+          relatedEntityType: 'after_sales_case',
+          relatedEntityId: serviceCase.id
+        });
+        shippingAddressMailStatus = delivery.sent ? 'sent' : 'failed';
+      } catch {
+        shippingAddressMailStatus = 'failed';
+      }
+    }
+  }
+  return c.json({ id: serviceCase.id, accepted: input.accepted, shippingAddressMailStatus });
 });
 
 app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {
