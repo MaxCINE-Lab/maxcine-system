@@ -324,10 +324,22 @@ export const adminReviewAfterSalesSchema = z.object({
   contactName: z.string().trim().max(80).optional(),
   contactPhone: z.string().trim().max(32).optional(),
   contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).optional(),
-  contactAddress: z.string().trim().max(500).optional()
+  contactAddress: z.string().trim().max(500).optional(),
+  shippingAddressMail: z.object({
+    recipientEmail: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
+    subject: z.string().trim().min(1).max(300),
+    html: z.string().trim().min(20).max(100000),
+    text: z.string().trim().min(1).max(20000)
+  }).optional()
 }).superRefine((value, context) => {
   if (!value.accepted && !value.reason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['reason'], message: '不受理时必须填写原因' });
   if (value.accepted && value.requiresShipment && !value.serviceCenterId) context.addIssue({ code: z.ZodIssueCode.custom, path: ['serviceCenterId'], message: '需要寄修时必须分配授权服务中心' });
+});
+
+export const afterSalesShippingAddressPreviewSchema = z.object({
+  serviceCenterId: z.string().uuid(),
+  contactName: z.string().trim().max(80).optional(),
+  contactEmail: z.string().trim().max(254).transform((value) => value.toLowerCase()).optional()
 });
 
 export const closeAfterSalesSchema = z.object({

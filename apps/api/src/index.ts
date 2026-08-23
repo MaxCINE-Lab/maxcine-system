@@ -1,7 +1,7 @@
 import { Hono, type Context } from 'hono';
 import { ZodError, z } from 'zod';
 import {
-  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
+  AppError, adjustInventorySchema, adminReviewAfterSalesSchema, afterSalesAssessmentSchema, afterSalesOutboundShipmentSchema, afterSalesRecommendationSchema, afterSalesShippingAddressPreviewSchema, assignAfterSalesSchema, badRequest, can, canAccessStore, canReadOrder, canTransitionOrder, confirmHistoricalWarrantyImportSchema, conflict, createAfterSalesSchema, createAssetAfterSalesSchema,
   bindOrderSerialsSchema, closeAfterSalesSchema, createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
@@ -946,6 +946,22 @@ function afterSalesShippingAddressMailData(env: Env, input: {
       ['营业时间', input.inboundAddress.businessHours]
     ],
     sections: [{ heading: '寄送说明', body: inboundShippingNotice }]
+  };
+}
+
+function afterSalesShippingAddressMailContent(env: Env, input: {
+  caseNo: string;
+  customerName: string;
+  productName: string | null;
+  serialNumber: string | null;
+  serviceCenterName: string;
+  inboundAddress: ServiceCenterInboundAddress;
+}): { subject: string; html: string; text: string } {
+  const data = afterSalesShippingAddressMailData(env, input);
+  return {
+    subject: mailSubject('after_sales_shipping_address', mailEnvironment(env), `｜案例 ${input.caseNo}`),
+    html: renderMailHtml(data),
+    text: renderMailText(data)
   };
 }
 
@@ -2723,6 +2739,33 @@ app.delete('/after-sales/:id/attachments/:attachmentId', requireAuth, async (c) 
   return c.body(null, 204);
 });
 
+app.post('/after-sales/:id/shipping-address-email-preview', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:assign');
+  const input = await parseBody(c.req.raw, afterSalesShippingAddressPreviewSchema);
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  if (!['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(serviceCase.serviceStage)) throw conflict('该工单当前不能生成寄修地址邮件预览');
+  const center = await one<{ id: string; name: string }>(c.env.DB, `SELECT id, name FROM service_centers WHERE id = ? AND status = 'active'`, input.serviceCenterId);
+  if (!center) throw badRequest('所选授权服务中心不可用');
+  const inboundAddress = inboundAddressForServiceCenter(center.name);
+  if (!inboundAddress) throw badRequest('该服务中心暂未配置寄修地址，请先维护寄修地址后再发送邮件。');
+  const content = afterSalesShippingAddressMailContent(c.env, {
+    caseNo: serviceCase.caseNo,
+    customerName: String(input.contactName ?? serviceCase.contactName ?? '客户'),
+    productName: serviceCase.productName,
+    serialNumber: serviceCase.serialNumber,
+    serviceCenterName: center.name,
+    inboundAddress
+  });
+  return c.json({
+    template: 'after_sales_shipping_address',
+    recipientEmail: String(input.contactEmail ?? serviceCase.contactEmail ?? '').trim().toLowerCase(),
+    serviceCenterName: center.name,
+    inboundAddress,
+    ...content
+  });
+});
+
 app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'after-sales:assign');
@@ -2751,6 +2794,8 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
       selectedServiceCenter = center;
       statements.push(c.env.DB.prepare(`INSERT INTO after_sales_assignments (id, case_id, service_center_id, assigned_by) VALUES (?, ?, ?, ?)
         ON CONFLICT(case_id) DO UPDATE SET service_center_id = excluded.service_center_id, assigned_by = excluded.assigned_by, assigned_at = CURRENT_TIMESTAMP`).bind(id(), serviceCase.id, center.id, user.id));
+      const previewRecipient = String(input.shippingAddressMail?.recipientEmail ?? input.contactEmail ?? serviceCase.contactEmail ?? '').trim();
+      if (input.requiresShipment && previewRecipient && inboundAddressForServiceCenter(center.name) && !input.shippingAddressMail) throw badRequest('请先预览并确认寄修地址邮件内容后再发送。');
     }
     statements.push(
       c.env.DB.prepare(`UPDATE after_sales_cases SET ${contactSql}status = 'in_progress', service_stage = ?, requires_customer_shipment = ?, admin_review_note = ?, admin_reviewed_at = CURRENT_TIMESTAMP, admin_reviewed_by = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...contactParams, nextStage, Number(input.requiresShipment), input.internalNote, user.id, user.id, serviceCase.id),
@@ -2761,28 +2806,22 @@ app.post('/after-sales/:id/admin-review', requireAuth, async (c) => {
   await c.env.DB.batch(statements);
   let shippingAddressMailStatus: 'not_applicable' | 'sent' | 'failed' | 'no_recipient' | 'unsupported_service_center' = 'not_applicable';
   if (input.accepted && input.requiresShipment && selectedServiceCenter) {
-    const recipientEmail = String(input.contactEmail ?? serviceCase.contactEmail ?? '').trim();
     const inboundAddress = inboundAddressForServiceCenter(selectedServiceCenter.name);
+    const recipientEmail = String(input.shippingAddressMail?.recipientEmail ?? input.contactEmail ?? serviceCase.contactEmail ?? '').trim().toLowerCase();
     if (!recipientEmail) {
       shippingAddressMailStatus = 'no_recipient';
     } else if (!inboundAddress) {
       shippingAddressMailStatus = 'unsupported_service_center';
     } else {
       try {
-        const mailData = afterSalesShippingAddressMailData(c.env, {
-          caseNo: serviceCase.caseNo,
-          customerName: String(input.contactName ?? serviceCase.contactName ?? '客户'),
-          productName: serviceCase.productName,
-          serialNumber: serviceCase.serialNumber,
-          serviceCenterName: selectedServiceCenter.name,
-          inboundAddress
-        });
+        const shippingMail = input.shippingAddressMail;
+        if (!shippingMail) throw badRequest('请先预览并确认寄修地址邮件内容后再发送。');
         const delivery = await sendViaMailCenter(c, {
           template: 'after_sales_shipping_address',
           to: recipientEmail,
-          subject: mailSubject('after_sales_shipping_address', mailEnvironment(c.env), `｜案例 ${serviceCase.caseNo}`),
-          html: renderMailHtml(mailData),
-          text: renderMailText(mailData),
+          subject: shippingMail.subject,
+          html: shippingMail.html,
+          text: shippingMail.text,
           idempotencyKey: `after-sales-shipping-address:${serviceCase.id}:${selectedServiceCenter.id}:${recipientEmail.toLowerCase()}`,
           actorId: user.id,
           relatedEntityType: 'after_sales_case',

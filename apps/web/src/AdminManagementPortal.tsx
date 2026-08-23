@@ -439,6 +439,11 @@ type QuotePreview = {
   emails: Array<{ id: string; toEmail: string; fromEmail: string; replyToEmail: string; subject: string; status: string; failureReason: string; provider: string; providerMessageId: string; attemptNo: number; sentAt: string | null; createdAt: string }>;
 };
 const quoteWorkflowText: Record<string, string> = { DRAFT: '草稿', READY_FOR_REVIEW: '待预览确认', SENDING: '发送中', SENT: '已发送', SEND_FAILED: '发送失败', SUPERSEDED: '已被新版本替代', CANCELLED: '已取消' };
+type ShippingAddressMailPreview = { template: 'after_sales_shipping_address'; recipientEmail: string; serviceCenterName: string; inboundAddress: { recipient: string; phone: string; address: string; businessHours: string }; subject: string; html: string; text: string };
+function acceptedShippingReviewButton(requiresShipment: boolean, busy: boolean, preview: ShippingAddressMailPreview | null, loadPreview: () => void, confirm: () => void) {
+  if (!requiresShipment) return <Button onClick={confirm}>受理并分配</Button>;
+  return <Button disabled={busy} onClick={preview ? confirm : loadPreview}>{busy ? '正在生成预览…' : preview ? '保存预览并受理发送' : '预览寄修地址邮件'}</Button>;
+}
 
 function RepairMaterialsPanel({ notice }: { notice: (value: Notice) => void }) {
   const [query, setQuery] = useState('');
@@ -467,6 +472,8 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const [showMaterials, setShowMaterials] = useState(false);
   const [centerId, setCenterId] = useState('');
   const [requiresShipment, setRequiresShipment] = useState(true);
+  const [shippingPreview, setShippingPreview] = useState<ShippingAddressMailPreview | null>(null);
+  const [shippingPreviewBusy, setShippingPreviewBusy] = useState(false);
   const [reviewNote, setReviewNote] = useState('');
   const [reviewContactName, setReviewContactName] = useState('');
   const [reviewContactPhone, setReviewContactPhone] = useState('');
@@ -505,6 +512,8 @@ function AfterSalesV2({ user, route, logout }: Props) {
       setSelected(detail);
       setDetailPhase(phaseForStage(detail.case.serviceStage));
       setCenterId(detail.case.serviceCenterId || '');
+      setShippingPreview(null);
+      setShippingPreviewBusy(false);
       setReviewContactName(detail.case.contactName || '');
       setReviewContactPhone(detail.case.contactPhone || '');
       setReviewContactEmail(detail.case.contactEmail || '');
@@ -602,13 +611,32 @@ function AfterSalesV2({ user, route, logout }: Props) {
   const quoteSubtotalBeforeDiscountCents = quoteItems.reduce((sum, item) => sum + Number(item.quantity || 0) * centsFromYuan(item.unitPrice) + centsFromYuan(item.serviceFee || '0'), 0);
   const quoteDiscountCents = quoteItems.reduce((sum, item) => sum + centsFromYuan(item.discount || '0'), 0);
   const quoteTotalCents = quoteItems.reduce((sum, item) => sum + quoteItemSubtotalCents(item), 0);
-  const adminReview = async (accepted: boolean) => {
+  const loadShippingAddressPreview = async () => {
+    if (!selected) return;
+    if (!centerId) return setNotice({ tone: 'error', text: '需要寄修时必须选择授权服务中心。' });
+    setShippingPreviewBusy(true);
+    try {
+      const result = await api<ShippingAddressMailPreview>(`/after-sales/${selected.case.id}/shipping-address-email-preview`, {
+        method: 'POST',
+        body: JSON.stringify({ serviceCenterId: centerId, contactName: reviewContactName, contactEmail: reviewContactEmail })
+      });
+      setShippingPreview(result);
+      setNotice({ tone: 'success', text: '寄修地址邮件预览已生成，请确认或修改后再发送。' });
+    } catch (error) {
+      setNotice({ tone: 'error', text: errorText(error) });
+    } finally {
+      setShippingPreviewBusy(false);
+    }
+  };
+  const adminReview = async (accepted: boolean, shippingMail?: ShippingAddressMailPreview | null) => {
     if (!selected) return;
     if (!accepted && reviewNote.trim().length < 2) return setNotice({ tone: 'error', text: '不受理时必须填写原因。' });
     if (accepted && requiresShipment && !centerId) return setNotice({ tone: 'error', text: '需要寄修时必须选择授权服务中心。' });
+    if (accepted && requiresShipment && reviewContactEmail.trim() && !shippingMail) return setNotice({ tone: 'error', text: '请先预览并确认寄修地址邮件。' });
     try {
-      await api(`/after-sales/${selected.case.id}/admin-review`, { method: 'POST', body: JSON.stringify({ accepted, reason: reviewNote, serviceCenterId: centerId || null, requiresShipment, internalNote: reviewNote, contactName: reviewContactName, contactPhone: reviewContactPhone, contactEmail: reviewContactEmail, contactAddress: reviewContactAddress }) });
+      await api(`/after-sales/${selected.case.id}/admin-review`, { method: 'POST', body: JSON.stringify({ accepted, reason: reviewNote, serviceCenterId: centerId || null, requiresShipment, internalNote: reviewNote, contactName: reviewContactName, contactPhone: reviewContactPhone, contactEmail: reviewContactEmail, contactAddress: reviewContactAddress, shippingAddressMail: shippingMail ? { recipientEmail: shippingMail.recipientEmail, subject: shippingMail.subject, html: shippingMail.html, text: shippingMail.text } : undefined }) });
       setNotice({ tone: 'success', text: accepted ? '工单已受理。' : '工单已退回补充。' });
+      setShippingPreview(null);
       await open(selected.case.id);
       void load();
     } catch (error) {
@@ -794,7 +822,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
             <button type="button" className="button button--secondary" onClick={() => setPhotoViewer({ url, title })}>查看预览</button>
           </figure>;
         })}</div> : <p className="hint">暂无已上传图片。服务中心上传的收货、六面检测和意外损坏照片会显示在这里。</p>}</section>
-        {['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(selected.case.serviceStage) && <section className="after-sales-phase after-sales-phase--review"><h3>管理员初审</h3><div className="form-layout"><label>客户姓名<input value={reviewContactName} onChange={(event) => setReviewContactName(event.target.value)} placeholder="可在审核时修正" /></label><label>客户电话<input value={reviewContactPhone} onChange={(event) => setReviewContactPhone(event.target.value)} placeholder="可在审核时修正" /></label><label>客户邮箱<input type="email" value={reviewContactEmail} onChange={(event) => setReviewContactEmail(event.target.value)} placeholder="用于后续报价邮件" /></label><label>客户地址<textarea value={reviewContactAddress} onChange={(event) => setReviewContactAddress(event.target.value)} placeholder="本次售后联系和寄返地址" /></label></div><label>授权服务中心<select value={centerId} onChange={(event) => setCenterId(event.target.value)}><option value="">请选择服务中心</option>{options?.serviceCenters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><input type="checkbox" checked={requiresShipment} onChange={(event) => setRequiresShipment(event.target.checked)} /> 需要客户寄修</label><label>审核说明<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label><div className="action-list"><Button onClick={() => void adminReview(true)}>受理并分配</Button><Button danger onClick={() => void adminReview(false)}>不受理 / 退回补充</Button></div></section>}
+        {['PENDING_ADMIN_REVIEW', 'NEEDS_MORE_INFO'].includes(selected.case.serviceStage) && <section className="after-sales-phase after-sales-phase--review"><h3>管理员初审</h3><div className="form-layout"><label>客户姓名<input value={reviewContactName} onChange={(event) => { setReviewContactName(event.target.value); setShippingPreview(null); }} placeholder="可在审核时修正" /></label><label>客户电话<input value={reviewContactPhone} onChange={(event) => setReviewContactPhone(event.target.value)} placeholder="可在审核时修正" /></label><label>客户邮箱<input type="email" value={reviewContactEmail} onChange={(event) => { setReviewContactEmail(event.target.value); setShippingPreview(null); }} placeholder="用于寄修地址和后续报价邮件" /></label><label>客户地址<textarea value={reviewContactAddress} onChange={(event) => setReviewContactAddress(event.target.value)} placeholder="本次售后联系和寄返地址" /></label></div><label>授权服务中心<select value={centerId} onChange={(event) => { setCenterId(event.target.value); setShippingPreview(null); }}><option value="">请选择服务中心</option>{options?.serviceCenters.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select></label><label><input type="checkbox" checked={requiresShipment} onChange={(event) => { setRequiresShipment(event.target.checked); setShippingPreview(null); }} /> 需要客户寄修</label><label>审核说明<textarea value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} /></label><div className="action-list">{acceptedShippingReviewButton(requiresShipment, shippingPreviewBusy, shippingPreview, loadShippingAddressPreview, () => void adminReview(true, shippingPreview))}<Button danger onClick={() => void adminReview(false)}>不受理 / 退回补充</Button></div>{shippingPreview && <section className="panel panel--nested"><div className="panel-title"><h4>寄修地址邮件预览</h4><span>请确认或修改后再发送，发送记录会保存当前 HTML 快照。</span></div><div className="form-layout"><label>本次收件邮箱<input type="email" value={shippingPreview.recipientEmail} onChange={(event) => setShippingPreview({ ...shippingPreview, recipientEmail: event.target.value })} placeholder="客户收件邮箱" /></label><label>邮件主题<input value={shippingPreview.subject} onChange={(event) => setShippingPreview({ ...shippingPreview, subject: event.target.value })} /></label><label>纯文本内容<textarea value={shippingPreview.text} onChange={(event) => setShippingPreview({ ...shippingPreview, text: event.target.value })} /></label><label>HTML 内容<textarea value={shippingPreview.html} onChange={(event) => setShippingPreview({ ...shippingPreview, html: event.target.value })} /></label></div><div className="quote-preview-content mail-center-preview"><iframe title={`${selected.case.caseNo} 寄修地址邮件预览`} srcDoc={shippingPreview.html} /></div><div className="action-list"><Button secondary onClick={() => void loadShippingAddressPreview()}>重新生成默认预览</Button><Button onClick={() => void adminReview(true, shippingPreview)}>保存预览并受理发送</Button></div></section>}</section>}
         {selected.case.serviceStage === 'WAITING_CUSTOMER_SHIPMENT' && <section className="after-sales-phase after-sales-phase--ship_in"><h3>录入寄修单号</h3><label>快递公司<input value={inboundCarrier} onChange={(event) => setInboundCarrier(event.target.value)} /></label><label>寄修单号<input value={inboundTracking} onChange={(event) => setInboundTracking(event.target.value)} /></label><Button onClick={() => void saveInbound()}>保存寄修单号</Button></section>}
         <section className="after-sales-phase after-sales-phase--inspect after-sales-phase--quote"><h3>工程师检测记录</h3>{selected.inspections.map((inspection) => <div key={inspection.id}><p><strong>检测版本 {inspection.version}</strong> · {inspection.submittedByName} · {date(inspection.submittedAt)} · {inspection.status}<br />定损结果：{inspection.testResult || inspection.conclusion || '—'}；建议：{inspection.suggestedAction}；工程师参考金额：{money(inspection.materialSuggestedTotalCents ?? 0)}</p><dl className="detail-grid"><dt>定损结果</dt><dd>{inspection.testResult || inspection.conclusion || '—'}</dd><dt>建议处理</dt><dd>{inspection.suggestedAction || '—'}</dd></dl></div>)}</section>
         {['PENDING_QUOTE', 'PENDING_ADMIN_INSPECTION_REVIEW'].includes(selected.case.serviceStage) && <section className="after-sales-phase after-sales-phase--quote"><h3>管理员最终方案与报价</h3><p className="hint">工程师定损提交后直接进入本环节。工程师物料仅作为建议，最终是否使用、更换哪些物料，由管理员在下面两个区域勾选后生成报价。</p><section className="panel panel--nested"><h4>报价前核对</h4><dl className="detail-grid"><dt>收件邮箱</dt><dd>{selected.case.contactEmail || '未填写，确认发送前需要补充客户邮箱'}</dd><dt>客户联系方式</dt><dd>{[selected.case.contactName, selected.case.contactPhone].filter(Boolean).join(' / ') || '—'}</dd><dt>用户备注</dt><dd>{selected.case.customerNote || '—'}</dd><dt>内部备注</dt><dd>{selected.case.internalNote || '—'}</dd><dt>最新定损结果</dt><dd>{latestInspection?.testResult || latestInspection?.conclusion || '—'}</dd></dl></section>
