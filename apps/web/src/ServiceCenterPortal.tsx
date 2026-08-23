@@ -264,14 +264,18 @@ const handlingOptions = [
   "整体更换",
   "其他",
 ];
-const date = (v?: string | null) =>
-  v
-    ? new Intl.DateTimeFormat("zh-CN", {
+const date = (v?: string | null) => {
+  if (!v) return "—";
+  const normalized = v.includes("T") || /Z$/i.test(v) ? v : `${v.replace(" ", "T")}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime())
+    ? v
+    : new Intl.DateTimeFormat("zh-CN", {
         dateStyle: "medium",
         timeStyle: "short",
         hour12: false,
-      }).format(new Date(`${v.replace(" ", "T")}Z`))
-    : "—";
+      }).format(parsed);
+};
 const money = (value: number | null | undefined) =>
   typeof value === "number"
     ? `¥${(value / 100).toLocaleString("zh-CN", { minimumFractionDigits: 2 })}`

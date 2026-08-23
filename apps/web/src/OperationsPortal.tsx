@@ -37,7 +37,14 @@ const statusName: Record<OrderStatus, string> = { draft: '草稿', submitted: '�
 const orderStatusText = (order: Pick<Order, 'status' | 'pendingSerialCount'>) => order.status === 'shipped' && (order.pendingSerialCount ?? 0) > 0 ? '已发货 · 待绑定 SN' : statusName[order.status];
 const packageOptions = ['顺丰f1纸箱', '顺丰f2纸箱', '普通纸箱', '定制纸箱', '防水袋', '文件袋', '葫芦泡（白色普通）', '葫芦泡（蓝色加强）'];
 const money = (value: number) => `¥${(value / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}`;
-const date = (value: string | null | undefined) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${value.replace(' ', 'T')}Z`)) : '—';
+const date = (value: string | null | undefined) => {
+  if (!value) return '—';
+  const normalized = value.includes('T') || /Z$/i.test(value) ? value : `${value.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(parsed);
+};
 const serialStateText = (value: string) => ({ available: '可售', allocated: '预留', shipped: '已售出', returned: '已退回', blocked: '异常' } as Record<string, string>)[value] ?? value;
 const errorText = (error: unknown) => error instanceof ApiClientError ? error.message : '操作未完成，请稍后重试。';
 const splitLines = (value: string) => value.split(/[\n\r,，、\s]+/).map((item) => normalizeScannerValue(item)).filter(Boolean);

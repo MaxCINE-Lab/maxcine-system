@@ -11,7 +11,14 @@ type Notice = { tone: 'error' | 'success'; text: string } | null;
 type Option = { id: string; name: string; code?: string; email?: string };
 type Options = { roles: Array<Option & { code: string }>; dealers: Option[]; stores: Option[]; users: Option[]; serviceCenters: Option[] };
 const platforms = ['闲鱼', '淘宝', '官方渠道', '线下门店', '其他'];
-const date = (v?: string | null) => v ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(new Date(`${v.replace(' ', 'T')}Z`)) : '—';
+const date = (v?: string | null) => {
+  if (!v) return '—';
+  const normalized = v.includes('T') || /Z$/i.test(v) ? v : `${v.replace(' ', 'T')}Z`;
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime())
+    ? v
+    : new Intl.DateTimeFormat('zh-CN', { dateStyle: 'medium', timeStyle: 'short', hour12: false }).format(parsed);
+};
 const money = (value: number | null | undefined) => typeof value === 'number' ? `¥${(value / 100).toLocaleString('zh-CN', { minimumFractionDigits: 2 })}` : '需确认';
 const errorText = (e: unknown) => e instanceof ApiClientError ? e.message : '操作未完成，请稍后重试。';
 const roleListText = (roles: string) => roles.split(',').map((role) => displayRoleLabel(role.trim())).filter(Boolean).join('，') || '—';
