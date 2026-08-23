@@ -2855,6 +2855,22 @@ app.post('/after-sales/:id/close', requireAuth, async (c) => {
   return c.json({ id: serviceCase.id, status: 'closed', serviceStage: 'CLOSED' });
 });
 
+app.delete('/after-sales/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertPermission(user, 'after-sales:approve');
+  const serviceCase = await getCaseForAccess(c.env.DB, user, c.req.param('id'));
+  const attachments = await all<{ objectKey: string }>(c.env.DB, 'SELECT object_key AS objectKey FROM after_sales_attachments WHERE case_id = ?', serviceCase.id);
+  for (const attachment of attachments) {
+    if (attachment.objectKey && c.env.ASSETS) await c.env.ASSETS.delete(attachment.objectKey);
+  }
+  await c.env.DB.batch([
+    dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.delete', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), before: { caseNo: serviceCase.caseNo, serviceStage: serviceCase.serviceStage, status: serviceCase.status, attachmentCount: attachments.length } }),
+    c.env.DB.prepare('UPDATE asset_events SET related_service_case_id = NULL WHERE related_service_case_id = ?').bind(serviceCase.id),
+    c.env.DB.prepare('DELETE FROM after_sales_cases WHERE id = ?').bind(serviceCase.id)
+  ]);
+  return c.body(null, 204);
+});
+
 app.post('/after-sales/:id/inbound-shipment', requireAuth, async (c) => {
   const user = c.get('user');
   const input = await parseBody(c.req.raw, inboundShipmentSchema);

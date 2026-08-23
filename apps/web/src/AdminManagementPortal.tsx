@@ -678,6 +678,22 @@ function AfterSalesV2({ user, route, logout }: Props) {
       setNotice({ tone: 'error', text: errorText(error) });
     }
   };
+  const deleteAfterSalesCase = async () => {
+    if (!selected) return;
+    const confirmation = window.prompt(`确认永久删除售后案例 ${selected.case.caseNo}？该操作会删除关联检测、报价、图片和时间线记录。请输入工单号确认：`, '');
+    if (confirmation !== selected.case.caseNo) {
+      if (confirmation !== null) setNotice({ tone: 'error', text: '工单号不一致，已取消删除。' });
+      return;
+    }
+    try {
+      await api(`/after-sales/${selected.case.id}`, { method: 'DELETE' });
+      setNotice({ tone: 'success', text: '售后案例已删除。' });
+      setSelected(null);
+      void load();
+    } catch (error) {
+      setNotice({ tone: 'error', text: errorText(error) });
+    }
+  };
   const readOutboundPhoto = (slot: OutboundPhotoDraft['slot'], file: File | undefined) => {
     if (!file) return;
     if (!['image/png', 'image/jpeg', 'image/webp'].includes(file.type)) return setNotice({ tone: 'error', text: '发货照片仅支持 PNG、JPG 或 WebP 图片。' });
@@ -811,7 +827,7 @@ function AfterSalesV2({ user, route, logout }: Props) {
           })}
         </nav>
         <dl className="detail-grid"><dt>当前阶段</dt><dd>{serviceStageText[selected.case.serviceStage] ?? selected.case.serviceStage}</dd><dt>经销商</dt><dd>{selected.case.dealerName}</dd><dt>店铺</dt><dd>{selected.case.storeName || '—'}</dd><dt>产品</dt><dd>{selected.case.productName || '—'} {selected.case.productVersion || ''}</dd><dt>SN</dt><dd>{selected.case.serialNumber || '—'}</dd><dt>客户</dt><dd>{selected.case.contactName || '—'} / {selected.case.contactPhone || '—'} / {selected.case.contactEmail || '—'}</dd><dt>客户地址</dt><dd>{selected.case.contactAddress || '—'}</dd><dt>寄修单号</dt><dd>{selected.case.inboundCarrier || '—'} {selected.case.inboundTrackingNumber || ''}</dd><dt>售后发货</dt><dd>{selected.case.outboundCarrier || '—'} {selected.case.outboundTrackingNumber || ''}{selected.case.outboundShippedAt ? ` · ${date(selected.case.outboundShippedAt)}` : ''}</dd><dt>发货邮件</dt><dd>{selected.case.outboundMailStatus === 'sent' ? '已发送' : selected.case.outboundMailStatus === 'failed' ? `发送失败：${selected.case.outboundMailFailureReason || '原因未知'}` : '—'}</dd></dl>
-        <div className="action-list"><a className="button button--secondary" href={`#/system/service-center/cases/${selected.case.id}`}>进入检测/定损处理</a>{selected.case.serviceStage !== 'CLOSED' && user.permissions.includes('after-sales:approve') && <Button danger onClick={() => void closeAfterSalesCase()}>关闭工单</Button>}</div>
+        <div className="action-list"><a className="button button--secondary" href={`#/system/service-center/cases/${selected.case.id}`}>进入检测/定损处理</a>{selected.case.serviceStage !== 'CLOSED' && user.permissions.includes('after-sales:approve') && <Button danger onClick={() => void closeAfterSalesCase()}>关闭工单</Button>}{user.permissions.includes('after-sales:approve') && <Button danger onClick={() => void deleteAfterSalesCase()}>删除案例</Button>}</div>
         <section className="after-sales-phase after-sales-phase--overview"><h3>问题资料</h3><p>{selected.case.description}</p><p className="hint">用户备注：{selected.case.customerNote || '—'}；内部备注：{selected.case.internalNote || '—'}</p></section>
         <section className="after-sales-phase after-sales-phase--overview after-sales-phase--inspect"><h3>工单与定损图片</h3>{groupedPhotos.length ? <div className="service-photo-preview-grid admin-after-sales-photos">{groupedPhotos.map((attachment) => {
           const url = photoUrl(attachment);
