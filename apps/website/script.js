@@ -28,7 +28,7 @@ function optimizedImageVariant(src, extension) {
 
 function createImage(src, alt) {
   const picture = document.createElement("picture");
-  if (/^\/assets\/optimized\/.+\.(jpe?g|png)$/i.test(src)) {
+  if (/^\/assets\/.+\.(jpe?g|png)$/i.test(src)) {
     const avif = document.createElement("source");
     avif.type = "image/avif";
     avif.srcset = optimizedImageVariant(src, "avif");
@@ -42,6 +42,20 @@ function createImage(src, alt) {
   image.alt = alt;
   picture.append(image);
   return picture;
+}
+
+function createVisualFrame(src, alt, className = "visual-frame", note = "") {
+  const frame = el("figure", className);
+  if (src) {
+    frame.append(createImage(src, alt));
+    if (note) frame.append(el("figcaption", "", note));
+    return frame;
+  }
+
+  const slot = el("div", "render-placeholder");
+  slot.append(el("span", "", alt || "Render 待补充"));
+  frame.append(slot);
+  return frame;
 }
 
 function setText(selector, text) {
@@ -216,35 +230,6 @@ function renderStatement(target, section) {
   target.append(copy);
 }
 
-function renderPerformance() {
-  const target = qs("[data-home-performance]");
-  const section = mavic4ProWideAngle.homeSections.find((item) => item.id === "image-performance");
-  if (!target || !section) return;
-  clear(target);
-  const media = el("figure", "wide-media");
-  media.append(createImage(section.media, "MaxCINE Mavic 4 Pro 增广镜实际影像表现占位图"));
-  const copy = el("div", "section-copy");
-  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
-  const metrics = el("div", "metric-row");
-  section.metrics.forEach((metric) => metrics.append(el("span", "", metric)));
-  copy.append(metrics);
-  target.append(media, copy);
-}
-
-function renderFeatureBand(target, section) {
-  if (!target || !section) return;
-  clear(target);
-  const copy = el("div", "section-copy");
-  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
-  if (section.media) {
-    const media = el("figure", "side-media");
-    media.append(createImage(section.media, section.title));
-    target.append(copy, media);
-  } else {
-    target.append(copy);
-  }
-}
-
 function renderVersions(root = document) {
   const grid = qs("[data-version-grid]", root);
   if (!grid) return;
@@ -293,25 +278,185 @@ function renderBrandStatement() {
   target.append(el("p", "eyebrow", statement.eyebrow), el("h2", "", statement.title), el("p", "", statement.body));
 }
 
+function renderLaunchImagery() {
+  const target = qs("[data-launch-imagery]");
+  const section = mavic4ProWideAngle.launchPage.imagery;
+  if (!target || !section) return;
+  clear(target);
+
+  const media = createVisualFrame(section.media, section.mediaLabel, "launch-media");
+  const copy = el("div", "launch-caption launch-caption-center");
+  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
+
+  const comparison = el("div", "before-after-module");
+  const heading = el("div", "before-after-heading");
+  heading.append(el("p", "eyebrow", "BEFORE / AFTER"), el("span", "", section.comparison.title));
+  const frames = el("div", "before-after-grid");
+  [
+    { label: section.comparison.before, tone: "native" },
+    { label: section.comparison.after, tone: "maxcine" }
+  ].forEach((item) => {
+    const card = el("article", `compare-frame compare-frame-${item.tone}`);
+    const placeholder = el("div", "compare-placeholder");
+    placeholder.append(el("span", "", "素材待补充"));
+    card.append(placeholder, el("p", "", item.label));
+    frames.append(card);
+  });
+  comparison.append(heading, frames);
+  target.append(media, copy, comparison);
+}
+
+function renderLaunchDesign() {
+  const target = qs("[data-launch-design]");
+  const section = mavic4ProWideAngle.launchPage.design;
+  if (!target || !section) return;
+  clear(target);
+
+  const media = createVisualFrame(section.media, section.title, "launch-media");
+  const copy = el("div", "launch-caption launch-caption-low");
+  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
+  target.append(media, copy);
+}
+
+function renderLaunchRenders() {
+  const target = qs("[data-launch-renders]");
+  const section = mavic4ProWideAngle.launchPage.renders;
+  if (!target || !section) return;
+  clear(target);
+
+  const heading = el("div", "section-heading launch-heading");
+  heading.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
+  const grid = el("div", "render-grid");
+  section.items.forEach((item) => {
+    const card = el("article", "render-tile");
+    card.append(createVisualFrame(item.image, item.label, "render-tile-media"));
+    const meta = el("div", "render-tile-meta");
+    meta.append(el("h3", "", item.label), el("span", "", item.status));
+    card.append(meta);
+    grid.append(card);
+  });
+  target.append(heading, grid);
+}
+
+function renderLaunchKits() {
+  const target = qs("[data-launch-kits]");
+  const kits = mavic4ProWideAngle.launchPage.kits;
+  if (!target || !kits) return;
+  clear(target);
+
+  const heading = el("div", "section-heading launch-heading");
+  heading.append(el("p", "eyebrow", "KITS"), el("h2", "", "选择适合你的套装。"));
+  const grid = el("div", "kit-grid");
+  kits.forEach((kit) => {
+    const card = el("article", "kit-tile");
+    const media = createVisualFrame(kit.image, kit.imageNote, "kit-media", kit.imageNote);
+    const copy = el("div", "kit-copy");
+    copy.append(el("span", "sku", kit.sku), el("h3", "", kit.name), el("p", "kit-role", kit.role));
+    const list = el("ul", "kit-list");
+    kit.items.forEach((item) => list.append(el("li", "", item)));
+    const action = el("button", "button glass-control glass-control-secondary kit-action", kit.cta);
+    action.type = "button";
+    action.dataset.kitSelect = kit.id;
+    copy.append(list, action);
+    card.append(media, copy);
+    grid.append(card);
+  });
+  target.append(heading, grid);
+}
+
+function renderPackageShowcase() {
+  const target = qs("[data-package-showcase]");
+  const packages = mavic4ProWideAngle.launchPage.packages;
+  if (!target || !packages) return;
+  clear(target);
+  target.id = "package-showcase";
+
+  const heading = el("div", "section-heading package-heading");
+  heading.append(el("p", "eyebrow", "IN THE BOX"), el("h2", "", "包装清单"));
+
+  const selector = el("div", "package-selector");
+  const grid = el("div", "package-grid");
+
+  const renderItems = (id) => {
+    const current = packages.find((item) => item.id === id) || packages[0];
+    qsa("button", selector).forEach((button) => {
+      const active = button.dataset.packageId === current.id;
+      button.setAttribute("aria-selected", String(active));
+    });
+    clear(grid);
+    current.items.forEach((item) => {
+      const card = el("article", "package-item");
+      card.append(createVisualFrame(item.image, item.name, "package-media"));
+      const copy = el("div", "package-copy");
+      copy.append(el("h3", "", item.name), el("span", "", `×${item.qty}`));
+      card.append(copy);
+      grid.append(card);
+    });
+  };
+
+  packages.forEach((kit) => {
+    const button = el("button", "package-tab glass-control", kit.name);
+    button.type = "button";
+    button.dataset.packageId = kit.id;
+    button.setAttribute("role", "tab");
+    button.addEventListener("click", () => renderItems(kit.id));
+    selector.append(button);
+  });
+
+  target.append(heading, selector, grid);
+  renderItems(packages[0].id);
+
+  qsa("[data-kit-select]").forEach((button) => {
+    button.addEventListener("click", () => {
+      renderItems(button.dataset.kitSelect);
+      target.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  });
+}
+
+function renderLaunchSample() {
+  const target = qs("[data-launch-sample]");
+  const section = mavic4ProWideAngle.launchPage.sampleSection;
+  if (!target || !section) return;
+  clear(target);
+
+  const media = createVisualFrame(mavic4ProWideAngle.media.designVisual, section.title, "cinematic-sample-media");
+  const copy = el("div", "cinematic-sample-copy");
+  copy.append(el("h2", "", section.title));
+  const action = el("button", "button glass-control glass-control-primary", section.action);
+  action.type = "button";
+  action.dataset.sampleOpen = "";
+  copy.append(action);
+  target.append(media, copy);
+  action.addEventListener("click", openSampleModal);
+}
+
+function renderLaunchSpecs() {
+  const target = qs("[data-launch-specs]");
+  const section = mavic4ProWideAngle.launchPage.specs;
+  if (!target || !section) return;
+  clear(target);
+
+  const copy = el("div", "spec-copy");
+  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
+  const specs = el("dl", "spec-grid");
+  section.items.forEach(([name, value]) => {
+    const row = el("div", "spec-row");
+    row.append(el("dt", "", name), el("dd", "", value));
+    specs.append(row);
+  });
+  target.append(copy, specs);
+}
+
 function renderHome() {
   setupHero();
-  renderStatement(
-    qs("[data-home-positioning]"),
-    mavic4ProWideAngle.homeSections.find((item) => item.id === "positioning")
-  );
-  renderPerformance();
-  renderFeatureBand(
-    qs("[data-home-optics]"),
-    mavic4ProWideAngle.homeSections.find((item) => item.id === "optics")
-  );
-  renderFeatureBand(
-    qs("[data-home-engineering]"),
-    mavic4ProWideAngle.homeSections.find((item) => item.id === "engineering")
-  );
-  renderVersions();
-  renderSupportLinks();
-  renderChannels();
-  renderBrandStatement();
+  renderLaunchImagery();
+  renderLaunchDesign();
+  renderLaunchRenders();
+  renderLaunchKits();
+  renderPackageShowcase();
+  renderLaunchSample();
+  renderLaunchSpecs();
 }
 
 function renderProduct() {

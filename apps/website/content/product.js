@@ -8,8 +8,12 @@ export const mavic4ProWideAngle = {
     "为 DJI Mavic 4 Pro 影像创作设计的增广镜系统，在更宽视野中保留画面秩序、细节和自然色彩。",
   statusNote: "当前 V2 只展示本核心产品系列，不展开多产品商城。",
   media: {
-    heroPosterDesktop: "/assets/optimized/hero-poster-desktop.jpg",
-    heroPosterMobile: "/assets/optimized/hero-poster-mobile.jpg",
+    heroPosterDesktop: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg",
+    heroPosterMobile: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.jpg",
+    heroPosterDesktopAvif: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi.avif",
+    heroPosterMobileAvif: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.avif",
+    designVisual: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg",
+    imageryVisual: "/assets/optimized/hero-poster-desktop.jpg",
     productImage: "/assets/optimized/product-wide-angle.png",
     opticsImage: "/assets/optimized/optics-detail.jpg",
     engineeringImage: "/assets/optimized/engineering.jpg"
@@ -27,58 +31,141 @@ export const mavic4ProWideAngle = {
     {
       sku: "CG.W101",
       name: "标准套装",
-      role: "适合首次接入 MaxCINE 增广镜系统的创作者。",
-      items: ["增广镜主体", "基础收纳与保护配置", "安装与维护指引"],
+      role: "日常创作",
+      items: ["增广镜主体", "基础收纳配置", "安装与维护指引"],
       note: "具体包装清单待最终资料确认。"
     },
     {
       sku: "CG.W102",
       name: "增强套装",
-      role: "面向更高频率外拍、转场和复杂环境使用。",
-      items: ["增广镜主体", "增强收纳配置", "扩展维护配置"],
+      role: "高频拍摄",
+      items: ["增广镜主体", "增强收纳配置", "扩展维护配置", "外拍保护配置"],
       note: "具体包装清单待最终资料确认。"
     },
     {
       sku: "CG.W103",
       name: "创作套装",
-      role: "为正式项目、团队作业和长期创作准备。",
-      items: ["增广镜主体", "完整收纳配置", "创作场景所需扩展附件"],
+      role: "完整创作方案",
+      items: ["增广镜主体", "完整收纳配置", "创作扩展附件", "配重与维护配置"],
       note: "具体包装清单待最终资料确认。"
     }
   ],
-  homeSections: [
-    {
-      id: "positioning",
-      eyebrow: "PRODUCT POSITIONING",
-      title: "让 Mavic 4 Pro 拥有更完整的空间表达。",
-      body:
-        "MaxCINE 增广镜不是为了制造夸张视觉，而是把航拍中经常被裁掉的空间、边缘和环境关系重新带回画面。"
+  launchPage: {
+    imagery: {
+      eyebrow: "IMAGE",
+      title: "看见更多，不只是变得更广。",
+      media: "/assets/optimized/hero-poster-desktop.jpg",
+      mediaLabel: "影像与创作主视觉待替换为山脉 / 云海 / 日出版本",
+      comparison: {
+        title: "视角对比预留",
+        before: "DJI Mavic 4 Pro 原生视角",
+        after: "MaxCINE 增广镜"
+      }
     },
-    {
-      id: "image-performance",
-      eyebrow: "IMAGE PERFORMANCE",
-      title: "更宽视野，仍然保持克制。",
-      body:
-        "面对山体、城市、海面与建筑线条，V2 页面将重点呈现实际视野表现与画面边缘控制。正式样张和视频素材待补充。",
-      media: "/assets/optimized/optics-detail.jpg",
-      metrics: ["视野延展", "边缘秩序", "自然色彩"]
+    design: {
+      eyebrow: "DESIGN",
+      title: "让镜头成为飞行的一部分。",
+      media: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg"
     },
-    {
-      id: "optics",
-      eyebrow: "OPTICAL CONTROL",
-      title: "光学、眩光、色彩和细节，全部服务于成片。",
-      body:
-        "页面结构已为镀膜、逆光表现、色彩一致性和细节保留模块。缺少的参数不会被编造，将以 TODO 状态等待正式资料。"
+    renders: {
+      eyebrow: "EXTERIOR",
+      title: "外观、安装与配重，先为正式 Render 留出位置。",
+      items: [
+        { label: "45° Render", image: "/assets/optimized/product-wide-angle.png", status: "当前使用产品图占位" },
+        { label: "正面", image: "", status: "待渲染" },
+        { label: "背面", image: "", status: "待渲染" },
+        { label: "侧面", image: "", status: "待渲染" },
+        { label: "镜片外观", image: "", status: "待渲染" },
+        { label: "安装效果", image: "", status: "待渲染" },
+        { label: "配重", image: "", status: "待渲染" }
+      ]
     },
-    {
-      id: "engineering",
-      eyebrow: "ENGINEERING",
-      title: "机械结构与安装，需要像画面一样可靠。",
-      body:
-        "V2 会突出结构、装配、云台平衡和现场使用逻辑，让用户在购买前理解它如何进入真实创作流程。",
-      media: "/assets/optimized/engineering.jpg"
+    kits: [
+      {
+        id: "standard",
+        sku: "CG.W101",
+        name: "标准套装",
+        role: "日常创作",
+        image: "/assets/optimized/product-wide-angle.png",
+        imageNote: "标准套装平铺 Render 待替换",
+        items: ["增广镜主体", "基础收纳配置", "安装与维护指引"],
+        cta: "查看清单"
+      },
+      {
+        id: "enhanced",
+        sku: "CG.W102",
+        name: "增强套装",
+        role: "高频拍摄",
+        image: "/assets/optimized/product-wide-angle.png",
+        imageNote: "增强套装平铺 Render 待替换",
+        items: ["增广镜主体", "增强收纳配置", "扩展维护配置", "外拍保护配置"],
+        cta: "查看清单"
+      },
+      {
+        id: "creator",
+        sku: "CG.W103",
+        name: "创作套装",
+        role: "完整创作方案",
+        image: "/assets/optimized/product-wide-angle.png",
+        imageNote: "创作套装平铺 Render 待替换",
+        items: ["增广镜主体", "完整收纳配置", "创作扩展附件", "配重与维护配置"],
+        cta: "查看清单"
+      }
+    ],
+    packages: [
+      {
+        id: "standard",
+        sku: "CG.W101",
+        name: "标准套装",
+        items: [
+          { name: "增广镜主体", qty: 1, image: "/assets/optimized/product-wide-angle.png" },
+          { name: "基础收纳配置", qty: 1, image: "" },
+          { name: "安装与维护指引", qty: 1, image: "" }
+        ]
+      },
+      {
+        id: "enhanced",
+        sku: "CG.W102",
+        name: "增强套装",
+        items: [
+          { name: "增广镜主体", qty: 1, image: "/assets/optimized/product-wide-angle.png" },
+          { name: "增强收纳配置", qty: 1, image: "" },
+          { name: "扩展维护配置", qty: 1, image: "" },
+          { name: "外拍保护配置", qty: 1, image: "" }
+        ]
+      },
+      {
+        id: "creator",
+        sku: "CG.W103",
+        name: "创作套装",
+        items: [
+          { name: "增广镜主体", qty: 1, image: "/assets/optimized/product-wide-angle.png" },
+          { name: "完整收纳配置", qty: 1, image: "" },
+          { name: "创作扩展附件", qty: 1, image: "" },
+          { name: "配重配置", qty: 1, image: "" },
+          { name: "维护配置", qty: 1, image: "" }
+        ]
+      }
+    ],
+    sampleSection: {
+      eyebrow: "SAMPLE FILM",
+      title: "由它拍摄。",
+      action: "观看完整样片 01:00"
+    },
+    specs: {
+      eyebrow: "TECH SPECS",
+      title: "技术参数留到最后。",
+      body: "正式参数未确认前不编造倍率、重量、材质、光学结构或保修天数。",
+      items: [
+        ["适配设备", "DJI Mavic 4 Pro"],
+        ["视角倍率", "待补充"],
+        ["重量", "待补充"],
+        ["材质", "待补充"],
+        ["镀膜", "待补充"],
+        ["包装清单", "待最终确认"]
+      ]
     }
-  ],
+  },
   detailSections: [
     {
       id: "field-of-view",
@@ -149,4 +236,3 @@ export const mavic4ProWideAngle = {
     }
   ]
 };
-

@@ -32,7 +32,13 @@ const required = [
   'assets/optimized/optics-detail.avif',
   'assets/optimized/engineering.jpg',
   'assets/optimized/engineering.webp',
-  'assets/optimized/engineering.avif'
+  'assets/optimized/engineering.avif',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.webp',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.avif',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.jpg',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.webp',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.avif'
 ];
 
 function urlFor(path) {
@@ -129,7 +135,13 @@ for (const file of [
   'assets/optimized/engineering.avif',
   'assets/optimized/product-wide-angle.png',
   'assets/optimized/product-wide-angle.webp',
-  'assets/optimized/product-wide-angle.avif'
+  'assets/optimized/product-wide-angle.avif',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.webp',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi.avif',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.jpg',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.webp',
+  'assets/product/hero/maxcine-mavic-4-pro-sci-fi-mobile.avif'
 ]) {
   const size = statSync(urlFor(file)).size;
   if (size > 900 * 1024) {
