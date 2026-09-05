@@ -127,6 +127,19 @@ function initChrome() {
   }
 }
 
+function initLiquidNavigation() {
+  const header = qs("[data-site-header]");
+  if (!header) return;
+  document.body.dataset.heroTone = page === "home" ? "dark" : "solid";
+
+  const syncScrollState = () => {
+    document.body.classList.toggle("nav-scrolled", window.scrollY > 48);
+  };
+
+  syncScrollState();
+  window.addEventListener("scroll", syncScrollState, { passive: true });
+}
+
 function setupHero() {
   const hero = siteContent.hero;
   setText("[data-hero-eyebrow]", hero.eyebrow);
@@ -138,15 +151,21 @@ function setupHero() {
     primary.textContent = hero.primaryAction.label;
     primary.href = hero.primaryAction.href;
   }
+  const secondary = qs("[data-hero-secondary]");
+  if (secondary) secondary.textContent = hero.secondaryAction.label;
 
   const video = qs("[data-hero-video]");
   if (!video) return;
   const reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   if (!hero.video.enabled || reducedMotion) {
     video.hidden = true;
+    video.removeAttribute("poster");
     return;
   }
 
+  video.poster = window.matchMedia("(max-width: 760px)").matches
+    ? hero.video.posterMobile
+    : hero.video.posterDesktop;
   const source = document.createElement("source");
   source.src = window.matchMedia("(max-width: 760px)").matches
     ? hero.video.mobileSrc
@@ -168,6 +187,7 @@ function loadSampleVideo() {
   const sample = mavic4ProWideAngle.sampleFilm;
   const video = qs("[data-sample-video]");
   if (!video || video.dataset.loaded === "true" || sample.status === "placeholder") return;
+  video.poster = sample.poster;
   const source = document.createElement("source");
   source.src = window.matchMedia("(max-width: 760px)").matches
     ? sample.mobileSrc
@@ -178,6 +198,14 @@ function loadSampleVideo() {
   video.hidden = false;
   qs("[data-sample-poster]")?.setAttribute("hidden", "");
   video.load();
+}
+
+function ensureSamplePoster() {
+  const sample = mavic4ProWideAngle.sampleFilm;
+  const poster = qs("[data-sample-poster]");
+  if (!poster || poster.dataset.loaded === "true") return;
+  poster.append(createImage(sample.poster, ""));
+  poster.dataset.loaded = "true";
 }
 
 function renderStatement(target, section) {
@@ -415,27 +443,24 @@ function buildSampleModal() {
   const media = el("div", "sample-media");
   const poster = el("div", "sample-poster");
   poster.dataset.samplePoster = "";
-  poster.append(createImage(sample.poster, ""));
   const video = document.createElement("video");
   video.className = "sample-video";
   video.controls = true;
   video.playsInline = true;
   video.preload = "metadata";
-  video.poster = sample.poster;
   video.hidden = true;
   video.dataset.sampleVideo = "";
   media.append(poster, video);
-  const badge = el("span", "sample-badge", sample.note);
-  media.append(badge);
-
+  const badge = el("span", "sample-badge glass-control", sample.note);
   const copy = el("div", "sample-copy");
   copy.append(
     el("p", "eyebrow", "SAMPLE FILM"),
     el("h2", "", sample.title),
     el("p", "", `${sample.duration}。正式视频素材待替换，当前只展示 poster 与交互结构。`)
   );
+  media.append(badge, copy);
 
-  dialog.append(close, media, copy);
+  dialog.append(close, media);
   overlay.append(dialog);
   document.body.append(overlay);
 
@@ -451,6 +476,7 @@ function openSampleModal() {
   lastFocusedElement = document.activeElement;
   modal.hidden = false;
   document.body.classList.add("modal-open");
+  ensureSamplePoster();
   loadSampleVideo();
   qs("[data-sample-close]", modal)?.focus();
 }
@@ -475,6 +501,7 @@ function initSampleModal() {
 
 function initPage() {
   initChrome();
+  initLiquidNavigation();
   initSampleModal();
   if (page === "home") renderHome();
   if (page === "product") renderProduct();

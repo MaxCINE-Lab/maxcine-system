@@ -21,8 +21,8 @@ export const siteContent = {
     title: "视界尽展",
     tagline: "适用于 DJI Mavic 4 Pro",
     body: "",
-    primaryAction: { label: "了解详情", href: mavic4ProWideAngle.url },
-    secondaryAction: { label: "观看样片", action: "sample" },
+    primaryAction: { label: "了解产品", href: mavic4ProWideAngle.url },
+    secondaryAction: { label: "▶ 观看样片", action: "sample" },
     video: {
       enabled: false,
       duration: "30s",
