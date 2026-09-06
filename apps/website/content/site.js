@@ -80,8 +80,7 @@ export const siteContent = {
   },
   downloads: {
     title: "下载中心",
-    description:
-      "V2 暂不使用旧静态 SN JSON 解锁逻辑。正式资源权限和下载策略待确认后接入。",
+    description: "下载中心集中展示产品相关资源；资源权限按正式策略开放。",
     resources: [
       {
         title: "Photoshop CameraRaw",

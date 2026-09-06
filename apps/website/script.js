@@ -2,6 +2,7 @@ import { mavic4ProWideAngle, siteContent } from "/content/site.js";
 
 const page = document.body.dataset.page || "home";
 let lastFocusedElement = null;
+let activeKitId = mavic4ProWideAngle.launchPage.kits[0]?.id || "standard";
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -53,7 +54,7 @@ function createVisualFrame(src, alt, className = "visual-frame", note = "") {
   }
 
   const slot = el("div", "render-placeholder");
-  slot.append(el("span", "", alt || "Render 待补充"));
+  slot.setAttribute("aria-hidden", "true");
   frame.append(slot);
   return frame;
 }
@@ -284,13 +285,13 @@ function renderLaunchImagery() {
   if (!target || !section) return;
   clear(target);
 
-  const media = createVisualFrame(section.media, section.mediaLabel, "launch-media");
+  const media = createVisualFrame(section.media, section.title, "launch-media");
   const copy = el("div", "launch-caption launch-caption-center");
-  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
+  copy.append(el("h2", "", section.title));
 
   const comparison = el("div", "before-after-module");
   const heading = el("div", "before-after-heading");
-  heading.append(el("p", "eyebrow", "BEFORE / AFTER"), el("span", "", section.comparison.title));
+  heading.append(el("span", "", section.comparison.title));
   const frames = el("div", "before-after-grid");
   [
     { label: section.comparison.before, tone: "native" },
@@ -298,7 +299,6 @@ function renderLaunchImagery() {
   ].forEach((item) => {
     const card = el("article", `compare-frame compare-frame-${item.tone}`);
     const placeholder = el("div", "compare-placeholder");
-    placeholder.append(el("span", "", "素材待补充"));
     card.append(placeholder, el("p", "", item.label));
     frames.append(card);
   });
@@ -314,28 +314,21 @@ function renderLaunchDesign() {
 
   const media = createVisualFrame(section.media, section.title, "launch-media");
   const copy = el("div", "launch-caption launch-caption-low");
-  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
+  copy.append(el("h2", "", section.title));
   target.append(media, copy);
 }
 
 function renderLaunchRenders() {
   const target = qs("[data-launch-renders]");
-  const section = mavic4ProWideAngle.launchPage.renders;
+  const section = mavic4ProWideAngle.launchPage.appearance;
   if (!target || !section) return;
   clear(target);
 
-  const heading = el("div", "section-heading launch-heading");
-  heading.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title));
-  const grid = el("div", "render-grid");
-  section.items.forEach((item) => {
-    const card = el("article", "render-tile");
-    card.append(createVisualFrame(item.image, item.label, "render-tile-media"));
-    const meta = el("div", "render-tile-meta");
-    meta.append(el("h3", "", item.label), el("span", "", item.status));
-    card.append(meta);
-    grid.append(card);
-  });
-  target.append(heading, grid);
+  target.classList.add("appearance-showcase");
+  const copy = el("div", "appearance-copy");
+  copy.append(el("h2", "", section.title), el("p", "", section.body));
+  const media = createVisualFrame(section.image, section.title, "appearance-media");
+  target.append(copy, media);
 }
 
 function renderLaunchKits() {
@@ -344,24 +337,46 @@ function renderLaunchKits() {
   if (!target || !kits) return;
   clear(target);
 
-  const heading = el("div", "section-heading launch-heading");
-  heading.append(el("p", "eyebrow", "KITS"), el("h2", "", "选择适合你的套装。"));
-  const grid = el("div", "kit-grid");
-  kits.forEach((kit) => {
-    const card = el("article", "kit-tile");
-    const media = createVisualFrame(kit.image, kit.imageNote, "kit-media", kit.imageNote);
-    const copy = el("div", "kit-copy");
-    copy.append(el("span", "sku", kit.sku), el("h3", "", kit.name), el("p", "kit-role", kit.role));
-    const list = el("ul", "kit-list");
-    kit.items.forEach((item) => list.append(el("li", "", item)));
-    const action = el("button", "button glass-control glass-control-secondary kit-action", kit.cta);
-    action.type = "button";
-    action.dataset.kitSelect = kit.id;
-    copy.append(list, action);
-    card.append(media, copy);
-    grid.append(card);
+  const active = kits.find((kit) => kit.id === activeKitId) || kits[0];
+  activeKitId = active.id;
+
+  const stage = el("div", "kit-stage");
+  const copy = el("div", "kit-copy");
+  const selector = createKitSelector("kit-selector");
+  const partNumber = el("p", "kit-part-number", active.sku);
+  const title = el("h2", "", active.name);
+  const role = el("p", "kit-role", active.role);
+  const description = el("p", "kit-description", active.description);
+  const action = el("button", "kit-action", active.cta);
+  action.type = "button";
+  action.addEventListener("click", () => {
+    qs("[data-package-showcase]")?.scrollIntoView({ behavior: "smooth", block: "start" });
   });
-  target.append(heading, grid);
+  copy.append(selector, partNumber, title, role, description, action);
+
+  const media = createVisualFrame(active.image, active.name, "kit-media");
+  stage.append(copy, media);
+  target.append(stage);
+}
+
+function createKitSelector(className) {
+  const selector = el("div", className);
+  selector.setAttribute("role", "tablist");
+  selector.setAttribute("aria-label", "选择套装");
+  mavic4ProWideAngle.launchPage.kits.forEach((kit) => {
+    const button = el("button", "kit-tab glass-control", kit.name);
+    button.type = "button";
+    button.dataset.kitId = kit.id;
+    button.setAttribute("role", "tab");
+    button.setAttribute("aria-selected", String(kit.id === activeKitId));
+    button.addEventListener("click", () => {
+      activeKitId = kit.id;
+      renderLaunchKits();
+      renderPackageShowcase();
+    });
+    selector.append(button);
+  });
+  return selector;
 }
 
 function renderPackageShowcase() {
@@ -371,47 +386,22 @@ function renderPackageShowcase() {
   clear(target);
   target.id = "package-showcase";
 
-  const heading = el("div", "section-heading package-heading");
-  heading.append(el("p", "eyebrow", "IN THE BOX"), el("h2", "", "包装清单"));
-
-  const selector = el("div", "package-selector");
+  const current = packages.find((item) => item.id === activeKitId) || packages[0];
+  const stage = el("div", "package-stage");
+  const heading = el("div", "package-heading");
+  heading.append(el("h2", "", "包装清单"), el("p", "", current.name));
+  const selector = createKitSelector("package-selector");
   const grid = el("div", "package-grid");
-
-  const renderItems = (id) => {
-    const current = packages.find((item) => item.id === id) || packages[0];
-    qsa("button", selector).forEach((button) => {
-      const active = button.dataset.packageId === current.id;
-      button.setAttribute("aria-selected", String(active));
-    });
-    clear(grid);
-    current.items.forEach((item) => {
-      const card = el("article", "package-item");
-      card.append(createVisualFrame(item.image, item.name, "package-media"));
-      const copy = el("div", "package-copy");
-      copy.append(el("h3", "", item.name), el("span", "", `×${item.qty}`));
-      card.append(copy);
-      grid.append(card);
-    });
-  };
-
-  packages.forEach((kit) => {
-    const button = el("button", "package-tab glass-control", kit.name);
-    button.type = "button";
-    button.dataset.packageId = kit.id;
-    button.setAttribute("role", "tab");
-    button.addEventListener("click", () => renderItems(kit.id));
-    selector.append(button);
+  current.items.forEach((item) => {
+    const card = el("article", "package-item");
+    card.append(createVisualFrame(item.image, item.name, "package-media"));
+    const copy = el("div", "package-copy");
+    copy.append(el("h3", "", item.name), el("span", "", `×${item.qty}`));
+    card.append(copy);
+    grid.append(card);
   });
-
-  target.append(heading, selector, grid);
-  renderItems(packages[0].id);
-
-  qsa("[data-kit-select]").forEach((button) => {
-    button.addEventListener("click", () => {
-      renderItems(button.dataset.kitSelect);
-      target.scrollIntoView({ behavior: "smooth", block: "start" });
-    });
-  });
+  stage.append(heading, selector, grid);
+  target.append(stage);
 }
 
 function renderLaunchSample() {
@@ -431,23 +421,6 @@ function renderLaunchSample() {
   action.addEventListener("click", openSampleModal);
 }
 
-function renderLaunchSpecs() {
-  const target = qs("[data-launch-specs]");
-  const section = mavic4ProWideAngle.launchPage.specs;
-  if (!target || !section) return;
-  clear(target);
-
-  const copy = el("div", "spec-copy");
-  copy.append(el("p", "eyebrow", section.eyebrow), el("h2", "", section.title), el("p", "", section.body));
-  const specs = el("dl", "spec-grid");
-  section.items.forEach(([name, value]) => {
-    const row = el("div", "spec-row");
-    row.append(el("dt", "", name), el("dd", "", value));
-    specs.append(row);
-  });
-  target.append(copy, specs);
-}
-
 function renderHome() {
   setupHero();
   renderLaunchImagery();
@@ -456,7 +429,6 @@ function renderHome() {
   renderLaunchKits();
   renderPackageShowcase();
   renderLaunchSample();
-  renderLaunchSpecs();
 }
 
 function renderProduct() {
@@ -464,7 +436,7 @@ function renderProduct() {
   setText("[data-product-tagline]", mavic4ProWideAngle.tagline);
   setText("[data-product-summary]", mavic4ProWideAngle.summary);
   renderStatement(qs("[data-product-positioning]"), {
-    eyebrow: "POSITIONING",
+    eyebrow: "产品定位",
     title: "不是夸张变形，而是更完整的空间叙事。",
     body: mavic4ProWideAngle.summary
   });
@@ -483,12 +455,6 @@ function renderProduct() {
     });
   }
 
-  const todos = qs("[data-package-todos]");
-  if (todos) {
-    clear(todos);
-    mavic4ProWideAngle.packageContentTodos.forEach((item) => todos.append(el("li", "", item)));
-  }
-
   const faq = qs("[data-faq-list]");
   if (faq) {
     clear(faq);
@@ -501,7 +467,8 @@ function renderProduct() {
     });
   }
 
-  renderVersions();
+  renderLaunchKits();
+  renderPackageShowcase();
   renderChannels();
 }
 
@@ -509,7 +476,7 @@ function renderPolicy() {
   const root = qs("[data-policy-content]");
   if (!root) return;
   clear(root);
-  root.append(el("p", "eyebrow", "POLICY"), el("h2", "", siteContent.policy.title), el("p", "", siteContent.policy.description));
+  root.append(el("p", "eyebrow", "政策"), el("h2", "", siteContent.policy.title), el("p", "", siteContent.policy.description));
   siteContent.policy.sections.forEach((section) => {
     const block = el("section", "legal-section");
     block.append(el("h3", "", section.title));
@@ -549,7 +516,7 @@ function renderDownloads() {
   const grid = el("div", "download-grid");
   siteContent.downloads.resources.forEach((item) => {
     const card = el("article", "download-card");
-    card.append(el("h2", "", item.title), el("p", "", "旧资源入口保留，正式权限策略待确认。"));
+    card.append(el("h2", "", item.title), el("p", "", "资源权限按正式策略开放。"));
     const link = el("a", "button button-ghost", "下载");
     link.href = item.file;
     link.setAttribute("download", "");
@@ -599,9 +566,9 @@ function buildSampleModal() {
   const badge = el("span", "sample-badge glass-control", sample.note);
   const copy = el("div", "sample-copy");
   copy.append(
-    el("p", "eyebrow", "SAMPLE FILM"),
+    el("p", "eyebrow", "样片"),
     el("h2", "", sample.title),
-    el("p", "", `${sample.duration}。正式视频素材待替换，当前只展示 poster 与交互结构。`)
+    el("p", "", `${sample.duration}。正式样片上线后将在此播放。`)
   );
   media.append(badge, copy);
 

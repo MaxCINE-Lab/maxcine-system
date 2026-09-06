@@ -17,18 +17,16 @@
   <body data-page="warranty">
     <header class="site-header" data-site-header></header>
     <main id="main-content">
-      <section class="page-hero compact-hero">
-        <p class="eyebrow">PUBLIC WARRANTY</p>
+      <section class="page-hero compact-hero warranty-hero">
         <h1>设备信息与权益查询</h1>
-        <p>查询设备公开保修状态。后端继续复用现有 Public Warranty API、slider challenge 和一次性 token。</p>
+        <p>输入 MaxCINE 产品序列号，查询公开保修状态、起止时间与设备权益信息。</p>
       </section>
 
       <section class="warranty-shell section" aria-labelledby="warranty-form-title">
         <div class="warranty-panel">
           <div>
-            <p class="eyebrow">VERIFY</p>
-            <h2 id="warranty-form-title">完成验证后查询一次</h2>
-            <p>滑块验证用于降低公开查询接口被滥用的风险。</p>
+            <h2 id="warranty-form-title">查询设备</h2>
+            <p>先完成滑块验证，再输入序列号进行查询。</p>
           </div>
           <div class="slider-box">
             <label for="slider-input">请将滑块拖到最右端</label>
@@ -39,7 +37,7 @@
             <label for="sn-input">产品序列号</label>
             <div class="sn-row">
               <input id="sn-input" autocomplete="off" inputmode="latin" placeholder="请输入序列号">
-              <button id="sn-btn" class="button button-primary" type="button">
+              <button id="sn-btn" class="button glass-control glass-control-primary warranty-submit" type="button">
                 <span class="btn-text">查询</span>
                 <span class="btn-loader" aria-hidden="true"></span>
                 <span class="btn-check" aria-hidden="true">✓</span>
@@ -54,13 +52,12 @@
             <img id="img" src="/assets/logo2.png" alt="">
           </div>
           <div>
-            <p class="eyebrow">RESULT</p>
             <h2 id="name">MaxCINE 产品</h2>
             <p id="sn"></p>
             <p id="date"></p>
           </div>
           <dl>
-            <div><dt>状态</dt><dd id="status"></dd></div>
+            <div><dt>保修状态</dt><dd id="status"></dd></div>
             <div><dt>保修开始</dt><dd id="start"></dd></div>
             <div><dt>保修结束</dt><dd id="end"></dd></div>
             <div><dt>公开售后记录</dt><dd id="repair"></dd></div>

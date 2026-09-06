@@ -97,7 +97,7 @@ function setResult(data) {
   byId("start").textContent = data.warrantyStartDate || "暂无数据";
   byId("end").textContent = data.warrantyEndDate || "暂无数据";
   const status = byId("status");
-  status.textContent = data.warrantyStatus || "待确认";
+  status.textContent = data.warrantyStatus || "暂无数据";
   status.className = statusClass(data.warrantyStatus || "");
   byId("repair").textContent = data.publicNote || "无公开售后记录";
 }
