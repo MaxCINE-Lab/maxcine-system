@@ -92,6 +92,7 @@ for (const [pattern, message] of forbiddenPatterns) {
 
 const warrantyJs = read('warranty.js');
 for (const token of [
+  'https://dealersystem.maxcine.cn/api',
   '/public/warranty/challenges',
   '/public/warranty/challenges/${encodeURIComponent(challengeId)}/complete',
   '/public/warranty/${encodeURIComponent(normalized)}',
@@ -100,6 +101,12 @@ for (const token of [
 ]) {
   if (!warrantyJs.includes(token)) {
     throw new Error(`Warranty frontend no longer matches Public Warranty API contract: ${token}`);
+  }
+}
+
+for (const token of ['data/', 'admin_private', 'object_key', 'factory photos', 'Internal Warranty']) {
+  if (warrantyJs.includes(token)) {
+    throw new Error(`Warranty frontend must not request or expose ${token}.`);
   }
 }
 

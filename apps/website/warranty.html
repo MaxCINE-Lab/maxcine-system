@@ -36,7 +36,7 @@
           <div class="sn-form">
             <label for="sn-input">产品序列号</label>
             <div class="sn-row">
-              <input id="sn-input" autocomplete="off" inputmode="latin" placeholder="请输入序列号">
+              <input id="sn-input" autocomplete="off" inputmode="latin" pattern="[A-Za-z0-9._\\-/]+" placeholder="请输入序列号">
               <button id="sn-btn" class="button glass-control glass-control-primary warranty-submit" type="button">
                 <span class="btn-text">查询</span>
                 <span class="btn-loader" aria-hidden="true"></span>
@@ -54,13 +54,12 @@
           <div>
             <h2 id="name">MaxCINE 产品</h2>
             <p id="sn"></p>
-            <p id="date"></p>
           </div>
           <dl>
             <div><dt>保修状态</dt><dd id="status"></dd></div>
             <div><dt>保修开始</dt><dd id="start"></dd></div>
             <div><dt>保修结束</dt><dd id="end"></dd></div>
-            <div><dt>公开售后记录</dt><dd id="repair"></dd></div>
+            <div><dt>公开备注</dt><dd id="repair"></dd></div>
           </dl>
         </aside>
       </section>
