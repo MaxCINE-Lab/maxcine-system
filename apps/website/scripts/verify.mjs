@@ -104,8 +104,25 @@ for (const token of [
   }
 }
 
-for (const token of ['data/', 'admin_private', 'object_key', 'factory photos', 'Internal Warranty']) {
-  if (warrantyJs.includes(token)) {
+for (const token of [
+  'data/',
+  'internal warranty',
+  'factory photos',
+  'r2 object key',
+  'object url',
+  'customer information',
+  'phone',
+  'address',
+  'dealer information',
+  'order internal information',
+  'admin_private',
+  'audit log',
+  'cost',
+  'purchase price',
+  'service center internal assessment',
+  'user information'
+]) {
+  if (warrantyJs.toLowerCase().includes(token)) {
     throw new Error(`Warranty frontend must not request or expose ${token}.`);
   }
 }

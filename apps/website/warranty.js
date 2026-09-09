@@ -1,4 +1,4 @@
-const API_BASE = window.MAXCINE_PUBLIC_API_BASE || "https://dealersystem.maxcine.cn/api";
+const API_BASE = "https://dealersystem.maxcine.cn/api";
 const SERIAL_PATTERN = /^[A-Z0-9._\-/]{4,100}$/;
 const NOT_FOUND_MESSAGE = "未查询到可公开的保修信息，请检查序列号后重试。";
 const SLIDER_MESSAGE = "请先完成滑块验证。";
