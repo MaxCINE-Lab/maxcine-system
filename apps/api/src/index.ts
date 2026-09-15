@@ -482,6 +482,29 @@ async function ensureAssetForInventorySerial(db: D1Database, input: { serialNumb
   };
 }
 
+function assetSaleSnapshotStatements(db: D1Database, input: { assetId: string; order: OrderRow; shippedAt: string; carrier: string; trackingNumber: string; actorId: string }): D1PreparedStatement[] {
+  const saleId = id();
+  const salePriceText = input.order.salePriceCents === null ? '经销商未填写实际售卖价格' : `经销商实际售卖价格：${moneyText(input.order.salePriceCents)}`;
+  const raw = {
+    orderId: input.order.id,
+    orderNo: input.order.orderNo,
+    salePriceCents: input.order.salePriceCents,
+    carrier: input.carrier,
+    trackingNumber: input.trackingNumber,
+    source: 'order_shipment'
+  };
+  return [
+    db.prepare(`INSERT INTO asset_sales (id, source_channel, purchase_date, purchase_price_raw, unit_price_cents, quantity, total_price_cents, payment_status, payment_amount_cents, tracking_number, shipping_warehouse, raw_json, created_by)
+      VALUES (?, '订单发货', ?, ?, ?, 1, ?, 'shipped', ?, ?, '山东云仓', ?, ?)`)
+      .bind(saleId, input.shippedAt, salePriceText, input.order.salePriceCents, input.order.salePriceCents, input.order.salePriceCents, input.trackingNumber || null, JSON.stringify(raw), input.actorId),
+    db.prepare('INSERT OR IGNORE INTO asset_sale_assets (sale_id, asset_id) VALUES (?, ?)')
+      .bind(saleId, input.assetId),
+    db.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, sale_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'sold', ?, '订单销售记录', ?, ?, ?, ?, 'dealer', '订单履约')`)
+      .bind(id(), input.assetId, input.shippedAt, salePriceText, input.order.id, saleId, input.actorId)
+  ];
+}
+
 async function allocationStatementsForSerials(db: D1Database, input: { orderId: string; serialNumbers: string[]; actorId: string; allowExistingOnly?: boolean }): Promise<{ statements: D1PreparedStatement[]; serials: Array<{ serialNumber: string; productId: string; orderItemId: string }> }> {
   const items = await orderItemsForFulfillment(db, input.orderId);
   const expected = items.reduce((sum, item) => sum + item.quantity, 0);
@@ -561,6 +584,8 @@ async function randomAvailableSerials(db: D1Database, orderId: string): Promise<
 }
 
 async function bindingStatementsForShippedOrder(db: D1Database, input: { orderId: string; shipmentId: string; shippedAt: string; serialNumbers: string[]; actorId: string }): Promise<{ statements: D1PreparedStatement[]; serials: Array<{ serialNumber: string; productId: string; orderItemId: string }>; createdAssets: number }> {
+  const order = await getOrder(db, input.orderId);
+  const shipment = await one<{ carrier: string; trackingNumber: string }>(db, 'SELECT carrier, tracking_number AS trackingNumber FROM shipments WHERE id = ?', input.shipmentId);
   const items = await orderItemsForFulfillment(db, input.orderId);
   const existingForOrder = await allocatedSerialsForOrder(db, input.orderId);
   const counts = new Map(items.map((item) => [item.id, existingForOrder.filter((serial) => serial.orderItemId === item.id).length]));
@@ -612,6 +637,7 @@ async function bindingStatementsForShippedOrder(db: D1Database, input: { orderId
         VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '管理员后补发货 SN', '订单发货后补绑定', ?)`)
         .bind(id(), assetId, serialNumber, input.actorId));
     }
+    statements.push(...assetSaleSnapshotStatements(db, { assetId, order, shippedAt: input.shippedAt, carrier: shipment?.carrier ?? '订单发货', trackingNumber: shipment?.trackingNumber ?? '', actorId: input.actorId }));
     statements.push(db.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id,
       operator_user_id, visibility, source) VALUES (?, ?, 'shipped', ?, '订单已发货后补绑定 SN', ?, ?, ?, 'dealer', '订单履约')`)
       .bind(id(), assetId, input.shippedAt, `管理员根据出库条码照片后补绑定 SN：${serialNumber}`, input.orderId, input.actorId));
@@ -2351,6 +2377,7 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
         operator_user_id, visibility, source) VALUES (?, ?, 'note_added', CURRENT_TIMESTAMP, '保修规则待确认', '该 SKU 尚未配置可自动套用的保修期限。', ?, ?, 'admin_private', '订单履约')`)
         .bind(id(), assetId, order.id, user.id));
     }
+    assetStatements.push(...assetSaleSnapshotStatements(c.env.DB, { assetId, order, shippedAt: shippedAt.toISOString(), carrier: input.carrier ?? '订单发货', trackingNumber, actorId: user.id }));
   }
   const inventoryShipStatements = items.map((item) => {
     const reservedToRelease = Math.min(item.reservedQuantity, item.quantity);

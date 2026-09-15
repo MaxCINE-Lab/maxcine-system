@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+const ORDER_SCREENSHOT_DATA_URL_MAX_LENGTH = 1_450_000;
+
 export const loginSchema = z.object({
   email: z.string().email().max(254).transform((value) => value.toLowerCase().trim()),
   password: z.string().min(8).max(128)
@@ -12,7 +14,7 @@ export const createOrderSchema = z.object({
   salePriceCents: z.number().int().min(0).max(999999999).nullable().default(null),
   shippingAddress: z.string().trim().max(500).default(''),
   customerProfile: z.string().trim().max(120).default(''),
-  screenshotDataUrl: z.string().max(750000).refine(
+  screenshotDataUrl: z.string().max(ORDER_SCREENSHOT_DATA_URL_MAX_LENGTH).refine(
     (value) => value === '' || /^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value),
     '订单截图仅支持 PNG、JPG 或 WebP 图片'
   ).default('')
