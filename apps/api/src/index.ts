@@ -65,6 +65,12 @@ function isAllowedOrigin(origin: string | undefined, ...origins: Array<string | 
   return origins.flatMap(allowedOrigins).some((expected) => origin === expected || isEquivalentLocalOrigin(origin, expected));
 }
 
+const publicWarrantyOrigins = [
+  'https://maxcine-website-staging.pages.dev',
+  'https://maxcine.cn',
+  'https://www.maxcine.cn'
+];
+
 function isPublicPath(path: string): boolean {
   return path.startsWith('/public/');
 }
@@ -78,10 +84,14 @@ function isFujianRequest(request: Request): boolean {
   return ['fujian', '福建', '福建省'].includes(region) || ['fj', 'cn-fj'].includes(regionCode);
 }
 
-function fujianBlockedResponse(): Response {
+function fujianBlockedResponse(allowedOrigin?: string): Response {
   return new Response('<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>404</title><style>body{margin:0;min-height:100vh;display:grid;place-items:center;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#111827;background:#f3f4f6}main{padding:40px;text-align:center}h1{font-size:22px}</style></head><body><main><h1>您访问的页面不存在</h1></main></body></html>', {
     status: 403,
-    headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' }
+    headers: {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Cache-Control': 'no-store',
+      ...(allowedOrigin ? { 'Access-Control-Allow-Origin': allowedOrigin, 'Access-Control-Allow-Credentials': 'true', Vary: 'Origin' } : {})
+    }
   });
 }
 
@@ -1354,9 +1364,10 @@ app.use('*', async (c, next) => {
   c.header('X-Content-Type-Options', 'nosniff');
   c.header('Referrer-Policy', 'strict-origin-when-cross-origin');
   const pathname = new URL(c.req.url).pathname;
-  if (isPublicPath(pathname) && isFujianRequest(c.req.raw)) return fujianBlockedResponse();
   const origin = c.req.header('Origin');
-  const allowedOrigin = isAllowedOrigin(origin, c.env.APP_ORIGIN, c.env.PUBLIC_ORIGIN);
+  const allowedOrigin = isAllowedOrigin(origin, c.env.APP_ORIGIN, c.env.PUBLIC_ORIGIN,
+    ...(pathname.startsWith('/public/warranty/') ? publicWarrantyOrigins : []));
+  if (isPublicPath(pathname) && isFujianRequest(c.req.raw)) return fujianBlockedResponse(allowedOrigin ? origin : undefined);
   if (origin && allowedOrigin) {
     c.header('Access-Control-Allow-Origin', origin);
     c.header('Access-Control-Allow-Credentials', 'true');
