@@ -26,7 +26,9 @@ export default {
       const upstream = new URL(request.url);
       upstream.href = `${env.API_UPSTREAM_ORIGIN || defaultApiOrigin(url.hostname)}${url.pathname.slice(4)}${url.search}`;
       const headers = new Headers(request.headers);
-      headers.set('Origin', env.APP_ORIGIN || defaultAppOrigin(url.hostname));
+      if (!url.pathname.startsWith('/api/public/warranty/')) {
+        headers.set('Origin', env.APP_ORIGIN || defaultAppOrigin(url.hostname));
+      }
       return fetch(new Request(upstream, {
         method: request.method,
         headers,
