@@ -562,6 +562,7 @@ const publicEntitlementSchema = z.object({
 
 export const updatePublicWarrantySchema = z.object({
   publicProductName: z.string().trim().max(160).default(''),
+  legacyPublicPurchaseDate: isoDateSchema.nullable().default(null),
   publicWarrantyStartDate: isoDateSchema.nullable(),
   publicWarrantyEndDate: isoDateSchema.nullable(),
   publicWarrantyStatus: z.enum(['auto', 'pending', 'active', 'expired', 'no_warranty', 'blocked', 'hidden', 'unknown']),

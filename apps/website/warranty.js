@@ -136,6 +136,7 @@ function setResult(response) {
     warrantyStatus: response.warrantyStatus,
     warrantyStartDate: response.warrantyStartDate,
     warrantyEndDate: response.warrantyEndDate,
+    purchaseDate: response.purchaseDate,
     publicNote: response.publicNote,
     publicEntitlements: Array.isArray(response.publicEntitlements) ? response.publicEntitlements : []
   };
@@ -144,10 +145,10 @@ function setResult(response) {
 
   byId("name").textContent = publicWarranty.productName || "MaxCINE 产品";
   byId("sn").textContent = `序列号：${publicWarranty.serialNumber || "暂无数据"}`;
-  const activation = byId("activation");
-  if (activation) {
-    activation.hidden = !publicWarranty.warrantyStartDate;
-    activation.textContent = publicWarranty.warrantyStartDate ? `激活日期：${publicWarranty.warrantyStartDate}` : "";
+  const purchaseDate = byId("purchase-date");
+  if (purchaseDate) {
+    purchaseDate.hidden = !publicWarranty.purchaseDate;
+    purchaseDate.textContent = publicWarranty.purchaseDate ? `购买日期：${publicWarranty.purchaseDate}` : "";
   }
   byId("start").textContent = publicWarranty.warrantyStartDate || "暂无数据";
   byId("end").textContent = publicWarranty.warrantyEndDate || "暂无数据";

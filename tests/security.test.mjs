@@ -347,6 +347,7 @@ test('shipment warranty rules use the confirmed SKU durations only', () => {
 test('public warranty API uses slider token, Fujian edge check and an explicit safe DTO', () => {
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   const config = readFileSync(new URL('../apps/api/wrangler.toml', import.meta.url), 'utf8');
+  const purchaseMigration = readFileSync(new URL('../apps/api/migrations/0027_public_warranty_purchase_date.sql', import.meta.url), 'utf8');
   assert.match(source, /\/public\/warranty\/challenges/);
   assert.match(source, /sliderValue < 98/);
   assert.match(source, /consumePublicWarrantyToken/);
@@ -358,6 +359,11 @@ test('public warranty API uses slider token, Fujian edge check and an explicit s
   assert.ok(source.includes('serialNumber: row.serialNumber'));
   assert.ok(source.includes('productName: product.productName'));
   assert.ok(source.includes('publicEntitlements'));
+  assert.ok(source.includes('purchaseDate: publicPurchaseDate(row)'));
+  assert.match(source, /initializedOrderSubmittedAt/);
+  assert.match(source, /firstOrderSubmittedAt/);
+  assert.match(source, /latestOrderSubmittedAt/);
+  assert.match(purchaseMigration, /legacy_public_purchase_date TEXT/);
   assert.match(source, /warrantyStatus: publicWarrantyStatus/);
   const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
   assert.ok(publicWarrantyRoute.length > 0);
@@ -406,6 +412,25 @@ test('public warranty entitlements stay structured and keep custom dates indepen
   assert.match(source, /entitlement\.dateMode === 'custom' \? entitlement\.startDate : row\.publicWarrantyStartDate/);
   assert.match(source, /entitlement\.dateMode === 'custom' \? entitlement\.endDate : row\.publicWarrantyEndDate/);
   assert.match(source, /publicEntitlementStatus/);
+});
+
+test('public purchase date only uses submitted orders before a legacy public fallback', () => {
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const schema = updatePublicWarrantySchema.parse({
+    publicWarrantyStartDate: null,
+    publicWarrantyEndDate: null,
+    publicWarrantyStatus: 'auto',
+    publicNote: '',
+    isPublicQueryEnabled: true
+  });
+  assert.equal(schema.legacyPublicPurchaseDate, null);
+  const functionSource = source.slice(source.indexOf('function publicPurchaseDate'), source.indexOf('async function completePublicWarrantyChallenge'));
+  assert.match(functionSource, /initializedOrderSubmittedAt/);
+  assert.match(functionSource, /firstOrderSubmittedAt/);
+  assert.match(functionSource, /latestOrderSubmittedAt/);
+  assert.match(functionSource, /legacyPublicPurchaseDate/);
+  assert.ok(functionSource.indexOf('initializedOrderSubmittedAt') < functionSource.indexOf('legacyPublicPurchaseDate'));
+  assert.doesNotMatch(functionSource, /publicWarrantyStartDate|warrantyStartAt|shippedAt|reviewedAt|createdAt/);
 });
 
 test('factory photos are internal R2-only metadata and never exposed by public warranty', () => {

@@ -3,11 +3,11 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>设备信息与权益查询 | MaxCINE</title>
-    <meta name="description" content="通过 MaxCINE Public Warranty API 查询设备公开保修状态、保修日期和公开备注。">
+    <title>设备信息查询 | MaxCINE</title>
+    <meta name="description" content="通过 MaxCINE Public Warranty API 查询设备公开购买日期、保修状态与权益信息。">
     <link rel="canonical" href="https://maxcine.cn/warranty.html">
     <meta property="og:type" content="website">
-    <meta property="og:title" content="MaxCINE 设备信息与权益查询">
+    <meta property="og:title" content="MaxCINE 设备信息查询">
     <meta property="og:description" content="通过序列号查询 MaxCINE 产品公开保修状态。">
     <meta property="og:image" content="https://maxcine.cn/assets/optimized/hero-poster-desktop.jpg">
     <meta name="theme-color" content="#000000">
@@ -18,8 +18,8 @@
     <header class="site-header" data-site-header></header>
     <main id="main-content">
       <section class="page-hero compact-hero warranty-hero">
-        <h1>设备信息与权益查询</h1>
-        <p>输入 MaxCINE 产品序列号，查询公开保修状态、起止时间与设备权益信息。</p>
+        <h1>设备信息查询</h1>
+        <p>输入 MaxCINE 产品序列号，查询购买日期、公开保修与设备权益。</p>
       </section>
 
       <section class="warranty-shell section" aria-labelledby="warranty-form-title">
@@ -58,7 +58,7 @@
           <div class="result-intro">
             <h2 id="name">MaxCINE 产品</h2>
             <p id="sn"></p>
-            <p id="activation" hidden></p>
+            <p id="purchase-date" hidden></p>
           </div>
           <section class="result-card" aria-labelledby="warranty-result-title">
             <h3 id="warranty-result-title">保修期</h3>

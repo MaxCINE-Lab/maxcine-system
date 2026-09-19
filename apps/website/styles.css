@@ -1673,6 +1673,10 @@ body[data-page="warranty"] .site-nav a[aria-current="page"] {
   background: #fff;
 }
 
+.warranty-result[hidden] {
+  display: none;
+}
+
 .result-media {
   display: grid;
   place-items: center;
@@ -1785,6 +1789,132 @@ body[data-page="warranty"] .site-nav a[aria-current="page"] {
 
   .entitlement-list > div {
     gap: 14px;
+  }
+}
+
+/* Warranty stays a quiet service page: the shared navigation remains in place,
+   while the lookup and result follow the compact legacy information hierarchy. */
+.warranty-hero {
+  min-height: 0;
+  width: min(900px, calc(100% - 40px));
+  padding: 148px 0 24px;
+  text-align: center;
+}
+
+.warranty-hero h1 {
+  max-width: none;
+  font-size: clamp(30px, 4vw, 38px);
+  font-weight: 620;
+  line-height: 1.15;
+}
+
+.warranty-hero p {
+  max-width: none;
+  margin: 10px auto 0;
+  font-size: 14px;
+}
+
+.warranty-shell {
+  width: min(900px, calc(100% - 40px));
+  gap: 28px;
+  padding: 0 0 88px;
+}
+
+.warranty-panel {
+  max-width: none;
+  padding: 28px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  background: #fff;
+  text-align: center;
+}
+
+.warranty-panel h2 {
+  font-size: 20px;
+}
+
+.warranty-panel > div:first-child > p {
+  margin-top: 8px;
+  font-size: 14px;
+}
+
+.slider-box,
+.sn-form {
+  width: min(520px, 100%);
+  margin: 24px auto 0;
+  text-align: left;
+}
+
+.slider-box label,
+.sn-form > label {
+  font-size: 13px;
+}
+
+.sn-row {
+  gap: 10px;
+  border-bottom: 0;
+}
+
+.sn-row input {
+  min-height: 46px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  border-radius: 8px;
+  padding: 0 13px;
+  font-size: 14px;
+}
+
+.warranty-submit {
+  min-width: 82px;
+  min-height: 44px;
+  border-radius: 8px;
+  color: #fff;
+  border-color: #111;
+  background: #111;
+  box-shadow: none;
+}
+
+.warranty-result {
+  max-width: 680px;
+  margin: 0 auto;
+  grid-template-columns: 140px minmax(0, 1fr);
+  padding: 28px;
+  border-radius: 12px;
+  text-align: left;
+}
+
+.result-media {
+  min-height: 140px;
+}
+
+.warranty-result h2 {
+  font-size: clamp(22px, 3vw, 30px);
+}
+
+.result-card h3 {
+  font-size: 17px;
+}
+
+@media (max-width: 680px) {
+  .warranty-hero {
+    width: min(100% - 32px, 900px);
+    padding-top: 116px;
+  }
+
+  .warranty-shell {
+    width: min(100% - 32px, 900px);
+  }
+
+  .warranty-panel,
+  .warranty-result {
+    padding: 20px;
+  }
+
+  .sn-row {
+    align-items: stretch;
+  }
+
+  .warranty-submit {
+    min-width: 70px;
   }
 }
 

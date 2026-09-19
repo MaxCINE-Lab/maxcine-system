@@ -85,6 +85,7 @@ type AssetPhoto = {
 type PublicWarranty = {
   id: string;
   publicProductName: string;
+  legacyPublicPurchaseDate: string | null;
   publicWarrantyStartDate: string | null;
   publicWarrantyEndDate: string | null;
   publicWarrantyStatus: string;
@@ -1399,6 +1400,7 @@ const publicEntitlementTemplates = [
 
 type PublicWarrantyForm = {
   publicProductName: string;
+  legacyPublicPurchaseDate: string;
   publicWarrantyStartDate: string;
   publicWarrantyEndDate: string;
   publicWarrantyStatus: string;
@@ -1410,6 +1412,7 @@ type PublicWarrantyForm = {
 function publicWarrantyForm(publicWarranty: PublicWarranty | null): PublicWarrantyForm {
   return {
     publicProductName: publicWarranty?.publicProductName || "",
+    legacyPublicPurchaseDate: publicWarranty?.legacyPublicPurchaseDate || "",
     publicWarrantyStartDate: publicWarranty?.publicWarrantyStartDate || "",
     publicWarrantyEndDate: publicWarranty?.publicWarrantyEndDate || "",
     publicWarrantyStatus: publicWarranty?.publicWarrantyStatus || "auto",
@@ -1487,6 +1490,7 @@ function PublicWarrantyEditor({
         method: "PATCH",
         body: JSON.stringify({
           publicProductName: form.publicProductName,
+          legacyPublicPurchaseDate: form.legacyPublicPurchaseDate || null,
           publicWarrantyStartDate: form.publicWarrantyStartDate || null,
           publicWarrantyEndDate: form.publicWarrantyEndDate || null,
           publicWarrantyStatus: form.publicWarrantyStatus,
@@ -1522,6 +1526,7 @@ function PublicWarrantyEditor({
             ["公开保修开始", date(publicWarranty?.publicWarrantyStartDate)],
             ["公开保修结束", date(publicWarranty?.publicWarrantyEndDate)],
             ["官网产品名称", publicWarranty?.publicProductName],
+            ["历史购买日期", date(publicWarranty?.legacyPublicPurchaseDate)],
             [
               "公开额外权益",
               publicWarranty?.entitlements?.filter(
@@ -1560,6 +1565,22 @@ function PublicWarrantyEditor({
             }))
           }
         />
+      </label>
+      <label>
+        历史购买日期
+        <input
+          type="date"
+          value={form.legacyPublicPurchaseDate}
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              legacyPublicPurchaseDate: event.target.value,
+            }))
+          }
+        />
+        <small className="hint">
+          仅在没有关联销售订单时用于官网展示。
+        </small>
       </label>
       <label>
         允许公开查询
