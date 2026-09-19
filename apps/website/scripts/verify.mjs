@@ -93,6 +93,7 @@ for (const [pattern, message] of forbiddenPatterns) {
 const warrantyJs = read('warranty.js');
 for (const token of [
   'https://dealersystem.maxcine.cn/api',
+  'https://maxcine-api-staging.maxcine-lab.workers.dev',
   '/public/warranty/challenges',
   '/public/warranty/challenges/${encodeURIComponent(challengeId)}/complete',
   '/public/warranty/${encodeURIComponent(normalized)}',
