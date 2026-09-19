@@ -28,6 +28,24 @@ function setSliderStatus(text) {
   if (node) node.textContent = text;
 }
 
+function setQueryEnabled(enabled) {
+  const button = byId("sn-btn");
+  if (button) button.disabled = !enabled;
+}
+
+function setSliderProgress(value) {
+  const slider = byId("slider-input");
+  const progress = Math.min(100, Math.max(0, value));
+  if (!slider) return;
+
+  slider.style.setProperty("--slider-progress", `${progress}%`);
+  const track = slider.closest(".slider-track");
+  if (!track) return;
+
+  const handleOffset = Math.max(0, track.clientWidth - 48) * (progress / 100);
+  track.style.setProperty("--slider-handle-offset", `${Math.round(handleOffset)}px`);
+}
+
 function createApiError(status, body) {
   const error = new Error("Public Warranty API request failed");
   error.status = status;
@@ -74,6 +92,9 @@ function resetChallenge(status = "请拖动滑块完成验证") {
   challengeId = "";
   sliderToken = "";
   challengeCompleting = false;
+  byId("slider-box")?.classList.remove("is-verified");
+  setQueryEnabled(false);
+  setSliderProgress(0);
   setSliderStatus(status);
   void ensureChallenge();
 }
@@ -107,7 +128,10 @@ async function completeSlider(sliderValue) {
     });
     if (!data?.token) throw createApiError(0, "");
     sliderToken = data.token;
-    setSliderStatus("验证已完成，可查询一次");
+    byId("slider-box")?.classList.add("is-verified");
+    setSliderProgress(100);
+    setSliderStatus("验证完成");
+    setQueryEnabled(true);
     setMessage("");
   } catch (error) {
     setMessage(friendlyMessage(error), "error");
@@ -223,14 +247,19 @@ document.addEventListener("DOMContentLoaded", () => {
   const slider = byId("slider-input");
 
   void ensureChallenge();
+  setQueryEnabled(false);
+  setSliderProgress(0);
 
   slider.addEventListener("input", () => {
     const sliderValue = Number(slider.value);
+    byId("slider-box")?.classList.remove("is-verified");
+    setSliderProgress(sliderValue);
     if (sliderValue >= 98) void completeSlider(sliderValue);
   });
   slider.addEventListener("change", () => {
     if (Number(slider.value) < 98 && !sliderToken) setSliderStatus("请拖到最右端完成验证");
   });
+  window.addEventListener("resize", () => setSliderProgress(Number(slider.value)), { passive: true });
 
   button.addEventListener("click", () => query(input.value));
   input.addEventListener("keydown", (event) => {

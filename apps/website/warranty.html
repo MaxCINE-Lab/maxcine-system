@@ -19,30 +19,28 @@
     <main id="main-content">
       <section class="page-hero compact-hero warranty-hero">
         <h1>设备信息查询</h1>
-        <p>输入 MaxCINE 产品序列号，查询购买日期、公开保修与设备权益。</p>
+        <p>查询产品购买信息、保修状态及服务权益</p>
       </section>
 
-      <section class="warranty-shell section" aria-labelledby="warranty-form-title">
+      <section class="warranty-shell section" aria-label="设备信息查询">
         <div class="warranty-panel">
-          <div>
-            <h2 id="warranty-form-title">查询设备</h2>
-            <p>先完成滑块验证，再输入序列号进行查询。</p>
-          </div>
-          <div class="slider-box">
-            <label for="slider-input">请将滑块拖到最右端</label>
-            <input id="slider-input" type="range" min="0" max="100" value="0">
-            <small id="slider-status">未完成验证</small>
-          </div>
           <div class="sn-form">
             <label for="sn-input">产品序列号</label>
-            <div class="sn-row">
-              <input id="sn-input" autocomplete="off" inputmode="latin" pattern="[A-Za-z0-9._\\-/]+" placeholder="请输入序列号">
-              <button id="sn-btn" class="button glass-control glass-control-primary warranty-submit" type="button">
-                <span class="btn-text">查询</span>
-                <span class="btn-loader" aria-hidden="true"></span>
-                <span class="btn-check" aria-hidden="true">✓</span>
-              </button>
+            <input id="sn-input" autocomplete="off" inputmode="latin" pattern="[A-Za-z0-9._\\-/]+" placeholder="请输入产品序列号（SN）">
+          </div>
+          <div id="slider-box" class="slider-box">
+            <label for="slider-input">拖动滑块完成验证</label>
+            <div class="slider-track">
+              <input id="slider-input" type="range" min="0" max="100" value="0" aria-describedby="slider-status">
             </div>
+            <small id="slider-status">拖动滑块完成验证</small>
+          </div>
+          <div class="warranty-actions">
+            <button id="sn-btn" class="button warranty-submit" type="button" disabled>
+              <span class="btn-text">查询</span>
+              <span class="btn-loader" aria-hidden="true"></span>
+              <span class="btn-check" aria-hidden="true">✓</span>
+            </button>
             <p id="message" class="form-message" aria-live="polite"></p>
           </div>
         </div>
