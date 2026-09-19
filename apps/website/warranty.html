@@ -47,20 +47,39 @@
           </div>
         </div>
 
-        <aside id="main" class="warranty-result" aria-live="polite">
+        <aside id="main" class="warranty-result" aria-live="polite" hidden>
           <div class="result-media">
-            <img id="img" src="/assets/logo2.png" alt="">
+            <picture>
+              <source type="image/avif" srcset="/assets/optimized/product-wide-angle.avif">
+              <source type="image/webp" srcset="/assets/optimized/product-wide-angle.webp">
+              <img id="img" src="/assets/optimized/product-wide-angle.png" alt="MaxCINE Mavic 4 Pro 增广镜">
+            </picture>
           </div>
-          <div>
+          <div class="result-intro">
             <h2 id="name">MaxCINE 产品</h2>
             <p id="sn"></p>
+            <p id="activation" hidden></p>
           </div>
-          <dl>
-            <div><dt>保修状态</dt><dd id="status"></dd></div>
-            <div><dt>保修开始</dt><dd id="start"></dd></div>
-            <div><dt>保修结束</dt><dd id="end"></dd></div>
-            <div><dt>公开备注</dt><dd id="repair"></dd></div>
-          </dl>
+          <section class="result-card" aria-labelledby="warranty-result-title">
+            <h3 id="warranty-result-title">保修期</h3>
+            <dl>
+              <div><dt>状态</dt><dd id="status"></dd></div>
+              <div><dt>保修开始</dt><dd id="start"></dd></div>
+              <div><dt>保修结束</dt><dd id="end"></dd></div>
+            </dl>
+          </section>
+          <section id="entitlements-card" class="result-card" hidden aria-labelledby="entitlements-title">
+            <h3 id="entitlements-title">额外权益</h3>
+            <div id="entitlements" class="entitlement-list"></div>
+          </section>
+          <section id="service-card" class="result-card" hidden aria-labelledby="service-title">
+            <h3 id="service-title">售后服务记录</h3>
+            <dl><div><dt>维修记录</dt><dd id="service-record"></dd></div></dl>
+          </section>
+          <section id="note-card" class="result-card" hidden aria-labelledby="note-title">
+            <h3 id="note-title">官网公开备注</h3>
+            <p id="repair"></p>
+          </section>
         </aside>
       </section>
     </main>

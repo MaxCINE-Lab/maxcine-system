@@ -118,9 +118,14 @@ async function completeSlider(sliderValue) {
 }
 
 function statusClass(value) {
-  if (value === "保修中" || value === "待生效") return "status-ok";
-  if (value === "已过保" || value === "无保修") return "status-bad";
+  if (value === "保修中" || value === "待生效" || value === "有效") return "status-ok";
+  if (value === "已过保" || value === "无保修" || value === "已到期") return "status-bad";
   return "status-neutral";
+}
+
+function setHidden(id, hidden) {
+  const node = byId(id);
+  if (node) node.hidden = hidden;
 }
 
 function setResult(response) {
@@ -131,19 +136,49 @@ function setResult(response) {
     warrantyStatus: response.warrantyStatus,
     warrantyStartDate: response.warrantyStartDate,
     warrantyEndDate: response.warrantyEndDate,
-    publicNote: response.publicNote
+    publicNote: response.publicNote,
+    publicEntitlements: Array.isArray(response.publicEntitlements) ? response.publicEntitlements : []
   };
   const result = byId("main");
-  if (result) result.style.display = "grid";
+  if (result) result.hidden = false;
 
-  byId("name").textContent = [publicWarranty.productName, publicWarranty.productVersion].filter(Boolean).join(" ") || "MaxCINE 产品";
+  byId("name").textContent = publicWarranty.productName || "MaxCINE 产品";
   byId("sn").textContent = `序列号：${publicWarranty.serialNumber || "暂无数据"}`;
+  const activation = byId("activation");
+  if (activation) {
+    activation.hidden = !publicWarranty.warrantyStartDate;
+    activation.textContent = publicWarranty.warrantyStartDate ? `激活日期：${publicWarranty.warrantyStartDate}` : "";
+  }
   byId("start").textContent = publicWarranty.warrantyStartDate || "暂无数据";
   byId("end").textContent = publicWarranty.warrantyEndDate || "暂无数据";
   const status = byId("status");
   status.textContent = publicWarranty.warrantyStatus || "暂无数据";
   status.className = statusClass(publicWarranty.warrantyStatus || "");
-  byId("repair").textContent = publicWarranty.publicNote || "暂无公开备注";
+  const entitlements = byId("entitlements");
+  if (entitlements) {
+    entitlements.textContent = "";
+    for (const entitlement of publicWarranty.publicEntitlements) {
+      const item = document.createElement("div");
+      const details = document.createElement("div");
+      const name = document.createElement("strong");
+      const period = document.createElement("span");
+      const entitlementStatus = document.createElement("span");
+      name.textContent = entitlement.name || "额外权益";
+      period.textContent = entitlement.endDate
+        ? `有效期：${entitlement.startDate || "—"} ～ ${entitlement.endDate}`
+        : "有效期：待确认";
+      entitlementStatus.textContent = entitlement.status || "待确认";
+      entitlementStatus.className = `entitlement-status ${statusClass(entitlement.status || "")}`;
+      details.append(name, period);
+      item.append(details, entitlementStatus);
+      entitlements.append(item);
+    }
+  }
+  setHidden("entitlements-card", publicWarranty.publicEntitlements.length === 0);
+  setHidden("service-card", true);
+  const note = publicWarranty.publicNote ? publicWarranty.publicNote.trim() : "";
+  byId("repair").textContent = note;
+  setHidden("note-card", !note);
 }
 
 function normalizeSerialNumber(value) {
@@ -164,7 +199,7 @@ async function query(serialNumber) {
   const button = byId("sn-btn");
   button.classList.add("loading");
   setMessage("");
-  byId("main").style.display = "none";
+  byId("main").hidden = true;
 
   try {
     const data = await api(

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { URL } from 'node:url';
-import { PERMISSIONS, bindOrderSerialsSchema, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { PERMISSIONS, bindOrderSerialsSchema, can, canAccessStore, canReadOrder, canTransitionOrder, confirmQuoteSendSchema, createAfterSalesSchema, createCustomerRiskRecordSchema, createInventorySerialSchema, createOrderSchema, loginSchema, normalizeHistoricalWarrantyRecords, parseHistoricalDate, parseHistoricalPayment, parseHistoricalPrice, quoteDraftSchema, shipmentSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateInventorySerialSchema, updatePublicWarrantySchema, updateWatermarkPreferenceSchema, warrantyDisplayStatus } from '../packages/shared/dist/index.js';
 
 function user({ id, permissions = [], storeIds = [], serviceCenterIds = [], roles = [] }) {
   return { id, email: `${id}@example.test`, name: id, permissions, storeIds, serviceCenterIds, roles, dealerIds: [] };
@@ -356,13 +356,16 @@ test('public warranty API uses slider token, Fujian edge check and an explicit s
   assert.match(source, /'fujian', '福建', '福建省'/);
   assert.match(source, /'fj', 'cn-fj'/);
   assert.ok(source.includes('serialNumber: row.serialNumber'));
-  assert.ok(source.includes('productName: row.productName'));
+  assert.ok(source.includes('productName: product.productName'));
+  assert.ok(source.includes('publicEntitlements'));
   assert.match(source, /warrantyStatus: publicWarrantyStatus/);
   const publicWarrantyRoute = source.slice(source.indexOf("app.get('/public/warranty/:sn'"), source.indexOf("app.get('/repair-materials'"));
   assert.ok(publicWarrantyRoute.length > 0);
   assert.doesNotMatch(publicWarrantyRoute, /SELECT \*/);
   assert.doesNotMatch(publicWarrantyRoute, /object_key AS objectKey/);
   assert.doesNotMatch(publicWarrantyRoute, /factory/i);
+  assert.doesNotMatch(publicWarrantyRoute, /productName: row\.productName/);
+  assert.doesNotMatch(publicWarrantyRoute, /productVersion: row\.productVersion/);
   assert.ok(config.includes('PUBLIC_ORIGIN = "https://maxcine-website-staging.pages.dev"'));
 });
 
@@ -378,6 +381,31 @@ test('public and internal warranties are initialized together but edited indepen
   const internalWarrantyUpdateRoute = source.slice(source.indexOf("app.patch('/admin/assets/:id/warranty'"), source.indexOf("app.patch('/admin/assets/:id/public-warranty'"));
   assert.doesNotMatch(publicWarrantyUpdateRoute, /UPDATE assets SET warranty_/);
   assert.doesNotMatch(internalWarrantyUpdateRoute, /asset_public_warranties/);
+});
+
+test('public warranty entitlements stay structured and keep custom dates independent', () => {
+  const migration = readFileSync(new URL('../apps/api/migrations/0026_public_warranty_entitlements.sql', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const parsed = updatePublicWarrantySchema.parse({
+    publicProductName: 'MAVIC 4 Pro 增广镜（增强套装）',
+    publicWarrantyStartDate: '2026-03-10',
+    publicWarrantyEndDate: '2028-03-10',
+    publicWarrantyStatus: 'auto',
+    publicNote: '',
+    isPublicQueryEnabled: true,
+    entitlements: [
+      { type: 'rapid_replacement', displayName: '快速更换服务', isEnabled: true, isPublic: true, dateMode: 'inherit', startDate: null, endDate: null },
+      { type: 'care_plan', displayName: '配件无忧计划', isEnabled: true, isPublic: true, dateMode: 'custom', startDate: '2026-03-10', endDate: '2029-03-10' }
+    ]
+  });
+  assert.equal(parsed.entitlements[0].dateMode, 'inherit');
+  assert.equal(parsed.entitlements[1].endDate, '2029-03-10');
+  assert.equal(updatePublicWarrantySchema.safeParse({ ...parsed, entitlements: [{ ...parsed.entitlements[1], endDate: '2026-03-09' }] }).success, false);
+  assert.match(migration, /asset_public_warranty_entitlements/);
+  assert.match(migration, /date_mode TEXT NOT NULL DEFAULT 'inherit'/);
+  assert.match(source, /entitlement\.dateMode === 'custom' \? entitlement\.startDate : row\.publicWarrantyStartDate/);
+  assert.match(source, /entitlement\.dateMode === 'custom' \? entitlement\.endDate : row\.publicWarrantyEndDate/);
+  assert.match(source, /publicEntitlementStatus/);
 });
 
 test('factory photos are internal R2-only metadata and never exposed by public warranty', () => {
@@ -420,7 +448,7 @@ test('website keeps the original static architecture while warranty query uses t
   const warrantyJs = readFileSync(new URL('../apps/website/warranty.js', import.meta.url), 'utf8');
   const middleware = readFileSync(new URL('../apps/website/functions/_middleware.js', import.meta.url), 'utf8');
   const html = readFileSync(new URL('../apps/website/warranty.html', import.meta.url), 'utf8');
-  assert.match(warrantyJs, /MAXCINE_PUBLIC_API_BASE/);
+  assert.match(warrantyJs, /const API_BASE/);
   assert.ok(warrantyJs.includes('/public/warranty/challenges'));
   assert.ok(warrantyJs.includes('/public/warranty/${encodeURIComponent(normalized)}'));
   assert.ok(!warrantyJs.includes('/data/'));

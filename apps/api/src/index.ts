@@ -161,6 +161,28 @@ function publicWarrantyStatus(row: { publicWarrantyStatus: string; publicWarrant
   return today > row.publicWarrantyEndDate ? '已过保' : '保修中';
 }
 
+function publicEntitlementStatus(row: { startDate: string | null; endDate: string | null }, now = new Date()): string {
+  if (!row.startDate || !row.endDate) return '待确认';
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
+  if (today < row.startDate) return '待生效';
+  return today > row.endDate ? '已到期' : '有效';
+}
+
+function publicProductPresentation(row: { publicProductName: string; productName: string; productVersion: string }): { productName: string; productVersion: string } {
+  const configuredName = row.publicProductName.trim();
+  if (configuredName) return { productName: configuredName, productVersion: '' };
+
+  const source = `${row.productName} ${row.productVersion}`.toUpperCase();
+  if (/M4P|MAVIC\s*4\s*PRO/.test(source)) {
+    const kit = source.includes('创作') ? '创作套装' : source.includes('增强') ? '增强套装' : source.includes('标准') ? '标准套装' : '';
+    return {
+      productName: kit ? `MAVIC 4 Pro 增广镜（${kit}）` : 'MAVIC 4 Pro 增广镜',
+      productVersion: kit
+    };
+  }
+  return { productName: 'MaxCINE 产品', productVersion: '' };
+}
+
 async function completePublicWarrantyChallenge(db: D1Database, challengeId: string): Promise<string> {
   const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, 'SELECT id, used_at AS usedAt, expires_at AS expiresAt FROM public_warranty_challenges WHERE id = ?', challengeId);
   if (!challenge) throw forbidden('请先完成滑块验证');
@@ -1411,22 +1433,34 @@ app.get('/public/warranty/:sn', async (c) => {
   const token = url.searchParams.get('token') ?? '';
   if (!challengeId || !token) throw forbidden('请先完成滑块验证');
   await consumePublicWarrantyToken(c.env.DB, challengeId, token);
-  const row = await one<{ serialNumber: string; productName: string; productVersion: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
-    `SELECT serial_number_snapshot AS serialNumber, product_name_snapshot AS productName, product_version_snapshot AS productVersion,
+  const row = await one<{ id: string; serialNumber: string; publicProductName: string; productName: string; productVersion: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
+    `SELECT id, serial_number_snapshot AS serialNumber, public_product_name AS publicProductName, product_name_snapshot AS productName, product_version_snapshot AS productVersion,
       public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
       public_warranty_status AS publicWarrantyStatus, public_note AS publicNote
      FROM asset_public_warranties
      WHERE is_public_query_enabled = 1 AND serial_number_snapshot = ? COLLATE NOCASE
      LIMIT 1`, sn);
   if (!row || ['hidden', 'blocked'].includes(row.publicWarrantyStatus)) throw notFound('未查询到可公开的保修信息，请检查序列号后重试。');
+  const entitlements = await all<{ type: string; name: string; dateMode: string; startDate: string | null; endDate: string | null }>(c.env.DB,
+    `SELECT entitlement_type AS type, display_name AS name, date_mode AS dateMode, start_date AS startDate, end_date AS endDate
+     FROM asset_public_warranty_entitlements
+     WHERE public_warranty_id = ? AND is_enabled = 1 AND is_public = 1
+     ORDER BY created_at ASC`, row.id);
+  const product = publicProductPresentation(row);
+  const publicEntitlements = entitlements.map((entitlement) => {
+    const startDate = entitlement.dateMode === 'custom' ? entitlement.startDate : row.publicWarrantyStartDate;
+    const endDate = entitlement.dateMode === 'custom' ? entitlement.endDate : row.publicWarrantyEndDate;
+    return { type: entitlement.type, name: entitlement.name, startDate, endDate, status: publicEntitlementStatus({ startDate, endDate }) };
+  });
   return c.json({
     serialNumber: row.serialNumber,
-    productName: row.productName,
-    productVersion: row.productVersion,
+    productName: product.productName,
+    productVersion: product.productVersion,
     warrantyStatus: publicWarrantyStatus(row),
     warrantyStartDate: row.publicWarrantyStartDate,
     warrantyEndDate: row.publicWarrantyEndDate,
-    publicNote: row.publicNote
+    publicNote: row.publicNote,
+    publicEntitlements
   });
 });
 
@@ -3688,7 +3722,7 @@ app.get('/assets/:id', requireAuth, async (c) => {
   const afterSalesPhotoWhere = assetSnValues.length
     ? `(after_sales_cases.asset_id = ? OR UPPER(after_sales_cases.serial_number) IN (${snPlaceholders}))`
     : `after_sales_cases.asset_id = ?`;
-  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos, publicWarranty, factoryPhotos] = await Promise.all([
+  const [identifiers, events, serviceCases, notes, sales, audit, shipmentPhotos, afterSalesPhotos, publicWarranty, publicEntitlements, factoryPhotos] = await Promise.all([
     all(c.env.DB, `SELECT identifier_type AS identifierType, identifier_value AS identifierValue, is_current AS isCurrent, valid_from AS validFrom, valid_to AS validTo, reason, source, created_at AS createdAt FROM asset_identifiers WHERE asset_id = ? ORDER BY is_current DESC, created_at DESC`, asset.id),
     all(c.env.DB, `SELECT asset_events.id, event_type AS eventType, occurred_at AS occurredAt, title, description, related_order_id AS relatedOrderId, related_service_case_id AS relatedServiceCaseId, users.name AS operatorName, visibility, source, asset_events.created_at AS createdAt FROM asset_events LEFT JOIN users ON users.id = asset_events.operator_user_id WHERE asset_id = ? AND ${visibility.sql} ORDER BY COALESCE(occurred_at, asset_events.created_at) DESC, asset_events.created_at DESC`, asset.id, ...visibility.params),
     all(c.env.DB, `SELECT after_sales_cases.id, after_sales_cases.case_no AS caseNo, after_sales_cases.status, after_sales_cases.workflow_stage AS workflowStage, after_sales_cases.subject, after_sales_cases.description, service_centers.name AS serviceCenterName, after_sales_cases.created_at AS createdAt, after_sales_cases.updated_at AS updatedAt,
@@ -3707,9 +3741,15 @@ app.get('/assets/:id', requireAuth, async (c) => {
     all(c.env.DB, `SELECT after_sales_attachments.id, 'after_sales' AS source, after_sales_attachments.category, after_sales_attachments.photo_slot AS photoSlot, after_sales_attachments.data_url AS dataUrl, after_sales_attachments.original_filename AS originalFilename, after_sales_attachments.content_type AS contentType, users.name AS uploadedByName, after_sales_attachments.created_at AS createdAt, after_sales_cases.case_no AS relatedNo
       FROM after_sales_attachments JOIN after_sales_cases ON after_sales_cases.id = after_sales_attachments.case_id LEFT JOIN users ON users.id = after_sales_attachments.uploaded_by
       WHERE ${afterSalesPhotoWhere} ORDER BY after_sales_attachments.created_at DESC`, asset.id, ...assetSnValues),
-    one<{ id: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string; isPublicQueryEnabled: number; updatedAt: string }>(c.env.DB, `SELECT id, public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
+    one<{ id: string; publicProductName: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string; isPublicQueryEnabled: number; updatedAt: string }>(c.env.DB, `SELECT id, public_product_name AS publicProductName, public_warranty_start_date AS publicWarrantyStartDate, public_warranty_end_date AS publicWarrantyEndDate,
       public_warranty_status AS publicWarrantyStatus, public_note AS publicNote, is_public_query_enabled AS isPublicQueryEnabled,
       updated_at AS updatedAt FROM asset_public_warranties WHERE asset_id = ?`, asset.id),
+    all<{ type: string; displayName: string; isEnabled: number; isPublic: number; dateMode: string; startDate: string | null; endDate: string | null }>(c.env.DB,
+      `SELECT entitlement_type AS type, display_name AS displayName, is_enabled AS isEnabled, is_public AS isPublic,
+        date_mode AS dateMode, start_date AS startDate, end_date AS endDate
+       FROM asset_public_warranty_entitlements
+       WHERE public_warranty_id = (SELECT id FROM asset_public_warranties WHERE asset_id = ?)
+       ORDER BY created_at ASC`, asset.id),
     all<{ id: string; photoType: string | null; originalFilename: string; contentType: string; fileSize: number; remark: string; uploadedAt: string; uploadedByName: string | null }>(c.env.DB, `SELECT asset_factory_photos.id, photo_type AS photoType, original_filename AS originalFilename, content_type AS contentType, file_size AS fileSize,
       remark, uploaded_at AS uploadedAt, users.name AS uploadedByName
       FROM asset_factory_photos LEFT JOIN users ON users.id = asset_factory_photos.uploaded_by
@@ -3718,7 +3758,7 @@ app.get('/assets/:id', requireAuth, async (c) => {
   return c.json({
     asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) },
     identifiers, events, serviceCases, notes, sales, audit,
-    publicWarranty: publicWarranty ? { ...publicWarranty, warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) } : null,
+    publicWarranty: publicWarranty ? { ...publicWarranty, entitlements: publicEntitlements, warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) } : null,
     factoryPhotos: factoryPhotos.map((photo) => ({ ...photo, contentUrl: `/assets/${asset.id}/factory-photos/${(photo as { id: string }).id}/content` })),
     photos: [...shipmentPhotos, ...afterSalesPhotos]
   });
@@ -3749,14 +3789,15 @@ app.patch('/admin/assets/:id/public-warranty', requireAuth, async (c) => {
   if (!asset) throw notFound('未找到该资产');
   const before = await one(c.env.DB, 'SELECT * FROM asset_public_warranties WHERE asset_id = ?', asset.id);
   const publicWarrantyId = before ? (before as { id: string }).id : id();
-  await c.env.DB.batch([
+  const statements: D1PreparedStatement[] = [
     c.env.DB.prepare(`INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, product_name_snapshot, product_version_snapshot,
-      public_warranty_start_date, public_warranty_end_date, public_warranty_status, public_note, is_public_query_enabled, created_by, updated_by)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      public_product_name, public_warranty_start_date, public_warranty_end_date, public_warranty_status, public_note, is_public_query_enabled, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(asset_id) DO UPDATE SET
         serial_number_snapshot = excluded.serial_number_snapshot,
         product_name_snapshot = excluded.product_name_snapshot,
         product_version_snapshot = excluded.product_version_snapshot,
+        public_product_name = excluded.public_product_name,
         public_warranty_start_date = excluded.public_warranty_start_date,
         public_warranty_end_date = excluded.public_warranty_end_date,
         public_warranty_status = excluded.public_warranty_status,
@@ -3764,9 +3805,15 @@ app.patch('/admin/assets/:id/public-warranty', requireAuth, async (c) => {
         is_public_query_enabled = excluded.is_public_query_enabled,
         updated_at = CURRENT_TIMESTAMP,
         updated_by = excluded.updated_by`)
-      .bind(publicWarrantyId, asset.id, asset.currentSn || asset.originalSn || '', asset.productName, asset.version, input.publicWarrantyStartDate, input.publicWarrantyEndDate, input.publicWarrantyStatus, input.publicNote, input.isPublicQueryEnabled ? 1 : 0, user.id, user.id),
+      .bind(publicWarrantyId, asset.id, asset.currentSn || asset.originalSn || '', asset.productName, asset.version, input.publicProductName, input.publicWarrantyStartDate, input.publicWarrantyEndDate, input.publicWarrantyStatus, input.publicNote, input.isPublicQueryEnabled ? 1 : 0, user.id, user.id),
+    c.env.DB.prepare('DELETE FROM asset_public_warranty_entitlements WHERE public_warranty_id = ?').bind(publicWarrantyId),
+    ...(input.entitlements ?? []).map((entitlement) => c.env.DB.prepare(`INSERT INTO asset_public_warranty_entitlements
+      (id, public_warranty_id, entitlement_type, display_name, is_enabled, is_public, date_mode, start_date, end_date, created_by, updated_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .bind(id(), publicWarrantyId, entitlement.type, entitlement.displayName, entitlement.isEnabled ? 1 : 0, entitlement.isPublic ? 1 : 0, entitlement.dateMode, entitlement.startDate, entitlement.endDate, user.id, user.id)),
     dbAudit(c.env.DB, { actorId: user.id, action: 'asset.public_warranty_update', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), before, after: input })
-  ]);
+  ];
+  await c.env.DB.batch(statements);
   return c.json({ id: asset.id });
 });
 

@@ -543,15 +543,42 @@ export const updateAssetWarrantySchema = z.object({
   if (value.warrantyOverrideStatus && !value.warrantyOverrideReason) context.addIssue({ code: z.ZodIssueCode.custom, path: ['warrantyOverrideReason'], message: '设置人工保修状态时必须填写原因' });
 });
 
+const publicEntitlementSchema = z.object({
+  type: z.string().trim().min(1).max(64).regex(/^[a-z][a-z0-9_]*$/, '权益类型只能使用小写字母、数字和下划线'),
+  displayName: z.string().trim().min(1).max(80),
+  isEnabled: z.boolean(),
+  isPublic: z.boolean(),
+  dateMode: z.enum(['inherit', 'custom']),
+  startDate: isoDateSchema.nullable(),
+  endDate: isoDateSchema.nullable()
+}).superRefine((value, context) => {
+  if (value.dateMode === 'custom' && (!value.startDate || !value.endDate)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['startDate'], message: '独立设置权益时必须填写开始和结束日期' });
+  }
+  if (value.startDate && value.endDate && value.endDate < value.startDate) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['endDate'], message: '权益结束日期不能早于开始日期' });
+  }
+});
+
 export const updatePublicWarrantySchema = z.object({
+  publicProductName: z.string().trim().max(160).default(''),
   publicWarrantyStartDate: isoDateSchema.nullable(),
   publicWarrantyEndDate: isoDateSchema.nullable(),
   publicWarrantyStatus: z.enum(['auto', 'pending', 'active', 'expired', 'no_warranty', 'blocked', 'hidden', 'unknown']),
   publicNote: z.string().trim().max(1000).default(''),
-  isPublicQueryEnabled: z.boolean()
+  isPublicQueryEnabled: z.boolean(),
+  entitlements: z.array(publicEntitlementSchema).max(20).default([])
 }).superRefine((value, context) => {
   if (value.publicWarrantyStartDate && value.publicWarrantyEndDate && value.publicWarrantyEndDate < value.publicWarrantyStartDate) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['publicWarrantyEndDate'], message: '公开保修结束日期不能早于开始日期' });
+  }
+  const duplicateTypes = new Set<string>();
+  for (const entitlement of value.entitlements) {
+    if (duplicateTypes.has(entitlement.type)) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['entitlements'], message: '每种权益只能添加一次' });
+      break;
+    }
+    duplicateTypes.add(entitlement.type);
   }
 });
 

@@ -83,13 +83,24 @@ type AssetPhoto = {
 };
 type PublicWarranty = {
   id: string;
+  publicProductName: string;
   publicWarrantyStartDate: string | null;
   publicWarrantyEndDate: string | null;
   publicWarrantyStatus: string;
   publicNote: string;
   isPublicQueryEnabled: number;
+  entitlements: PublicEntitlement[];
   warrantyStatus: string;
   updatedAt: string;
+};
+type PublicEntitlement = {
+  type: string;
+  displayName: string;
+  isEnabled: number;
+  isPublic: number;
+  dateMode: "inherit" | "custom";
+  startDate: string | null;
+  endDate: string | null;
 };
 type FactoryPhoto = {
   id: string;
@@ -1380,56 +1391,115 @@ function DetailRows({ rows }: { rows: Array<[string, ReactNode]> }) {
   );
 }
 
-function PublicWarrantyEditor({
-  asset,
-  publicWarranty,
-  onSaved,
-}: {
-  asset: AssetDetail["asset"];
-  publicWarranty: PublicWarranty | null;
-  onSaved: () => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [notice, setNotice] = useState<Notice>(null);
-  const [form, setForm] = useState({
-    publicWarrantyStartDate:
-      publicWarranty?.publicWarrantyStartDate || asset.warrantyStartAt || "",
-    publicWarrantyEndDate:
-      publicWarranty?.publicWarrantyEndDate || asset.warrantyEndAt || "",
+const publicEntitlementTemplates = [
+  { type: "rapid_replacement", displayName: "快速更换服务" },
+  { type: "care_plan", displayName: "配件无忧计划" },
+];
+
+type PublicWarrantyForm = {
+  publicProductName: string;
+  publicWarrantyStartDate: string;
+  publicWarrantyEndDate: string;
+  publicWarrantyStatus: string;
+  publicNote: string;
+  isPublicQueryEnabled: boolean;
+  entitlements: PublicEntitlement[];
+};
+
+function publicWarrantyForm(publicWarranty: PublicWarranty | null): PublicWarrantyForm {
+  return {
+    publicProductName: publicWarranty?.publicProductName || "",
+    publicWarrantyStartDate: publicWarranty?.publicWarrantyStartDate || "",
+    publicWarrantyEndDate: publicWarranty?.publicWarrantyEndDate || "",
     publicWarrantyStatus: publicWarranty?.publicWarrantyStatus || "auto",
     publicNote: publicWarranty?.publicNote || "",
     isPublicQueryEnabled: publicWarranty
       ? Boolean(publicWarranty.isPublicQueryEnabled)
       : true,
-  });
-  useEffect(
-    () =>
-      setForm({
-        publicWarrantyStartDate:
-          publicWarranty?.publicWarrantyStartDate ||
-          asset.warrantyStartAt ||
-          "",
-        publicWarrantyEndDate:
-          publicWarranty?.publicWarrantyEndDate || asset.warrantyEndAt || "",
-        publicWarrantyStatus: publicWarranty?.publicWarrantyStatus || "auto",
-        publicNote: publicWarranty?.publicNote || "",
-        isPublicQueryEnabled: publicWarranty
-          ? Boolean(publicWarranty.isPublicQueryEnabled)
-          : true,
-      }),
-    [asset.warrantyEndAt, asset.warrantyStartAt, publicWarranty],
+    entitlements: (publicWarranty?.entitlements || []).map((entitlement) => ({
+      ...entitlement,
+      dateMode: entitlement.dateMode === "custom" ? "custom" : "inherit",
+    })),
+  };
+}
+
+function PublicWarrantyEditor({
+  assetId,
+  publicWarranty,
+  onSaved,
+}: {
+  assetId: string;
+  publicWarranty: PublicWarranty | null;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [notice, setNotice] = useState<Notice>(null);
+  const [form, setForm] = useState<PublicWarrantyForm>(() =>
+    publicWarrantyForm(publicWarranty),
   );
+  useEffect(() => setForm(publicWarrantyForm(publicWarranty)), [publicWarranty]);
+  const updateEntitlement = (
+    type: string,
+    update: Partial<PublicEntitlement>,
+  ) =>
+    setForm((current) => ({
+      ...current,
+      entitlements: current.entitlements.map((entitlement) =>
+        entitlement.type === type ? { ...entitlement, ...update } : entitlement,
+      ),
+    }));
+  const addEntitlement = (template: {
+    type: string;
+    displayName: string;
+  }) =>
+    setForm((current) => {
+      if (current.entitlements.some((item) => item.type === template.type)) {
+        return current;
+      }
+      return {
+        ...current,
+        entitlements: [
+          ...current.entitlements,
+          {
+            type: template.type,
+            displayName: template.displayName,
+            isEnabled: 1,
+            isPublic: 1,
+            dateMode: "inherit",
+            startDate: null,
+            endDate: null,
+          },
+        ],
+      };
+    });
+  const removeEntitlement = (type: string) =>
+    setForm((current) => ({
+      ...current,
+      entitlements: current.entitlements.filter(
+        (entitlement) => entitlement.type !== type,
+      ),
+    }));
   const save = async () => {
     setNotice(null);
     try {
-      await api(`/admin/assets/${asset.id}/public-warranty`, {
+      await api(`/admin/assets/${assetId}/public-warranty`, {
         method: "PATCH",
         body: JSON.stringify({
+          publicProductName: form.publicProductName,
           publicWarrantyStartDate: form.publicWarrantyStartDate || null,
           publicWarrantyEndDate: form.publicWarrantyEndDate || null,
           publicWarrantyStatus: form.publicWarrantyStatus,
           publicNote: form.publicNote,
           isPublicQueryEnabled: form.isPublicQueryEnabled,
+          entitlements: form.entitlements.map((entitlement) => ({
+            type: entitlement.type,
+            displayName: entitlement.displayName,
+            isEnabled: Boolean(entitlement.isEnabled),
+            isPublic: Boolean(entitlement.isPublic),
+            dateMode: entitlement.dateMode,
+            startDate: entitlement.startDate || null,
+            endDate: entitlement.endDate || null,
+          })),
         }),
       });
       setEditing(false);
@@ -1450,6 +1520,16 @@ function PublicWarrantyEditor({
             ["官网展示状态", publicWarranty?.warrantyStatus || "未初始化"],
             ["公开保修开始", date(publicWarranty?.publicWarrantyStartDate)],
             ["公开保修结束", date(publicWarranty?.publicWarrantyEndDate)],
+            ["官网产品名称", publicWarranty?.publicProductName],
+            [
+              "公开额外权益",
+              publicWarranty?.entitlements?.filter(
+                (entitlement) =>
+                  entitlement.isEnabled && entitlement.isPublic,
+              ).length
+                ? `${publicWarranty.entitlements.filter((entitlement) => entitlement.isEnabled && entitlement.isPublic).length} 项`
+                : "无",
+            ],
             ["公开备注", publicWarranty?.publicNote],
             ["最后更新时间", date(publicWarranty?.updatedAt)],
           ]}
@@ -1466,6 +1546,20 @@ function PublicWarrantyEditor({
   return (
     <div className="form-layout">
       <Notice notice={notice} />
+      <label>
+        官网产品名称
+        <input
+          value={form.publicProductName}
+          maxLength={160}
+          placeholder="例如：MAVIC 4 Pro 增广镜（增强套装）"
+          onChange={(event) =>
+            setForm((current) => ({
+              ...current,
+              publicProductName: event.target.value,
+            }))
+          }
+        />
+      </label>
       <label>
         允许公开查询
         <select
@@ -1540,6 +1634,133 @@ function PublicWarrantyEditor({
           }
         />
       </label>
+      <div className="public-entitlements-editor">
+        <div>
+          <strong>公开额外权益</strong>
+          <p className="hint">
+            这里只控制官网显示；跟随公开保修的权益会自动使用当前公开保修日期。
+          </p>
+        </div>
+        {form.entitlements.map((entitlement) => (
+          <fieldset className="public-entitlement" key={entitlement.type}>
+            <legend>{entitlement.displayName || "额外权益"}</legend>
+            <label>
+              对外显示名称
+              <input
+                value={entitlement.displayName}
+                maxLength={80}
+                onChange={(event) =>
+                  updateEntitlement(entitlement.type, {
+                    displayName: event.target.value,
+                  })
+                }
+              />
+            </label>
+            <div className="choice-row">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={Boolean(entitlement.isEnabled)}
+                  onChange={(event) =>
+                    updateEntitlement(entitlement.type, {
+                      isEnabled: event.target.checked ? 1 : 0,
+                    })
+                  }
+                />
+                启用
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={Boolean(entitlement.isPublic)}
+                  onChange={(event) =>
+                    updateEntitlement(entitlement.type, {
+                      isPublic: event.target.checked ? 1 : 0,
+                    })
+                  }
+                />
+                对外显示
+              </label>
+            </div>
+            <div className="choice-row">
+              <label>
+                <input
+                  type="radio"
+                  name={`${entitlement.type}-date-mode`}
+                  checked={entitlement.dateMode === "inherit"}
+                  onChange={() =>
+                    updateEntitlement(entitlement.type, { dateMode: "inherit" })
+                  }
+                />
+                跟随公开保修
+              </label>
+              <label>
+                <input
+                  type="radio"
+                  name={`${entitlement.type}-date-mode`}
+                  checked={entitlement.dateMode === "custom"}
+                  onChange={() =>
+                    updateEntitlement(entitlement.type, { dateMode: "custom" })
+                  }
+                />
+                独立设置
+              </label>
+            </div>
+            {entitlement.dateMode === "custom" && (
+              <div className="date-pair">
+                <label>
+                  权益开始日期
+                  <input
+                    type="date"
+                    value={entitlement.startDate || ""}
+                    onChange={(event) =>
+                      updateEntitlement(entitlement.type, {
+                        startDate: event.target.value || null,
+                      })
+                    }
+                  />
+                </label>
+                <label>
+                  权益结束日期
+                  <input
+                    type="date"
+                    value={entitlement.endDate || ""}
+                    onChange={(event) =>
+                      updateEntitlement(entitlement.type, {
+                        endDate: event.target.value || null,
+                      })
+                    }
+                  />
+                </label>
+              </div>
+            )}
+            <button
+              className="button button--secondary"
+              type="button"
+              onClick={() => removeEntitlement(entitlement.type)}
+            >
+              移除权益
+            </button>
+          </fieldset>
+        ))}
+        <div className="action-list">
+          {publicEntitlementTemplates
+            .filter(
+              (template) =>
+                !form.entitlements.some((item) => item.type === template.type),
+            )
+            .map((template) => (
+              <button
+                className="button button--secondary"
+                key={template.type}
+                type="button"
+                onClick={() => addEntitlement(template)}
+              >
+                添加{template.displayName}
+              </button>
+            ))}
+        </div>
+      </div>
       <div className="action-list">
         <button className="button" onClick={() => void save()}>
           保存公开保修
@@ -1977,7 +2198,7 @@ function AssetDetailPage({
             </p>
             {canEdit ? (
               <PublicWarrantyEditor
-                asset={data.asset}
+                assetId={data.asset.id}
                 publicWarranty={data.publicWarranty}
                 onSaved={load}
               />
