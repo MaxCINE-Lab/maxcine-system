@@ -1,0 +1,63 @@
+.public-entitlements-editor {
+  grid-column: 1 / -1;
+  border-top: 1px solid #e5e5e8;
+  padding-top: 20px;
+}
+
+.public-entitlements-editor > .hint {
+  margin: 6px 0 18px;
+}
+
+.public-entitlement {
+  margin: 14px 0 0;
+  border: 1px solid #e3e3e7;
+  border-radius: 10px;
+  padding: 16px;
+}
+
+.public-entitlement legend {
+  padding: 0 7px;
+  color: #1d1d1f;
+  font-weight: 650;
+}
+
+.public-entitlement label {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 13px;
+  color: #44444a;
+  font-size: 13px;
+}
+
+.choice-row,
+.date-pair {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.choice-row label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.choice-row input {
+  width: auto;
+}
+
+.date-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+.public-entitlement .button {
+  margin-top: 2px;
+}
+
+@media (max-width: 780px) {
+  .date-pair {
+    grid-template-columns: 1fr;
+  }
+}

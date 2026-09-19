@@ -13,6 +13,7 @@ import * as XLSX from "xlsx";
 import { HISTORICAL_WARRANTY_COLUMNS, type SessionUser } from "@maxcine/shared";
 import { api, ApiClientError } from "./api";
 import { Shell } from "./OperationsPortal";
+import "./publicWarranty.css";
 
 type Props = { user: SessionUser; route: string; logout: () => void };
 type Notice = { tone: "success" | "error"; text: string } | null;
