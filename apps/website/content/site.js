@@ -6,9 +6,9 @@ export const siteContent = {
     title: "MaxCINE Mavic 4 Pro 增广镜",
     description:
       "MaxCINE Mavic 4 Pro 增广镜，为 DJI Mavic 4 Pro 航拍影像创作设计的专业增广镜系统。",
-    canonical: "https://maxcine-website-staging.pages.dev/",
+    canonical: "https://maxcine.cn/",
     favicon: "/assets/logo2.png",
-    ogImage: "/assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg"
+    ogImage: "https://maxcine.cn/assets/product/hero/maxcine-mavic-4-pro-sci-fi.jpg"
   },
   navigation: [
     { label: "首页", href: "/" },
