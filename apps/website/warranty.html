@@ -4,85 +4,73 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>设备信息查询 | MaxCINE</title>
-    <meta name="description" content="通过 MaxCINE Public Warranty API 查询设备公开购买日期、保修状态与权益信息。">
+    <meta name="description" content="查询 MaxCINE 设备公开购买信息、保修状态及服务权益。">
     <link rel="canonical" href="https://maxcine.cn/warranty.html">
     <meta property="og:type" content="website">
     <meta property="og:title" content="MaxCINE 设备信息查询">
     <meta property="og:description" content="通过序列号查询 MaxCINE 产品公开保修状态。">
     <meta property="og:image" content="https://maxcine.cn/assets/optimized/hero-poster-desktop.jpg">
-    <meta name="theme-color" content="#000000">
+    <meta name="theme-color" content="#f5f5f5">
     <link rel="icon" href="/assets/logo2.png">
-    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/warranty.css">
   </head>
-  <body data-page="warranty">
-    <header class="site-header" data-site-header></header>
-    <main id="main-content">
-      <section class="page-hero compact-hero warranty-hero">
-        <h1>设备信息查询</h1>
-        <p>查询产品购买信息、保修状态及服务权益</p>
-      </section>
+  <body>
+    <header class="mc-header">
+      <div class="mc-left">
+        <a href="/" aria-label="MaxCINE 首页"><img src="/assets/logo2.png" class="mc-logo" alt="MaxCINE"></a>
+        <span class="mc-nav-text">设备信息与权益</span>
+      </div>
+    </header>
 
-      <section class="warranty-shell section" aria-label="设备信息查询">
-        <div class="warranty-panel">
-          <div class="sn-form">
-            <label for="sn-input">产品序列号</label>
-            <input id="sn-input" autocomplete="off" inputmode="latin" pattern="[A-Za-z0-9._\\-/]+" placeholder="请输入产品序列号（SN）">
+    <main class="mc-container">
+      <h1>设备信息查询</h1>
+      <p class="mc-desc">查询设备购买信息、保修状态及服务权益</p>
+
+      <section class="mc-query" aria-label="设备信息查询">
+        <label class="sr-only" for="sn-input">产品序列号</label>
+        <input id="sn-input" class="mc-input" autocomplete="off" inputmode="latin" pattern="[A-Za-z0-9._\\-/]+" placeholder="请输入产品序列号（SN）">
+
+        <div id="slider-box" class="mc-slider-box">
+          <label class="sr-only" for="slider-input">拖动滑块完成验证</label>
+          <div class="mc-slider-track">
+            <input id="slider-input" type="range" min="0" max="100" value="0" aria-describedby="slider-status">
           </div>
-          <div id="slider-box" class="slider-box">
-            <label for="slider-input">拖动滑块完成验证</label>
-            <div class="slider-track">
-              <input id="slider-input" type="range" min="0" max="100" value="0" aria-describedby="slider-status">
-            </div>
-            <small id="slider-status">拖动滑块完成验证</small>
-          </div>
-          <div class="warranty-actions">
-            <button id="sn-btn" class="button warranty-submit" type="button" disabled>
-              <span class="btn-text">查询</span>
-              <span class="btn-loader" aria-hidden="true"></span>
-              <span class="btn-check" aria-hidden="true">✓</span>
-            </button>
-            <p id="message" class="form-message" aria-live="polite"></p>
-          </div>
+          <small id="slider-status">拖动滑块完成验证</small>
         </div>
 
-        <aside id="main" class="warranty-result" aria-live="polite" hidden>
-          <div class="result-media">
-            <picture>
-              <source type="image/avif" srcset="/assets/optimized/product-wide-angle.avif">
-              <source type="image/webp" srcset="/assets/optimized/product-wide-angle.webp">
-              <img id="img" src="/assets/optimized/product-wide-angle.png" alt="MaxCINE Mavic 4 Pro 增广镜">
-            </picture>
-          </div>
-          <div class="result-intro">
-            <h2 id="name">MaxCINE 产品</h2>
-            <p id="sn"></p>
-            <p id="purchase-date" hidden></p>
-          </div>
-          <section class="result-card" aria-labelledby="warranty-result-title">
-            <h3 id="warranty-result-title">保修期</h3>
-            <dl>
-              <div><dt>状态</dt><dd id="status"></dd></div>
-              <div><dt>保修开始</dt><dd id="start"></dd></div>
-              <div><dt>保修结束</dt><dd id="end"></dd></div>
-            </dl>
-          </section>
-          <section id="entitlements-card" class="result-card" hidden aria-labelledby="entitlements-title">
-            <h3 id="entitlements-title">额外权益</h3>
-            <div id="entitlements" class="entitlement-list"></div>
-          </section>
-          <section id="service-card" class="result-card" hidden aria-labelledby="service-title">
-            <h3 id="service-title">售后服务记录</h3>
-            <dl><div><dt>维修记录</dt><dd id="service-record"></dd></div></dl>
-          </section>
-          <section id="note-card" class="result-card" hidden aria-labelledby="note-title">
-            <h3 id="note-title">官网公开备注</h3>
-            <p id="repair"></p>
-          </section>
-        </aside>
+        <button id="sn-btn" class="mc-btn" type="button" disabled>
+          <span class="btn-text">查询</span>
+          <span class="btn-loader" aria-hidden="true"></span>
+          <span class="btn-check" aria-hidden="true">✓</span>
+        </button>
+        <p id="message" class="mc-message" aria-live="polite"></p>
+      </section>
+
+      <section id="main" class="mc-main" aria-live="polite" hidden>
+        <img id="img" class="mc-img" src="/assets/optimized/product-wide-angle.png" alt="MaxCINE Mavic 4 Pro 增广镜">
+        <h2 id="name">MaxCINE 产品</h2>
+        <p id="sn" class="mc-sn"></p>
+        <p id="date" class="mc-sn" hidden></p>
+
+        <section class="mc-card" aria-labelledby="warranty-title">
+          <h3 id="warranty-title">保修期</h3>
+          <div class="mc-row"><span>状态</span><strong id="status"></strong></div>
+          <div class="mc-row"><span>保修开始</span><strong id="start"></strong></div>
+          <div class="mc-row"><span>保修结束</span><strong id="end"></strong></div>
+        </section>
+
+        <section id="entitlements-card" class="mc-card" hidden aria-labelledby="entitlements-title">
+          <h3 id="entitlements-title">额外权益</h3>
+          <div id="entitlements" class="entitlement-list"></div>
+        </section>
+
+        <section id="note-card" class="mc-card" hidden aria-labelledby="note-title">
+          <h3 id="note-title">官方备注</h3>
+          <p id="repair" class="mc-note"></p>
+        </section>
       </section>
     </main>
-    <footer class="site-footer" data-site-footer></footer>
-    <script type="module" src="/script.js"></script>
+
     <script type="module" src="/warranty.js"></script>
   </body>
 </html>

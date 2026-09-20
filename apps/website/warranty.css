@@ -1,0 +1,296 @@
+:root {
+  color-scheme: light;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  min-width: 320px;
+  margin: 0;
+  background: #f5f5f5;
+  color: #111;
+}
+
+button, input { font: inherit; }
+
+.mc-header {
+  display: flex;
+  height: 60px;
+  align-items: center;
+  padding: 0 20px;
+  border-bottom: 1px solid #eee;
+  background: #fff;
+}
+
+.mc-left {
+  display: flex;
+  height: 100%;
+  align-items: center;
+  gap: 12px;
+}
+
+.mc-left a { display: flex; align-items: center; }
+.mc-logo { display: block; height: 24px; width: auto; }
+
+.mc-nav-text {
+  display: flex;
+  height: 24px;
+  align-items: center;
+  color: #222;
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.mc-container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 60px 20px 80px;
+  text-align: center;
+}
+
+h1 { margin: 0 0 10px; font-size: 28px; line-height: 1.2; }
+
+.mc-desc {
+  margin: 0 0 30px;
+  color: #666;
+  font-size: 14px;
+}
+
+.mc-query {
+  display: grid;
+  width: min(420px, 100%);
+  margin: 0 auto;
+  gap: 18px;
+}
+
+.mc-input {
+  width: 100%;
+  height: 44px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 0 12px;
+  background: #fff;
+  color: #111;
+  font-size: 14px;
+  transition: border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.mc-input:focus {
+  outline: 0;
+  border-color: #8c8c8c;
+  box-shadow: 0 0 0 3px rgba(0, 0, 0, 0.06);
+}
+
+.mc-slider-box { position: relative; text-align: left; }
+
+.mc-slider-track {
+  position: relative;
+  height: 42px;
+  overflow: hidden;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  background: #f1f1f1;
+}
+
+.mc-slider-track::before {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: var(--slider-progress, 0%);
+  background: #e2e2e2;
+  content: "";
+  transition: width 120ms linear;
+}
+
+.mc-slider-track::after {
+  position: absolute;
+  top: 3px;
+  left: calc(3px + var(--slider-handle-offset, 0px));
+  z-index: 1;
+  display: grid;
+  width: 36px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid #d5d5d5;
+  border-radius: 4px;
+  background: #fafafa;
+  color: #555;
+  content: ">";
+  font-size: 20px;
+  line-height: 1;
+  pointer-events: none;
+  transition: left 120ms linear, background 160ms ease, border-color 160ms ease, color 160ms ease;
+}
+
+.mc-slider-box.is-verified .mc-slider-track::after {
+  border-color: #00a86b;
+  background: #00a86b;
+  color: #fff;
+  content: "✓";
+  font-size: 17px;
+}
+
+.mc-slider-track input[type="range"] {
+  position: absolute;
+  z-index: 2;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  cursor: grab;
+}
+
+.mc-slider-track input[type="range"]:active { cursor: grabbing; }
+
+.mc-slider-track input[type="range"]::-webkit-slider-thumb {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+}
+
+.mc-slider-track input[type="range"]::-moz-range-thumb {
+  width: 42px;
+  height: 42px;
+  border: 0;
+  background: transparent;
+}
+
+.mc-slider-box small {
+  display: block;
+  margin-top: 8px;
+  color: #666;
+  font-size: 13px;
+}
+
+.mc-slider-box.is-verified small { color: #008757; }
+
+.mc-btn {
+  width: fit-content;
+  min-width: 120px;
+  height: 44px;
+  justify-self: center;
+  border: 0;
+  border-radius: 8px;
+  padding: 0 24px;
+  background: #111;
+  color: #fff;
+  cursor: pointer;
+  transition: background 160ms ease;
+}
+
+.mc-btn:hover:not(:disabled) { background: #000; }
+.mc-btn:disabled { background: #bdbdbd; cursor: not-allowed; }
+
+.btn-loader, .btn-check { display: none; }
+.mc-btn.loading .btn-text, .mc-btn.success .btn-text { display: none; }
+
+.mc-btn.loading .btn-loader {
+  display: block;
+  width: 18px;
+  height: 18px;
+  margin: 0 auto;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: mc-spin 0.8s linear infinite;
+}
+
+.mc-btn.success .btn-check { display: inline; }
+
+.mc-message {
+  min-height: 18px;
+  margin: -6px 0 0;
+  color: #666;
+  font-size: 13px;
+}
+
+.mc-message[data-tone="error"] { color: #bd2c25; }
+
+.mc-main { margin-top: 48px; }
+.mc-main[hidden], .mc-card[hidden] { display: none; }
+
+.mc-img {
+  display: block;
+  width: 140px;
+  height: 140px;
+  margin: 0 auto 20px;
+  object-fit: contain;
+}
+
+.mc-main h2 { margin: 0; font-size: 24px; line-height: 1.35; }
+
+.mc-sn {
+  margin: 8px 0 0;
+  color: #666;
+  font-size: 14px;
+}
+
+.mc-card {
+  margin-top: 30px;
+  border-radius: 12px;
+  padding: 24px;
+  background: #fff;
+  text-align: left;
+}
+
+.mc-card h3 { margin: 0 0 12px; font-size: 18px; }
+
+.mc-row,
+.entitlement-list > div {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  margin: 0;
+  padding: 14px 0;
+  border-top: 1px solid #eee;
+  color: #666;
+  font-size: 14px;
+}
+
+.mc-row:first-of-type, .entitlement-list > div:first-child { border-top: 0; }
+
+.mc-row strong { color: #111; font-weight: 500; text-align: right; }
+
+.entitlement-list > div > div { display: grid; gap: 5px; }
+.entitlement-list strong { color: #111; font-size: 15px; font-weight: 500; }
+.entitlement-list span:not(.entitlement-status) { color: #666; font-size: 13px; }
+.entitlement-status { flex: none; font-size: 14px; }
+.status-ok { color: #00a86b !important; }
+.status-bad { color: #d33 !important; }
+.status-neutral { color: #111 !important; }
+
+.mc-note {
+  margin: 0;
+  color: #333;
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+@keyframes mc-spin { to { transform: rotate(360deg); } }
+
+@media (max-width: 600px) {
+  .mc-header { padding: 0 16px; }
+  .mc-nav-text { font-size: 16px; }
+  .mc-container { padding: 48px 20px 64px; }
+  .mc-query { width: 100%; }
+  .mc-btn { width: 100%; }
+  .mc-card { padding: 20px; }
+  .mc-row, .entitlement-list > div { gap: 16px; }
+}

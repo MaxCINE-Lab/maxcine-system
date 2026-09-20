@@ -39,7 +39,7 @@ function setSliderProgress(value) {
   if (!slider) return;
 
   slider.style.setProperty("--slider-progress", `${progress}%`);
-  const track = slider.closest(".slider-track");
+  const track = slider.closest(".mc-slider-track");
   if (!track) return;
 
   const handleOffset = Math.max(0, track.clientWidth - 48) * (progress / 100);
@@ -169,7 +169,7 @@ function setResult(response) {
 
   byId("name").textContent = publicWarranty.productName || "MaxCINE 产品";
   byId("sn").textContent = `序列号：${publicWarranty.serialNumber || "暂无数据"}`;
-  const purchaseDate = byId("purchase-date");
+  const purchaseDate = byId("date");
   if (purchaseDate) {
     purchaseDate.hidden = !publicWarranty.purchaseDate;
     purchaseDate.textContent = publicWarranty.purchaseDate ? `购买日期：${publicWarranty.purchaseDate}` : "";
