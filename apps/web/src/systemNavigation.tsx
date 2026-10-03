@@ -1,18 +1,22 @@
 /* eslint-disable react-refresh/only-export-components */
 import { useState, type ReactNode } from 'react';
 import type { Permission, Role, SessionUser } from '@maxcine/shared';
+import { QuickRoleSwitcher } from './QuickRoleLogin';
 
 type NavItem = [label: string, href: string];
 type NavGroup = { label: string; items: NavItem[] };
 
-const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'super_admin'];
-const primaryRoleOrder: Role[] = ['super_admin', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
+const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'certified_operator', 'international_operator', 'uk_fulfilment_operator', 'super_admin'];
+const primaryRoleOrder: Role[] = ['super_admin', 'international_operator', 'uk_fulfilment_operator', 'certified_operator', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
 const roleDisplayName: Record<Role, string> = {
   super_admin: '管理员',
   warehouse_manager: '仓库',
   dealer: '经销商',
   authorized_service_center: '工程师',
-  online_product_consultant: '产品顾问'
+  online_product_consultant: '产品顾问',
+  certified_operator: 'Certified 检测',
+  international_operator: '国际业务',
+  uk_fulfilment_operator: '英国履约'
 };
 
 const employeeNumberByEmail: Readonly<Record<string, string>> = {
@@ -127,6 +131,18 @@ export function hasIntelligenceAccess(user: SessionUser): boolean {
   return hasAdminAccess(user) || hasDealerAccess(user);
 }
 
+export function hasCertifiedAccess(user: SessionUser): boolean {
+  return user.roles.includes('certified_operator') || hasAnyPermission(user, ['certified:read', 'certified:manage']);
+}
+
+export function hasInternationalAccess(user: SessionUser): boolean {
+  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage']);
+}
+
+export function hasUkFulfilmentAccess(user: SessionUser): boolean {
+  return user.roles.includes('uk_fulfilment_operator') || hasAnyPermission(user, ['warehouse:international-read', 'international-order:manage']);
+}
+
 export function systemNavGroups(user: SessionUser): NavGroup[] {
   const groups: NavGroup[] = [];
   if (hasAdminAccess(user)) {
@@ -166,6 +182,15 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
   }
   if (hasServiceCenterAccess(user)) {
     groups.push({ label: '工程师', items: [['服务中心工单', '/system/service-center'], ['SN 查询', '/system/service-center/assets']] });
+  }
+  if (hasCertifiedAccess(user)) {
+    groups.push({ label: 'Certified', items: [['检测工作台', '/system/certified'], ['检测任务', '/system/certified/tasks']] });
+  }
+  if (hasInternationalAccess(user)) {
+    groups.push({ label: '国际业务', items: [['国际工作台', '/system/international'], ['全球库存', '/system/international/inventory'], ['调拨', '/system/international/transfers'], ['渠道与 Listing', '/system/international/listings']] });
+  }
+  if (hasUkFulfilmentAccess(user)) {
+    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['UK 库存', '/system/uk-fulfilment/inventory'], ['UK 订单', '/system/uk-fulfilment/orders'], ['UK RMA', '/system/uk-fulfilment/rma']] });
   }
   return groups;
 }
@@ -209,6 +234,7 @@ export function AccountMenu({ user, logout, children }: { user: SessionUser; log
       <span>{displayRoleText(user)}</span>
       <span>{user.email}</span>
       {children}
+      <QuickRoleSwitcher />
       <button className="account-logout" onClick={logout}>退出登录</button>
     </div>}
   </div>;

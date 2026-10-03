@@ -4,9 +4,11 @@ import { api, ApiClientError, type CurrentUserResponse, type LoginResponse } fro
 import { BrowserBarcodeScanner } from './scanner';
 import { DealerPortal } from './DealerPortal';
 import { IntelligencePortal } from './IntelligencePortal';
+import { InternationalPortal } from './InternationalPortal';
 import { OperationsPortal } from './OperationsPortal';
 import { ServiceCenterPortal } from './ServiceCenterPortal';
-import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasDealerAccess, hasIntelligenceAccess, hasServiceCenterAccess, hasWarehouseAccess } from './systemNavigation';
+import { AccountMenu, EmployeeWatermark, SystemNavigation, displayRoleText, hasAdminAccess, hasCertifiedAccess, hasDealerAccess, hasIntelligenceAccess, hasInternationalAccess, hasServiceCenterAccess, hasUkFulfilmentAccess, hasWarehouseAccess } from './systemNavigation';
+import { QuickRoleButtons, isTestEnvironment } from './QuickRoleLogin';
 import { ToastProvider, useToast } from './Toast';
 
 type Route = string;
@@ -18,6 +20,9 @@ const nav = [
 
 function defaultSystemRoute(user: SessionUser): string {
   if (hasAdminAccess(user)) return '/system/admin';
+  if (hasUkFulfilmentAccess(user)) return '/system/uk-fulfilment';
+  if (hasInternationalAccess(user)) return '/system/international';
+  if (hasCertifiedAccess(user)) return '/system/certified';
   if (hasWarehouseAccess(user)) return '/system/warehouse';
   if (hasDealerAccess(user)) return '/system/dashboard';
   if (hasServiceCenterAccess(user)) return '/system/service-center';
@@ -91,11 +96,8 @@ function SystemShell({ user, children, title, subtitle }: { user: SessionUser; c
 }
 
 function EnvironmentBadge() {
-  const envName = import.meta.env.VITE_APP_ENV;
-  const host = location.hostname;
-  const isStaging = envName === 'staging' || host.includes('maxcine-web-staging') || host.includes('staging.');
-  if (!isStaging) return null;
-  return <div className="staging-badge" aria-label="当前为测试环境">测试环境</div>;
+  if (!isTestEnvironment()) return null;
+  return <div className="staging-badge" aria-label="当前为测试环境">STAGING TEST ENVIRONMENT · 测试环境</div>;
 }
 
 function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
@@ -109,7 +111,7 @@ function Login({ onLogin }: { onLogin: (user: SessionUser) => void }) {
     catch (error) { setMessage({ tone: 'error', message: error instanceof ApiClientError ? error.message : '暂时无法登录，请稍后重试。' }); }
     finally { setLoading(false); }
   }
-  return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">STAFF ACCESS</span><h1>大中枢访问控制器</h1><p>请输入已授权的 AD 账号和密码。</p><label>AD账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button></form></div>;
+  return <div className="login-page"><form className="login-card" onSubmit={submit}><span className="eyebrow">STAFF ACCESS</span><h1>大中枢访问控制器</h1><p>请输入已授权的 AD 账号和密码。</p><label>AD账号<input type="text" autoComplete="username" value={email} onChange={(event) => setEmail(event.target.value)} required /></label><label>密码<input type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>{message && <div className={`notice notice--${message.tone}`}>{message.message}</div>}<Button type="submit" disabled={loading}>{loading ? '正在登录…' : '登录'}</Button><QuickRoleButtons /></form></div>;
 }
 
 function ChangePassword({ user, onChanged }: { user: SessionUser; onChanged: (user: SessionUser) => void }) {
@@ -234,6 +236,9 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
   if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
+  if (path.startsWith('/system/certified') && hasCertifiedAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="certified" />;
+  if (path.startsWith('/system/international') && hasInternationalAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="international" />;
+  if (path.startsWith('/system/uk-fulfilment') && hasUkFulfilmentAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="uk" />;
   if (path.startsWith('/system/admin') && hasAdminAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (isDealerRoute(path) && hasDealerAccess(user)) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (route.startsWith('/system')) {

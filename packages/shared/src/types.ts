@@ -1,4 +1,4 @@
-export const ROLES = ['super_admin', 'warehouse_manager', 'dealer', 'authorized_service_center', 'online_product_consultant'] as const;
+export const ROLES = ['super_admin', 'warehouse_manager', 'dealer', 'authorized_service_center', 'online_product_consultant', 'certified_operator', 'international_operator', 'uk_fulfilment_operator'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
@@ -9,6 +9,9 @@ export const PERMISSIONS = [
   'after-sales:assign', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend', 'after-sales:approve',
   'asset:read', 'asset:manage', 'asset:import', 'asset:warehouse-read',
   'customer-risk:read', 'customer-risk:create', 'customer-risk:update-own', 'customer-risk:manage'
+  , 'workspace:read', 'certified:read', 'certified:manage', 'warehouse:international-read', 'transfer:manage',
+  'marketplace:read', 'marketplace:manage', 'international-order:read', 'international-order:manage',
+  'international-after-sales:read', 'international-after-sales:manage'
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 
@@ -31,6 +34,15 @@ export type SessionUser = {
   sessionVersion: number;
   mustChangePassword: boolean;
   watermarkEnabled: boolean;
+  workspaces?: WorkspaceContext[];
+};
+
+export type WorkspaceContext = {
+  code: string;
+  name: string;
+  defaultRoute: string;
+  dataScope: Record<string, unknown>;
+  isDefault: boolean;
 };
 
 export type ApiErrorBody = {

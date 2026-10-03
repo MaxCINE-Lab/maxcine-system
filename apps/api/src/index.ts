@@ -19,6 +19,27 @@ type DbUser = { id: string; email: string; passwordHash: string; name: string; i
 const app = new Hono<App>();
 const unsafeMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 const localHostnames = new Set(['localhost', '127.0.0.1', '::1']);
+const quickLoginSchema = z.object({
+  persona: z.enum(['ADMIN', 'CN_SD_WAREHOUSE', 'CERTIFIED', 'INTERNATIONAL', 'UK_FULFILMENT'])
+});
+const quickLoginUsers = {
+  ADMIN: 'stg.phase1.admin@maxcine.test',
+  CN_SD_WAREHOUSE: 'stg.phase1.warehouse@maxcine.test',
+  CERTIFIED: 'stg.phase1.certified@maxcine.test',
+  INTERNATIONAL: 'stg.phase1.international@maxcine.test',
+  UK_FULFILMENT: 'stg.phase1.uk@maxcine.test'
+} as const;
+
+function isQuickLoginEnvironment(env: Env): boolean {
+  return env.APP_ENV === 'staging' || env.APP_ENV === 'development';
+}
+
+function setSessionCookie(c: Context<App>, token: string): void {
+  const isSecure = new URL(c.req.url).protocol === 'https:';
+  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
+  const secure = isSecure || sameSite === 'None';
+  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
+}
 
 function errorResponse(c: Context<App>, error: AppError): Response {
   const payload: ApiErrorBody = { error: { code: error.code, message: error.message, requestId: c.get('requestId') ?? 'unknown', ...(error.details ? { details: error.details } : {}) } };
@@ -107,6 +128,17 @@ const shipmentPhotoRequirements = [
 
 function assertPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, permission)) throw forbidden();
+}
+
+function assertInternationalPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
+  if (!can(user, 'data:read:all') && !can(user, permission)) throw forbidden('当前账户没有国际业务权限');
+}
+
+function workspaceScopeIds(user: SessionUser, key: string): string[] {
+  return Array.from(new Set((user.workspaces ?? []).flatMap((workspace) => {
+    const value = workspace.dataScope[key];
+    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+  })));
 }
 
 function assertInventoryLedgerRead(user: SessionUser): void {
@@ -1570,10 +1602,33 @@ app.post('/auth/login', async (c) => {
     c.env.DB.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'auth.login', entityType: 'user', entityId: user.id, requestId: c.get('requestId') })
   ]);
-  const isSecure = new URL(c.req.url).protocol === 'https:';
-  const sameSite = c.env.COOKIE_SAMESITE === 'None' || c.env.COOKIE_SAMESITE === 'Strict' ? c.env.COOKIE_SAMESITE : 'Lax';
-  const secure = isSecure || sameSite === 'None';
-  c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
+  setSessionCookie(c, token);
+  return c.json({ user: sessionUser });
+});
+
+// Test convenience only. This is deliberately environment-gated on the Worker,
+// uses a closed persona allow-list and creates an ordinary signed session.
+app.post('/dev/quick-login', async (c) => {
+  if (!isQuickLoginEnvironment(c.env)) throw notFound('未找到接口');
+  const input = await parseBody(c.req.raw, quickLoginSchema);
+  const email = quickLoginUsers[input.persona];
+  const user = await one<Pick<DbUser, 'id' | 'isActive'>>(c.env.DB, 'SELECT id, is_active AS isActive FROM users WHERE email = ?', email);
+  if (!user?.isActive) throw new AppError(503, 'QUICK_LOGIN_UNAVAILABLE', '该测试角色尚未准备完成');
+  const sessionUser = await loadSessionUser(c.env.DB, user.id);
+  if (!sessionUser) throw new AppError(503, 'QUICK_LOGIN_UNAVAILABLE', '该测试角色尚未准备完成');
+  const token = await createSessionToken(sessionUser, c.env.SESSION_SECRET);
+  await c.env.DB.batch([
+    c.env.DB.prepare('UPDATE users SET last_login_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?').bind(user.id),
+    dbAudit(c.env.DB, {
+      actorId: user.id,
+      action: 'auth.quick_login',
+      entityType: 'user',
+      entityId: user.id,
+      requestId: c.get('requestId'),
+      after: { persona: input.persona, source: 'staging_quick_login' }
+    })
+  ]);
+  setSessionCookie(c, token);
   return c.json({ user: sessionUser });
 });
 
@@ -2671,10 +2726,10 @@ app.post('/after-sales', requireAuth, async (c) => {
     c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source)
       VALUES (?, ?, 'service_received', CURRENT_TIMESTAMP, '创建售后工单', ?, ?, ?, 'dealer', '售后闭环')`).bind(id(), asset.id, input.subject, caseId, user.id),
     c.env.DB.prepare(`INSERT INTO notifications (id, type, title, body, link, user_id)
-      SELECT ?, ?, ?, ?, ?, users.id
+      SELECT lower(hex(randomblob(16))), ?, ?, ?, ?, users.id
       FROM users JOIN user_roles ON user_roles.user_id = users.id JOIN role_permissions ON role_permissions.role_id = user_roles.role_id
       WHERE users.is_active = 1 AND role_permissions.permission_code = 'after-sales:assign' LIMIT 20`)
-      .bind(id(), 'after_sales_submitted', '新的售后工单待审核', `${reference} 等待管理员审核。`, `/system/admin/after-sales?caseId=${caseId}`),
+      .bind('after_sales_submitted', '新的售后工单待审核', `${reference} 等待管理员审核。`, `/system/admin/after-sales?caseId=${caseId}`),
     dbAudit(c.env.DB, { actorId: user.id, action: 'after_sales.create', entityType: 'after_sales_case', entityId: caseId, requestId: c.get('requestId'), after: { caseNo: reference, assetId: asset.id } })
   ]);
   return c.json({ id: caseId, caseNo: reference, serviceStage: 'PENDING_ADMIN_REVIEW' }, 201);
@@ -4618,6 +4673,297 @@ app.post('/auth/change-password', requireAuth, async (c) => {
   const secure = isSecure || sameSite === 'None';
   c.header('Set-Cookie', `mc_session=${token}; HttpOnly; SameSite=${sameSite}; Path=/; Max-Age=28800${secure ? '; Secure' : ''}`);
   return c.json({ changed: true, user: sessionUser });
+});
+
+// International Certified V1. These routes deliberately extend the shared asset,
+// order and after-sales records; no marketplace-specific order or asset model is
+// introduced here.
+app.get('/workspaces/context', requireAuth, (c) => {
+  const user = c.get('user');
+  return c.json({ workspaces: user.workspaces ?? [] });
+});
+
+app.get('/certified/tasks', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:read');
+  const canSeeAll = can(user, 'data:read:all') || user.roles.includes('international_operator');
+  const rows = await all(c.env.DB, `SELECT asset_inspection_tasks.id, asset_inspection_tasks.asset_id AS assetId,
+    asset_inspection_tasks.assigned_to AS assignedTo, asset_inspection_tasks.status, asset_inspection_tasks.result,
+    asset_inspection_tasks.grade, asset_inspection_tasks.final_qc AS finalQc, asset_inspection_tasks.notes,
+    asset_inspection_tasks.created_at AS createdAt, asset_inspection_tasks.updated_at AS updatedAt,
+    assets.current_sn AS currentSn, assets.product_name_snapshot AS productName
+    FROM asset_inspection_tasks JOIN assets ON assets.id = asset_inspection_tasks.asset_id
+    WHERE ${canSeeAll ? '1 = 1' : 'asset_inspection_tasks.assigned_to = ?'}
+    ORDER BY asset_inspection_tasks.updated_at DESC`, ...(canSeeAll ? [] : [user.id]));
+  return c.json({ tasks: rows });
+});
+
+app.post('/certified/tasks', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:manage');
+  const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), assignedTo: z.string().uuid().optional(), processCode: z.string().min(1).max(80).optional() }));
+  const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', input.assetId);
+  if (!asset) throw notFound('未找到资产');
+  const taskId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO asset_inspection_tasks (id, asset_id, assigned_to, process_code, created_by) VALUES (?, ?, ?, ?, ?)`)
+      .bind(taskId, input.assetId, input.assignedTo ?? user.id, input.processCode ?? 'certified-inspection', user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+      VALUES (?, ?, 'inspection_started', CURRENT_TIMESTAMP, 'Certified 检测任务已创建', '', ?, 'admin_private', 'international-v1')`)
+      .bind(id(), input.assetId, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.create', entityType: 'asset_inspection_task', entityId: taskId, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: taskId }, 201);
+});
+
+app.post('/certified/tasks/:id/evidence', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:read');
+  const task = await one<{ id: string; assignedTo: string | null }>(c.env.DB, 'SELECT id, assigned_to AS assignedTo FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
+  if (!task) throw notFound('未找到检测任务');
+  if (!can(user, 'data:read:all') && task.assignedTo !== user.id) throw forbidden('只能为分配给自己的任务上传证据');
+  const form = await c.req.raw.formData();
+  const evidenceType = String(form.get('evidenceType') ?? '').toLowerCase();
+  if (!['photo', 'video', 'note', 'test_data'].includes(evidenceType)) throw badRequest('证据类别不正确');
+  const text = String(form.get('content') ?? '').trim();
+  const file = form.get('file');
+  let objectKey: string | null = null;
+  if (file instanceof File) {
+    if (!c.env.ASSETS) throw conflict('文件存储尚未启用，请先配置 R2');
+    if (evidenceType === 'photo' && !['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) throw badRequest('检测照片仅支持 JPG、PNG 或 WebP');
+    if (evidenceType === 'video' && !file.type.startsWith('video/')) throw badRequest('检测录像必须为视频文件');
+    if (file.size > 25 * 1024 * 1024) throw badRequest('单个检测证据不能超过 25MB');
+    objectKey = `certified-evidence/${task.id}/${id()}`;
+    await c.env.ASSETS.put(objectKey, await file.arrayBuffer(), { httpMetadata: { contentType: file.type }, customMetadata: { uploadedBy: user.id, originalFilename: file.name || 'evidence' } });
+  } else if (!text) {
+    throw badRequest('请上传文件或填写检测说明');
+  }
+  const evidenceId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO asset_inspection_evidence (id, inspection_task_id, evidence_type, object_key, content_text, metadata_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .bind(evidenceId, task.id, evidenceType, objectKey, text, JSON.stringify({ hasFile: Boolean(objectKey) }), user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'certified.evidence.create', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: { evidenceType, hasFile: Boolean(objectKey) } })
+  ]);
+  return c.json({ id: evidenceId, objectKey }, 201);
+});
+
+app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:manage');
+  const input = await parseBody(c.req.raw, z.object({ result: z.enum(['PASS', 'FAIL', 'ADVISORY', 'N/A']), grade: z.enum(['A', 'B', 'C', 'D']).optional(), finalQc: z.boolean(), notes: z.string().max(4000).default('') }));
+  const task = await one<{ id: string; assetId: string; assignedTo: string | null }>(c.env.DB, 'SELECT id, asset_id AS assetId, assigned_to AS assignedTo FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
+  if (!task) throw notFound('未找到检测任务');
+  if (!can(user, 'data:read:all') && task.assignedTo !== user.id) throw forbidden('只能完成分配给自己的检测任务');
+  if (input.result === 'PASS' && (!input.grade || !input.finalQc)) throw badRequest('通过认证必须填写 Grade 并完成 Final QC');
+  const certificationId = input.result === 'PASS' && input.finalQc ? id() : null;
+  const verificationCode = certificationId ? crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase() : null;
+  const statements: D1PreparedStatement[] = [
+    c.env.DB.prepare(`UPDATE asset_inspection_tasks SET status = ?, result = ?, grade = ?, final_qc = ?, notes = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(input.result === 'PASS' ? 'completed' : 'failed', input.result, input.grade ?? null, Number(input.finalQc), input.notes, task.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+      VALUES (?, ?, 'inspection_completed', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), task.assetId, input.result === 'PASS' ? 'Certified 检测通过' : 'Certified 检测未通过', input.notes, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.complete', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: input })
+  ];
+  if (certificationId && verificationCode && input.grade) {
+    statements.push(
+      c.env.DB.prepare(`INSERT INTO asset_certifications (id, asset_id, inspection_task_id, grade, inspection_result, final_qc, warranty_reference, verification_code_hash, created_by)
+        VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)`)
+        .bind(certificationId, task.assetId, task.id, input.grade, input.result, await hashIdentifier(verificationCode), user.id),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source)
+        VALUES (?, ?, 'refurbished', CURRENT_TIMESTAMP, 'MaxCINE Certified', ?, 'admin_private', 'international-v1')`).bind(id(), task.assetId, user.id)
+    );
+  }
+  await c.env.DB.batch(statements);
+  return c.json({ id: task.id, certificationId, ...(verificationCode ? { verificationCode } : {}) });
+});
+
+app.get('/international/warehouses/assets', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'warehouse:international-read');
+  const requestedWarehouseId = c.req.query('warehouseId');
+  const permittedWarehouseIds = workspaceScopeIds(user, 'warehouseIds');
+  if (requestedWarehouseId && permittedWarehouseIds.length && !can(user, 'data:read:all') && !permittedWarehouseIds.includes(requestedWarehouseId)) throw forbidden('该仓库不在你的数据范围内');
+  if (!requestedWarehouseId && !can(user, 'data:read:all') && !permittedWarehouseIds.length) throw forbidden('当前账户没有国际仓库数据范围');
+  const rows = await all(c.env.DB, `SELECT assets.id AS assetId, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    asset_locations.status, warehouses.id AS warehouseId, warehouses.code AS warehouseCode, warehouses.name AS warehouseName
+    FROM asset_locations JOIN assets ON assets.id = asset_locations.asset_id JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
+    WHERE ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
+  return c.json({ assets: rows });
+});
+
+app.post('/international/transfers', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'transfer:manage');
+  const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), fromWarehouseId: z.string().min(1), toWarehouseId: z.string().min(1) }));
+  if (input.fromWarehouseId === input.toWarehouseId) throw badRequest('调出仓与调入仓不能相同');
+  const location = await one<{ warehouseId: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId FROM asset_locations WHERE asset_id = ?', input.assetId);
+  if (!location || location.warehouseId !== input.fromWarehouseId) throw conflict('资产当前不在指定调出仓');
+  const transferId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO asset_transfers (id, asset_id, from_warehouse_id, to_warehouse_id, created_by) VALUES (?, ?, ?, ?, ?)`)
+      .bind(transferId, input.assetId, input.fromWarehouseId, input.toWarehouseId, user.id),
+    // A created transfer reserves the Asset at its source warehouse. It only
+    // becomes in-transit after the explicit ship action below.
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '国际调拨已创建', ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.transfer.create', entityType: 'asset_transfer', entityId: transferId, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: transferId }, 201);
+});
+
+app.post('/international/transfers/:id/:action', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'transfer:manage');
+  const action = c.req.param('action');
+  if (action !== 'ship' && action !== 'receive') throw notFound('未找到调拨操作');
+  const input = await parseBody(c.req.raw, z.object({ trackingNumber: z.string().max(160).optional() }));
+  const transfer = await one<{ id: string; assetId: string; toWarehouseId: string; status: string }>(c.env.DB, `SELECT id, asset_id AS assetId, to_warehouse_id AS toWarehouseId, status FROM asset_transfers WHERE id = ?`, c.req.param('id'));
+  if (!transfer) throw notFound('未找到调拨单');
+  if ((action === 'ship' && transfer.status !== 'created') || (action === 'receive' && transfer.status !== 'shipped')) throw conflict('调拨当前状态不能执行该操作');
+  const isReceived = action === 'receive';
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE asset_transfers SET status = ?, tracking_number = COALESCE(?, tracking_number), ${isReceived ? 'received_at' : 'shipped_at'} = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(isReceived ? 'received' : 'shipped', input.trackingNumber ?? null, transfer.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET warehouse_id = CASE WHEN ? THEN ? ELSE warehouse_id END, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`)
+      .bind(Number(isReceived), transfer.toWarehouseId, isReceived ? 'on_hand' : 'in_transit', user.id, transfer.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), transfer.assetId, isReceived ? '国际调拨已收货' : '国际调拨已发运', input.trackingNumber ?? '', user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: `international.transfer.${action}`, entityType: 'asset_transfer', entityId: transfer.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: transfer.id, status: isReceived ? 'received' : 'shipped' });
+});
+
+app.get('/marketplace/listings', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'marketplace:read');
+  const salesAccountIds = workspaceScopeIds(user, 'salesAccountIds');
+  if (!can(user, 'data:read:all') && !salesAccountIds.length) throw forbidden('当前账户没有销售账号数据范围');
+  const listings = await all(c.env.DB, `SELECT marketplace_listings.id, marketplace_listings.asset_id AS assetId, marketplace_listings.external_listing_id AS externalListingId,
+    marketplace_listings.title, marketplace_listings.price_minor AS priceMinor, marketplace_listings.currency, marketplace_listings.status,
+    sales_channels.code AS channelCode, sales_accounts.account_name AS salesAccountName, assets.current_sn AS currentSn
+    FROM marketplace_listings JOIN sales_channels ON sales_channels.id = marketplace_listings.channel_id
+    JOIN sales_accounts ON sales_accounts.id = marketplace_listings.sales_account_id JOIN assets ON assets.id = marketplace_listings.asset_id
+    WHERE ${can(user, 'data:read:all') ? '1 = 1' : `marketplace_listings.sales_account_id IN (${placeholders(salesAccountIds)})`}
+    ORDER BY marketplace_listings.updated_at DESC`, ...(!can(user, 'data:read:all') ? salesAccountIds : []));
+  return c.json({ listings });
+});
+
+app.post('/marketplace/listings', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'marketplace:manage');
+  const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), channelId: z.string().min(1), salesAccountId: z.string().min(1), externalListingId: z.string().max(160).default(''), title: z.string().min(1).max(240), priceMinor: z.number().int().min(0), currency: z.string().length(3).default('GBP') }));
+  const salesAccountIds = workspaceScopeIds(user, 'salesAccountIds');
+  if (!can(user, 'data:read:all') && !salesAccountIds.includes(input.salesAccountId)) throw forbidden('该销售账号不在你的数据范围内');
+  const listingId = id();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO marketplace_listings (id, asset_id, channel_id, sales_account_id, external_listing_id, title, price_minor, currency, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`)
+      .bind(listingId, input.assetId, input.channelId, input.salesAccountId, input.externalListingId, input.title, input.priceMinor, input.currency?.toUpperCase() ?? 'GBP', user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'resold', CURRENT_TIMESTAMP, '海外 Listing 已建立', ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'marketplace.listing.create', entityType: 'marketplace_listing', entityId: listingId, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: listingId }, 201);
+});
+
+app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), listingId: z.string().uuid().optional() }));
+  const order = await one<{ id: string }>(c.env.DB, 'SELECT id FROM orders WHERE id = ?', c.req.param('id'));
+  if (!order) throw notFound('未找到订单');
+  const location = await one<{ status: string }>(c.env.DB, 'SELECT status FROM asset_locations WHERE asset_id = ?', input.assetId);
+  if (!location || location.status !== 'on_hand') throw conflict('资产不可用或已被锁定');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`INSERT INTO international_asset_allocations (asset_id, order_id, listing_id, status, reserved_by) VALUES (?, ?, ?, 'reserved', ?)`)
+      .bind(input.assetId, order.id, input.listingId ?? null, user.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sold', CURRENT_TIMESTAMP, '国际订单已绑定并锁定资产', ?, ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, order.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.bind_asset', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ orderId: order.id, assetId: input.assetId, status: 'reserved' });
+});
+
+app.post('/international/orders/:id/ship', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const input = await parseBody(c.req.raw, z.object({ carrier: z.string().min(1).max(80), trackingNumber: z.string().min(1).max(160) }));
+  const allocation = await one<{ assetId: string }>(c.env.DB, `SELECT asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved'`, c.req.param('id'));
+  if (!allocation) throw conflict('该订单尚未绑定可出库的 Asset');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, fulfillment_updated_at = CURRENT_TIMESTAMP, fulfillment_updated_by = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status NOT IN ('cancelled','delivered')`)
+      .bind(input.carrier, input.trackingNumber, user.id, user.id, c.req.param('id')),
+    c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'fulfilled' WHERE asset_id = ?`).bind(allocation.assetId),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'shipped', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '已向客户发货', ?, ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), allocation.assetId, `${input.carrier} / ${input.trackingNumber}`, c.req.param('id'), user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.ship', entityType: 'order', entityId: c.req.param('id'), requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ orderId: c.req.param('id'), assetId: allocation.assetId, status: 'shipped' });
+});
+
+app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const allocation = await one<{ assetId: string }>(c.env.DB, `SELECT asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'fulfilled'`, c.req.param('id'));
+  if (!allocation) throw conflict('该订单尚未完成国际发货');
+  const result = await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE orders SET status = 'delivered', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'shipped'`).bind(user.id, c.req.param('id')),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sold', CURRENT_TIMESTAMP, '订单已妥投', ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), allocation.assetId, c.req.param('id'), user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: c.req.param('id'), requestId: c.get('requestId'), after: { status: 'delivered' } })
+  ]);
+  if (result[0].meta.changes !== 1) throw conflict('订单当前状态不能标记为已妥投');
+  return c.json({ orderId: c.req.param('id'), assetId: allocation.assetId, status: 'delivered' });
+});
+
+app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const input = await parseBody(c.req.raw, z.object({ startDate: z.string().date(), endDate: z.string().date(), warrantyReference: z.string().trim().max(160).default('') }).refine((value) => value.endDate >= value.startDate, { message: '保修结束日期不能早于开始日期', path: ['endDate'] }));
+  const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', c.req.param('id'));
+  if (!asset) throw notFound('未找到资产');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE assets SET warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.startDate, input.endDate, user.id, asset.id),
+    c.env.DB.prepare(`UPDATE asset_certifications SET warranty_reference = ? WHERE asset_id = ?`).bind(input.warrantyReference, asset.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', CURRENT_TIMESTAMP, '国际保修已激活', ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), asset.id, input.warrantyReference, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.warranty.activate', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ assetId: asset.id, status: 'active', startDate: input.startDate, endDate: input.endDate });
+});
+
+app.post('/international/after-sales/:id/rma', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-after-sales:manage');
+  const input = await parseBody(c.req.raw, z.object({ marketRegion: z.enum(['CN', 'SG', 'UK']), returnWarehouseId: z.string().min(1), returnTracking: z.string().trim().max(160).default(''), returnReason: z.string().trim().min(1).max(1000), rmaReference: z.string().trim().min(1).max(160), crossBorderResolution: z.string().trim().max(1000).default('') }));
+  const warehouseIds = workspaceScopeIds(user, 'warehouseIds');
+  if (!can(user, 'data:read:all') && !warehouseIds.includes(input.returnWarehouseId)) throw forbidden('该退货仓不在你的数据范围内');
+  const serviceCase = await one<{ id: string; assetId: string | null }>(c.env.DB, 'SELECT id, asset_id AS assetId FROM after_sales_cases WHERE id = ?', c.req.param('id'));
+  if (!serviceCase?.assetId) throw notFound('未找到关联 Asset 的售后工单');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE after_sales_cases SET market_region = ?, return_warehouse_id = ?, return_tracking = ?, return_reason = ?, rma_reference = ?, cross_border_resolution = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+      .bind(input.marketRegion, input.returnWarehouseId, input.returnTracking, input.returnReason, input.rmaReference, input.crossBorderResolution, user.id, serviceCase.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source) VALUES (?, ?, 'service_received', CURRENT_TIMESTAMP, '国际 RMA 已创建', ?, ?, ?, 'admin_private', 'international-v1')`)
+      .bind(id(), serviceCase.assetId, `${input.rmaReference} · ${input.returnReason}`, serviceCase.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.rma.register', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
+  ]);
+  return c.json({ id: serviceCase.id, rmaReference: input.rmaReference, marketRegion: input.marketRegion });
+});
+
+app.get('/international/assets/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:read');
+  const warehouseIds = workspaceScopeIds(user, 'warehouseIds');
+  if (!can(user, 'data:read:all') && !warehouseIds.length) throw forbidden('当前账户没有国际仓库数据范围');
+  const asset = await one(c.env.DB, `SELECT assets.id, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    asset_certifications.grade, asset_certifications.certification_status AS certificationStatus, warehouses.code AS warehouseCode, asset_locations.status AS locationStatus
+    FROM assets LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id
+    LEFT JOIN asset_locations ON asset_locations.asset_id = assets.id LEFT JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
+    WHERE assets.id = ? AND ${can(user, 'data:read:all') ? '1 = 1' : `asset_locations.warehouse_id IN (${placeholders(warehouseIds)})`}`, c.req.param('id'), ...(!can(user, 'data:read:all') ? warehouseIds : []));
+  if (!asset) throw notFound('未找到资产');
+  const events = await all(c.env.DB, `SELECT event_type AS eventType, occurred_at AS occurredAt, title, description, source FROM asset_events WHERE asset_id = ? ORDER BY occurred_at DESC, created_at DESC`, c.req.param('id'));
+  return c.json({ asset, events });
 });
 
 export default app;

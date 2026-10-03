@@ -1,4 +1,4 @@
-import { AppError, PERMISSIONS, ROLES, type Permission, type Role, type SessionUser } from '@maxcine/shared';
+import { AppError, PERMISSIONS, ROLES, type Permission, type Role, type SessionUser, type WorkspaceContext } from '@maxcine/shared';
 import type { Context, MiddlewareHandler } from 'hono';
 import type { Env, Variables } from './types';
 import { all, one } from './db';
@@ -82,7 +82,7 @@ export async function loadSessionUser(db: D1Database, userId: string): Promise<S
   const account = await one<{ id: string; email: string; name: string; isActive: number; sessionVersion: number; mustChangePassword: number; watermarkEnabled: number }>(db,
     'SELECT id, email, name, is_active AS isActive, session_version AS sessionVersion, COALESCE(must_change_password, 0) AS mustChangePassword, watermark_enabled AS watermarkEnabled FROM users WHERE id = ?', userId);
   if (!account?.isActive) return null;
-  const [roleRows, permissionRows, dealerRows, serviceCenterRows, storeRows] = await Promise.all([
+  const [roleRows, permissionRows, dealerRows, serviceCenterRows, storeRows, workspaceRows] = await Promise.all([
     all<{ code: string }>(db, `SELECT roles.code FROM user_roles JOIN roles ON roles.id = user_roles.role_id
       WHERE user_roles.user_id = ? AND roles.is_active = 1 ORDER BY roles.code`, userId),
     all<{ code: string }>(db, `SELECT DISTINCT permissions.code FROM user_roles
@@ -95,10 +95,19 @@ export async function loadSessionUser(db: D1Database, userId: string): Promise<S
     all<{ serviceCenterId: string }>(db, `SELECT service_center_id AS serviceCenterId FROM service_center_user_assignments
       WHERE user_id = ? AND status = 'active' ORDER BY service_center_id`, userId),
     all<{ storeId: string }>(db, `SELECT store_id AS storeId FROM store_user_assignments
-      WHERE user_id = ? AND status = 'active' ORDER BY store_id`, userId)
+      WHERE user_id = ? AND status = 'active' ORDER BY store_id`, userId),
+    all<{ code: string; name: string; defaultRoute: string; dataScopeJson: string; isDefault: number }>(db, `SELECT workspaces.code, workspaces.name,
+      workspaces.default_route AS defaultRoute, user_workspaces.data_scope_json AS dataScopeJson, user_workspaces.is_default AS isDefault
+      FROM user_workspaces JOIN workspaces ON workspaces.id = user_workspaces.workspace_id
+      WHERE user_workspaces.user_id = ? AND workspaces.is_active = 1 ORDER BY user_workspaces.is_default DESC, workspaces.code`, userId)
   ]);
   const roles = roleRows.map((row) => row.code).filter((code): code is Role => (ROLES as readonly string[]).includes(code));
   const dealerIds = dealerRows.map((row) => row.dealerId);
+  const workspaces: WorkspaceContext[] = workspaceRows.map((row) => {
+    let dataScope: Record<string, unknown> = {};
+    try { dataScope = JSON.parse(row.dataScopeJson || '{}') as Record<string, unknown>; } catch { /* keep empty scope */ }
+    return { code: row.code, name: row.name, defaultRoute: row.defaultRoute, dataScope, isDefault: Boolean(row.isDefault) };
+  });
   return {
     id: account.id,
     email: account.email,
@@ -112,7 +121,8 @@ export async function loadSessionUser(db: D1Database, userId: string): Promise<S
     storeIds: storeRows.map((row) => row.storeId),
     sessionVersion: account.sessionVersion,
     mustChangePassword: Boolean(account.mustChangePassword),
-    watermarkEnabled: Boolean(account.watermarkEnabled)
+    watermarkEnabled: Boolean(account.watermarkEnabled),
+    workspaces
   };
 }
 

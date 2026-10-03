@@ -18,6 +18,7 @@ APP_ORIGIN = "http://localhost:5173"
 PUBLIC_ORIGIN = "http://localhost:5174"
 EMAIL_PROVIDER = "mock"
 AI_PROVIDER = "disabled"
+APP_ENV = "development"
 
 [env.staging]
 name = "maxcine-api-staging"
@@ -39,6 +40,7 @@ PUBLIC_ORIGIN = "https://maxcine-website-staging.pages.dev"
 COOKIE_SAMESITE = "None"
 EMAIL_PROVIDER = "resend"
 AI_PROVIDER = "disabled"
+APP_ENV = "staging"
 
 [env.production]
 name = "maxcine-api"
@@ -60,3 +62,4 @@ PUBLIC_ORIGIN = "https://maxcine-website.pages.dev"
 COOKIE_SAMESITE = "None"
 EMAIL_PROVIDER = "resend"
 AI_PROVIDER = "disabled"
+APP_ENV = "production"

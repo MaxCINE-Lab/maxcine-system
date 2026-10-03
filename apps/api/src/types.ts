@@ -4,6 +4,7 @@ export type Env = {
   DB: D1Database;
   ASSETS?: R2Bucket;
   SESSION_SECRET: string;
+  APP_ENV?: 'development' | 'staging' | 'production';
   APP_ORIGIN: string;
   PUBLIC_ORIGIN?: string;
   COOKIE_SAMESITE?: 'Lax' | 'None' | 'Strict';
