@@ -87,6 +87,8 @@ test('0030 enforces Asset Code uniqueness while SN remains mutable', () => {
   assert.throws(() => database.prepare(`INSERT INTO assets (id, asset_code, current_sn) VALUES (?, ?, ?)`).run('asset-b', 'MC-26-P4P-000001', 'SN-B'), /UNIQUE/);
   database.prepare(`UPDATE assets SET current_sn = ? WHERE id = ?`).run('SN-A-REPLACED', 'asset-a');
   assert.equal(database.prepare(`SELECT asset_code AS assetCode FROM assets WHERE id = ?`).get('asset-a').assetCode, 'MC-26-P4P-000001');
+  assert.throws(() => database.prepare(`UPDATE assets SET asset_code = ? WHERE id = ?`).run('MC-26-P4P-CHANGED', 'asset-a'), /asset_code is immutable/);
+  assert.throws(() => database.prepare(`UPDATE assets SET asset_code = NULL WHERE id = ?`).run('asset-a'), /asset_code is immutable/);
   database.close();
 });
 
