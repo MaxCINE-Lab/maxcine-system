@@ -18,6 +18,7 @@
     "typecheck": "tsc -b",
     "test": "npm run build -w @maxcine/shared && node --test tests/security.test.mjs",
     "test:phase1-2a": "npm run build -w @maxcine/shared && node --test tests/phase1_2a.test.mjs",
+    "test:phase1-2b-certified": "node --test tests/phase1_2b_certified.test.mjs",
     "test:scanner": "npm run build -w @maxcine/shared && node scripts/test-barcode-scanner.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api && npm run build -w @maxcine/website",

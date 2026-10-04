@@ -9,7 +9,7 @@ export const PERMISSIONS = [
   'after-sales:assign', 'after-sales:receive', 'after-sales:damage-assess', 'after-sales:recommend', 'after-sales:approve',
   'asset:read', 'asset:manage', 'asset:import', 'asset:warehouse-read',
   'customer-risk:read', 'customer-risk:create', 'customer-risk:update-own', 'customer-risk:manage'
-  , 'workspace:read', 'certified:read', 'certified:manage', 'warehouse:international-read', 'transfer:manage',
+  , 'workspace:read', 'certified:read', 'certified:manage', 'certified:final-qc', 'warehouse:international-read', 'transfer:manage',
   'marketplace:read', 'marketplace:manage', 'international-order:read', 'international-order:manage',
   'international-after-sales:read', 'international-after-sales:manage'
 ] as const;

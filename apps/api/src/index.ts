@@ -136,6 +136,16 @@ function assertInternationalPermission(user: SessionUser, permission: Parameters
   if (!can(user, 'data:read:all') && !can(user, permission)) throw forbidden('当前账户没有国际业务权限');
 }
 
+function assertCertifiedFinalQcPermission(user: SessionUser): void {
+  if (!can(user, 'data:read:all') && !can(user, 'certified:final-qc')) throw forbidden('当前账户没有 Certified 最终审核权限');
+}
+
+function legacyCertifiedGrade(grade: 'A+' | 'A' | 'B+' | 'B' | 'Parts / Repair'): 'A' | 'B' | 'D' {
+  if (grade === 'A+' || grade === 'A') return 'A';
+  if (grade === 'B+' || grade === 'B') return 'B';
+  return 'D';
+}
+
 function assertInventoryLedgerRead(user: SessionUser): void {
   if (!can(user, 'inventory:manage') && !can(user, 'inventory:warehouse-manage') && !can(user, 'inventory:read')) throw forbidden();
 }
@@ -4684,14 +4694,54 @@ app.get('/certified/tasks', requireAuth, async (c) => {
   const canSeeAll = can(user, 'data:read:all') || user.roles.includes('international_operator');
   const rows = await all(c.env.DB, `SELECT asset_inspection_tasks.id, asset_inspection_tasks.asset_id AS assetId,
     asset_inspection_tasks.assigned_to AS assignedTo, asset_inspection_tasks.status, asset_inspection_tasks.result,
-    asset_inspection_tasks.grade, asset_inspection_tasks.final_qc AS finalQc, asset_inspection_tasks.notes,
+    COALESCE(asset_inspection_tasks.grade_display, asset_inspection_tasks.grade) AS grade,
+    asset_inspection_tasks.final_qc AS finalQc, asset_inspection_tasks.notes,
     asset_inspection_tasks.started_at AS startedAt, asset_inspection_tasks.completed_at AS completedAt,
     asset_inspection_tasks.created_at AS createdAt, asset_inspection_tasks.updated_at AS updatedAt,
-    assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName
+    assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    assets.version_snapshot AS productVersion, assignee.name AS assignedToName
     FROM asset_inspection_tasks JOIN assets ON assets.id = asset_inspection_tasks.asset_id
+    LEFT JOIN users assignee ON assignee.id = asset_inspection_tasks.assigned_to
     WHERE ${canSeeAll ? '1 = 1' : 'asset_inspection_tasks.assigned_to = ?'}
     ORDER BY asset_inspection_tasks.updated_at DESC`, ...(canSeeAll ? [] : [user.id]));
   return c.json({ tasks: rows });
+});
+
+app.get('/certified/tasks/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:read');
+  const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string } & Record<string, unknown>>(c.env.DB, `SELECT
+    asset_inspection_tasks.id, asset_inspection_tasks.asset_id AS assetId,
+    asset_inspection_tasks.assigned_to AS assignedTo, assignee.name AS assignedToName,
+    asset_inspection_tasks.process_code AS processCode, asset_inspection_tasks.status,
+    asset_inspection_tasks.result, COALESCE(asset_inspection_tasks.grade_display, asset_inspection_tasks.grade) AS grade,
+    asset_inspection_tasks.final_qc AS finalQc, asset_inspection_tasks.notes,
+    asset_inspection_tasks.started_at AS startedAt, asset_inspection_tasks.completed_at AS completedAt,
+    asset_inspection_tasks.created_at AS createdAt, asset_inspection_tasks.updated_at AS updatedAt,
+    assets.asset_code AS assetCode, assets.current_sn AS currentSn,
+    assets.product_name_snapshot AS productName, assets.version_snapshot AS productVersion
+    FROM asset_inspection_tasks
+    JOIN assets ON assets.id = asset_inspection_tasks.asset_id
+    LEFT JOIN users assignee ON assignee.id = asset_inspection_tasks.assigned_to
+    WHERE asset_inspection_tasks.id = ?`, c.req.param('id'));
+  if (!task) throw notFound('未找到检测任务');
+  requireInspectionAssignment(user, task.assignedTo);
+  const evidence = await all<{ id: string; evidenceType: string; objectKey: string | null; contentText: string; metadataJson: string; createdAt: string; createdByName: string | null }>(c.env.DB, `SELECT asset_inspection_evidence.id,
+    evidence_type AS evidenceType, object_key AS objectKey, content_text AS contentText,
+    metadata_json AS metadataJson, asset_inspection_evidence.created_at AS createdAt,
+    creator.name AS createdByName
+    FROM asset_inspection_evidence
+    LEFT JOIN users creator ON creator.id = asset_inspection_evidence.created_by
+    WHERE inspection_task_id = ? ORDER BY asset_inspection_evidence.created_at`, task.id);
+  return c.json({
+    task,
+    evidence: evidence.map((item) => ({
+      ...item,
+      metadata: (() => { try { return JSON.parse(item.metadataJson || '{}'); } catch { return {}; } })(),
+      contentUrl: item.objectKey ? `/certified/evidence/${item.id}/content` : null
+    })),
+    canFinalQc: can(user, 'data:read:all') || can(user, 'certified:final-qc')
+  });
 });
 
 app.post('/certified/tasks', requireAuth, async (c) => {
@@ -4756,49 +4806,95 @@ app.post('/certified/tasks/:id/evidence', requireAuth, async (c) => {
     throw badRequest('请上传文件或填写检测说明');
   }
   const evidenceId = id();
+  const metadata = file instanceof File
+    ? { hasFile: true, originalFilename: file.name || 'evidence', contentType: file.type, fileSize: file.size }
+    : { hasFile: false };
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO asset_inspection_evidence (id, inspection_task_id, evidence_type, object_key, content_text, metadata_json, created_by) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .bind(evidenceId, task.id, evidenceType, objectKey, text, JSON.stringify({ hasFile: Boolean(objectKey) }), user.id),
+      .bind(evidenceId, task.id, evidenceType, objectKey, text, JSON.stringify(metadata), user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'certified.evidence.create', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: { evidenceType, hasFile: Boolean(objectKey) } })
   ]);
-  return c.json({ id: evidenceId, objectKey }, 201);
+  return c.json({ id: evidenceId, evidenceType, objectKey, contentText: text, metadata, contentUrl: objectKey ? `/certified/evidence/${evidenceId}/content` : null }, 201);
+});
+
+app.get('/certified/evidence/:id/content', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:read');
+  const evidence = await one<{ id: string; objectKey: string | null; metadataJson: string; assignedTo: string | null }>(c.env.DB, `SELECT
+    asset_inspection_evidence.id, asset_inspection_evidence.object_key AS objectKey,
+    asset_inspection_evidence.metadata_json AS metadataJson,
+    asset_inspection_tasks.assigned_to AS assignedTo
+    FROM asset_inspection_evidence
+    JOIN asset_inspection_tasks ON asset_inspection_tasks.id = asset_inspection_evidence.inspection_task_id
+    WHERE asset_inspection_evidence.id = ?`, c.req.param('id'));
+  if (!evidence?.objectKey) throw notFound('未找到可查看的检测证据');
+  requireInspectionAssignment(user, evidence.assignedTo);
+  if (!c.env.ASSETS) throw notFound('文件存储尚未启用');
+  const object = await c.env.ASSETS.get(evidence.objectKey);
+  if (!object) throw notFound('该检测证据内容不可用，请重新上传');
+  let metadata: { originalFilename?: string; contentType?: string } = {};
+  try { metadata = JSON.parse(evidence.metadataJson) as typeof metadata; } catch { metadata = {}; }
+  return new Response(object.body, { headers: {
+    'Content-Type': object.httpMetadata?.contentType || metadata.contentType || 'application/octet-stream',
+    'Cache-Control': 'private, max-age=300',
+    'Content-Disposition': `inline; filename="${encodeURIComponent(metadata.originalFilename || 'inspection-evidence')}"`
+  } });
 });
 
 app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
-  const input = await parseBody(c.req.raw, z.object({ result: z.enum(['PASS', 'FAIL', 'ADVISORY', 'N/A']), grade: z.enum(['A', 'B', 'C', 'D']).optional(), finalQc: z.boolean(), notes: z.string().max(4000).default('') }));
+  const input = await parseBody(c.req.raw, z.object({
+    result: z.enum(['PASS', 'FAIL', 'ADVISORY', 'N/A']),
+    grade: z.enum(['A+', 'A', 'B+', 'B', 'Parts / Repair']),
+    finalQc: z.boolean().optional(),
+    notes: z.string().max(12000).default('')
+  }));
   const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string }>(c.env.DB, 'SELECT id, asset_id AS assetId, assigned_to AS assignedTo, status FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
   if (!task) throw notFound('未找到检测任务');
   requireInspectionAssignment(user, task.assignedTo);
   if (task.status !== 'in_progress') throw conflict('请先开始检测，再提交检测结果');
-  if (input.result === 'PASS' && (!input.grade || !input.finalQc)) throw badRequest('通过认证必须填写 Grade 并完成 Final QC');
-  const certificationId = input.result === 'PASS' && input.finalQc ? id() : null;
-  const verificationCode = certificationId ? crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase() : null;
-  const statements: D1PreparedStatement[] = [
-    c.env.DB.prepare(`UPDATE asset_inspection_tasks SET status = ?, result = ?, grade = ?, final_qc = ?, notes = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(input.result === 'PASS' ? 'completed' : 'failed', input.result, input.grade ?? null, Number(input.finalQc), input.notes, task.id),
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE asset_inspection_tasks SET status = ?, result = ?, grade = ?, grade_display = ?, final_qc = ?, notes = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(input.result === 'FAIL' ? 'failed' : 'completed', input.result, legacyCertifiedGrade(input.grade), input.grade, 0, input.notes, task.id),
     c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
       VALUES (?, ?, 'inspection_completed', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1.2a')`)
-      .bind(id(), task.assetId, input.result === 'PASS' ? 'Certified 检测通过' : 'Certified 检测未通过', input.notes, user.id),
+      .bind(id(), task.assetId, input.result === 'FAIL' ? 'Certified 检测发现问题' : 'Certified 检测已提交', input.notes, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+      VALUES (?, ?, 'asset_graded', CURRENT_TIMESTAMP, '资产评级完成', ?, ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), task.assetId, input.grade, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.complete', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: input })
-  ];
-  if (certificationId && verificationCode && input.grade) {
-    statements.push(
-      c.env.DB.prepare(`INSERT INTO asset_certifications (id, asset_id, inspection_task_id, grade, inspection_result, final_qc, warranty_reference, verification_code_hash, created_by)
-        VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)`)
-        .bind(certificationId, task.assetId, task.id, input.grade, input.result, await hashIdentifier(verificationCode), user.id),
-      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
-        VALUES (?, ?, 'asset_graded', CURRENT_TIMESTAMP, '资产评级完成', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, input.grade, user.id),
-      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source)
-        VALUES (?, ?, 'certification_issued', CURRENT_TIMESTAMP, 'MaxCINE Certified', ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, user.id)
-    );
-  } else {
-    statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
-      VALUES (?, ?, 'certification_rejected', CURRENT_TIMESTAMP, '认证未通过', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, input.notes, user.id));
+  ]);
+  return c.json({ id: task.id, status: input.result === 'FAIL' ? 'failed' : 'completed', finalQc: false });
+});
+
+app.post('/certified/tasks/:id/final-qc', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertCertifiedFinalQcPermission(user);
+  const input = await parseBody(c.req.raw, z.object({ action: z.literal('approve'), notes: z.string().trim().max(2000).default('') }));
+  const task = await one<{ id: string; assetId: string; status: string; result: 'PASS' | 'FAIL' | 'ADVISORY' | 'N/A' | null; grade: 'A+' | 'A' | 'B+' | 'B' | 'Parts / Repair' | null; finalQc: number | null }>(c.env.DB,
+    `SELECT id, asset_id AS assetId, status, result, COALESCE(grade_display, grade) AS grade, final_qc AS finalQc FROM asset_inspection_tasks WHERE id = ?`, c.req.param('id'));
+  if (!task) throw notFound('未找到检测任务');
+  if (task.finalQc === 1) {
+    const existing = await one<{ id: string }>(c.env.DB, 'SELECT id FROM asset_certifications WHERE inspection_task_id = ?', task.id);
+    return c.json({ id: task.id, certificationId: existing?.id ?? null, idempotent: true });
   }
-  await c.env.DB.batch(statements);
-  return c.json({ id: task.id, certificationId, ...(verificationCode ? { verificationCode } : {}) });
+  if (task.status !== 'completed' || !task.grade || !task.result || !['PASS', 'ADVISORY'].includes(task.result)) throw conflict('该任务尚未通过检测，不能签发认证');
+  const existingAssetCertification = await one<{ id: string }>(c.env.DB, `SELECT id FROM asset_certifications WHERE asset_id = ? AND certification_status = 'certified'`, task.assetId);
+  if (existingAssetCertification) throw conflict('该资产已经存在有效认证');
+  const certificationId = id();
+  const verificationCode = crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase();
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE asset_inspection_tasks SET final_qc = 1, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND COALESCE(final_qc, 0) = 0`).bind(task.id),
+    c.env.DB.prepare(`INSERT INTO asset_certifications (id, asset_id, inspection_task_id, grade, grade_display, inspection_result, final_qc, warranty_reference, verification_code_hash, created_by)
+      VALUES (?, ?, ?, ?, ?, ?, 1, '', ?, ?)`)
+      .bind(certificationId, task.assetId, task.id, legacyCertifiedGrade(task.grade), task.grade, task.result, await hashIdentifier(verificationCode), user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+      VALUES (?, ?, 'certification_issued', CURRENT_TIMESTAMP, 'MaxCINE Certified', ?, ?, 'admin_private', 'international-v1.2b')`)
+      .bind(id(), task.assetId, input.notes, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'certified.final_qc.approve', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: { certificationId, notes: input.notes } })
+  ]);
+  return c.json({ id: task.id, certificationId, verificationCode });
 });
 
 app.get('/international/warehouses/assets', requireAuth, async (c) => {
@@ -5078,7 +5174,7 @@ app.get('/international/assets/:id', requireAuth, async (c) => {
   assertInternationalPermission(user, 'international-order:read');
   await requireAssetAccess(c.env.DB, user, c.req.param('id'));
   const asset = await one(c.env.DB, `SELECT assets.id, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
-    asset_certifications.grade, asset_certifications.certification_status AS certificationStatus,
+    COALESCE(asset_certifications.grade_display, asset_certifications.grade) AS grade, asset_certifications.certification_status AS certificationStatus,
     CASE WHEN asset_locations.custody = 'WAREHOUSE' THEN warehouses.code ELSE NULL END AS warehouseCode,
     asset_locations.status AS locationStatus, asset_locations.custody
     FROM assets LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id

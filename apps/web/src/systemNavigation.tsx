@@ -132,7 +132,7 @@ export function hasIntelligenceAccess(user: SessionUser): boolean {
 }
 
 export function hasCertifiedAccess(user: SessionUser): boolean {
-  return user.roles.includes('certified_operator') || hasAnyPermission(user, ['certified:read', 'certified:manage']);
+  return hasAdminAccess(user) || user.roles.includes('certified_operator') || hasAnyPermission(user, ['certified:read', 'certified:manage', 'certified:final-qc']);
 }
 
 export function hasInternationalAccess(user: SessionUser): boolean {
