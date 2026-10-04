@@ -166,3 +166,12 @@ test('International write routes call centralized scope helpers and write precis
     assert.match(source, new RegExp(`'${eventType}'`));
   }
 });
+
+test('Warehouse and UK transfer roles reach server-side warehouse scope checks', () => {
+  const migration = readFileSync(new URL('../apps/api/migrations/0031_phase1_2a_transfer_role_grants.sql', import.meta.url), 'utf8');
+  assert.match(migration, /warehouse_manager/);
+  assert.match(migration, /uk_fulfilment_operator/);
+  assert.match(migration, /transfer:manage/);
+  expect403(() => requireWarehouseScope(uk, 'wh-cn-sd'));
+  expect403(() => requireWarehouseScope(cn, 'wh-uk'));
+});
