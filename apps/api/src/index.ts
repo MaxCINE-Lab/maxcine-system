@@ -5,10 +5,12 @@ import {
   bindOrderSerialsSchema, closeAfterSalesSchema, createCustomerRiskRecordSchema, createDealerSchema, createInventorySerialSchema, createOrderSchema, createProductSchema, createStoreSchema, createUserSchema, forbidden, loginSchema, notFound, orderFulfillmentSchema, passwordChangeSchema, passwordResetSchema, reviewOrderSchema, scanSerialSchema, shipmentSchema, updateAfterSalesSchema, updateAssetSchema, updateCustomerRiskEventSchema, updateCustomerRiskProfileSchema, updateDealerSchema, updateInventorySerialSchema, updateOrderSchema, updateProductSchema, updateStoreSchema, updateUserSchema, updateWatermarkPreferenceSchema,
   adminDamageReviewSchema, confirmQuoteSendSchema, historicalWarrantyPrecheckSchema, HISTORICAL_WARRANTY_COLUMNS, inboundShipmentSchema, inspectionReviewSchema, inspectionSchema, mailPreviewSchema, mailTestSchema, normalizeHistoricalWarrantyRecords, quoteDraftSchema, receiptSchema, shipmentWarrantyDates, shipmentWarrantyRule, updateAssetWarrantySchema, updateMailTemplateSchema, updatePublicWarrantySchema, updateRepairMaterialSchema, warrantyDisplayStatus, type ApiErrorBody, type NormalizedWarrantyRecord, type OrderStatus, type SessionUser
 } from '@maxcine/shared';
+import { generateAssetCode, requireInspectionAssignment, requireSalesAccountScope, requireWarehouseScope, workspaceScopeIds } from '@maxcine/shared';
 import { all, caseNo, id, one, orderNo } from './db';
 import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requireAuth, verifyPassword } from './auth';
 import { mailSubject, mailTemplates, renderMailHtml, renderMailText, sendEmail, type MailTemplateData, type MailTemplateKey } from './email';
 import type { Env, Variables } from './types';
+import { requireAssetAccess, requireOrderAccess, requireRmaAccess } from './internationalAuthorization';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -132,13 +134,6 @@ function assertPermission(user: SessionUser, permission: Parameters<typeof can>[
 
 function assertInternationalPermission(user: SessionUser, permission: Parameters<typeof can>[1]): void {
   if (!can(user, 'data:read:all') && !can(user, permission)) throw forbidden('当前账户没有国际业务权限');
-}
-
-function workspaceScopeIds(user: SessionUser, key: string): string[] {
-  return Array.from(new Set((user.workspaces ?? []).flatMap((workspace) => {
-    const value = workspace.dataScope[key];
-    return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-  })));
 }
 
 function assertInventoryLedgerRead(user: SessionUser): void {
@@ -549,9 +544,9 @@ async function ensureAssetForInventorySerial(db: D1Database, input: { serialNumb
     assetId,
     created: true,
     statements: [
-      db.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, warranty_policy, source_channel, shipping_warehouse, created_by, updated_by)
-        VALUES (?, ?, ?, ?, ?, ?, 'active', 'unknown', 'inventory_inbound', '', ?, ?)`)
-        .bind(assetId, input.serialNumber, input.serialNumber, product.id, product.name, product.productVersion || product.specification || product.sku, input.actorId, input.actorId),
+      db.prepare(`INSERT INTO assets (id, asset_code, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, warranty_policy, source_channel, shipping_warehouse, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', 'unknown', 'inventory_inbound', '', ?, ?)`)
+        .bind(assetId, generateAssetCode({ assetId, productCode: product.sku }), input.serialNumber, input.serialNumber, product.id, product.name, product.productVersion || product.specification || product.sku, input.actorId, input.actorId),
       db.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, source, created_by)
         VALUES (?, ?, 'current_sn', ?, 1, 'inventory_inbound', ?)`)
         .bind(id(), assetId, input.serialNumber, input.actorId),
@@ -709,10 +704,10 @@ async function bindingStatementsForShippedOrder(db: D1Database, input: { orderId
         .bind(item.productId, item.name, item.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, input.orderId, input.orderId, input.orderId, input.actorId, assetId));
     } else {
       createdAssets += 1;
-      statements.push(db.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
+      statements.push(db.prepare(`INSERT INTO assets (id, asset_code, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
         warranty_policy, warranty_start_at, warranty_end_at, source_channel, dealer_id, store_id, latest_order_id, data_quality_status, created_by, updated_by)
-        VALUES (?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '管理员后补发货 SN', (SELECT dealer_id FROM orders WHERE id = ?), (SELECT store_id FROM orders WHERE id = ?), ?, 'normal', ?, ?)`)
-        .bind(assetId, serialNumber, serialNumber, item.productId, item.name, item.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, input.orderId, input.orderId, input.orderId, input.actorId, input.actorId));
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '管理员后补发货 SN', (SELECT dealer_id FROM orders WHERE id = ?), (SELECT store_id FROM orders WHERE id = ?), ?, 'normal', ?, ?)`)
+        .bind(assetId, generateAssetCode({ assetId, productCode: item.sku }), serialNumber, serialNumber, item.productId, item.name, item.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, input.orderId, input.orderId, input.orderId, input.actorId, input.actorId));
       statements.push(db.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_from, reason, source, created_by)
         VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '管理员后补发货 SN', '订单发货后补绑定', ?)`)
         .bind(id(), assetId, serialNumber, input.actorId));
@@ -2490,10 +2485,10 @@ app.post('/orders/:id/ship', requireAuth, async (c) => {
       }
     } else {
       createdAssets += 1;
-      assetStatements.push(c.env.DB.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
+      assetStatements.push(c.env.DB.prepare(`INSERT INTO assets (id, asset_code, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status,
         warranty_policy, warranty_start_at, warranty_end_at, source_channel, dealer_id, store_id, latest_order_id, data_quality_status, created_by, updated_by)
-        VALUES (?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '订单发货自动建档', ?, ?, ?, 'normal', ?, ?)`)
-        .bind(assetId, serial.serialNumber, serial.serialNumber, serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, user.id));
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'in_service', ?, ?, ?, '订单发货自动建档', ?, ?, ?, 'normal', ?, ?)`)
+        .bind(assetId, generateAssetCode({ assetId, productCode: serial.sku }), serial.serialNumber, serial.serialNumber, serial.productId, serial.productName, serial.productVersion ?? '', warrantyPolicy, dates?.startAt ?? null, dates?.endAt ?? null, order.dealerId, order.storeId, order.id, user.id, user.id));
       assetStatements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, valid_from, reason, source, created_by)
         VALUES (?, ?, 'current_sn', ?, 1, CURRENT_TIMESTAMP, '订单发货绑定 SN', '订单发货自动建档', ?)`)
         .bind(id(), assetId, serial.serialNumber, user.id));
@@ -3680,9 +3675,9 @@ app.post('/admin/gsx/imports/:id/confirm', requireAuth, async (c) => {
     const saleId = id();
     const sourceScope = scopeByChannel.get(record.sourceChannel);
     if (!existingAssetId) {
-      statements.push(c.env.DB.prepare(`INSERT INTO assets (id, current_sn, original_sn, product_name_snapshot, version_snapshot, asset_status, warranty_policy, warranty_start_at, warranty_end_at, warranty_override_status, warranty_override_reason, source_channel, shipping_warehouse, dealer_id, store_id, data_quality_status, created_by, updated_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .bind(assetId, record.currentSn, record.originalSn, productNameSnapshot(record.version), record.version, record.assetStatus, record.warrantyPolicy, record.warrantyStartAt, record.warrantyEndAt, record.warrantyOverrideStatus, record.warrantyOverrideReason, record.sourceChannel, record.shippingWarehouse, sourceScope?.dealerId ?? null, sourceScope?.storeId ?? null, record.dataQualityStatus, user.id, user.id));
+      statements.push(c.env.DB.prepare(`INSERT INTO assets (id, asset_code, current_sn, original_sn, product_name_snapshot, version_snapshot, asset_status, warranty_policy, warranty_start_at, warranty_end_at, warranty_override_status, warranty_override_reason, source_channel, shipping_warehouse, dealer_id, store_id, data_quality_status, created_by, updated_by)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .bind(assetId, generateAssetCode({ assetId, productCode: record.version }), record.currentSn, record.originalSn, productNameSnapshot(record.version), record.version, record.assetStatus, record.warrantyPolicy, record.warrantyStartAt, record.warrantyEndAt, record.warrantyOverrideStatus, record.warrantyOverrideReason, record.sourceChannel, record.shippingWarehouse, sourceScope?.dealerId ?? null, sourceScope?.storeId ?? null, record.dataQualityStatus, user.id, user.id));
       for (const identifier of record.identifiers) statements.push(c.env.DB.prepare(`INSERT INTO asset_identifiers (id, asset_id, identifier_type, identifier_value, is_current, reason, source, created_by)
         VALUES (?, ?, ?, ?, ?, ?, '历史保修表', ?)`)
         .bind(id(), assetId, identifier.type, identifier.value, Number(identifier.isCurrent), identifier.reason, user.id));
@@ -3798,8 +3793,8 @@ app.get('/assets/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertAssetReadAccess(user);
   const scope = assetScope(user);
-  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; sku: string | null; materialCode: string | null; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerId: string | null; dealerName: string | null; storeId: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; orderStatus: string | null; salePriceCents: number | null; shippingAddress: string | null; customerProfile: string | null; screenshotDataUrl: string | null; dataQualityStatus: string; updatedByName: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
-    `SELECT assets.id, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, products.sku, products.sku AS materialCode, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
+  const asset = await one<{ id: string; assetCode: string; currentSn: string | null; originalSn: string | null; productId: string | null; productName: string; version: string; sku: string | null; materialCode: string | null; assetStatus: string; warrantyPolicy: string; warrantyStartAt: string | null; warrantyEndAt: string | null; warrantyOverrideStatus: string | null; warrantyOverrideReason: string; sourceChannel: string; shippingWarehouse: string; dealerId: string | null; dealerName: string | null; storeId: string | null; storeName: string | null; latestOrderId: string | null; latestOrderNo: string | null; orderStatus: string | null; salePriceCents: number | null; shippingAddress: string | null; customerProfile: string | null; screenshotDataUrl: string | null; dataQualityStatus: string; updatedByName: string | null; createdAt: string; updatedAt: string }>(c.env.DB,
+    `SELECT assets.id, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.original_sn AS originalSn, assets.product_id AS productId, assets.product_name_snapshot AS productName, assets.version_snapshot AS version, products.sku, products.sku AS materialCode, assets.asset_status AS assetStatus, assets.warranty_policy AS warrantyPolicy,
       assets.warranty_start_at AS warrantyStartAt, assets.warranty_end_at AS warrantyEndAt, assets.warranty_override_status AS warrantyOverrideStatus, assets.warranty_override_reason AS warrantyOverrideReason,
       assets.source_channel AS sourceChannel, assets.shipping_warehouse AS shippingWarehouse, assets.dealer_id AS dealerId, dealers.name AS dealerName, assets.store_id AS storeId, stores.name AS storeName, assets.latest_order_id AS latestOrderId, orders.order_no AS latestOrderNo,
       orders.status AS orderStatus, orders.sale_price_cents AS salePriceCents, orders.shipping_address AS shippingAddress, orders.customer_profile AS customerProfile, orders.screenshot_data_url AS screenshotDataUrl,
@@ -4690,8 +4685,9 @@ app.get('/certified/tasks', requireAuth, async (c) => {
   const rows = await all(c.env.DB, `SELECT asset_inspection_tasks.id, asset_inspection_tasks.asset_id AS assetId,
     asset_inspection_tasks.assigned_to AS assignedTo, asset_inspection_tasks.status, asset_inspection_tasks.result,
     asset_inspection_tasks.grade, asset_inspection_tasks.final_qc AS finalQc, asset_inspection_tasks.notes,
+    asset_inspection_tasks.started_at AS startedAt, asset_inspection_tasks.completed_at AS completedAt,
     asset_inspection_tasks.created_at AS createdAt, asset_inspection_tasks.updated_at AS updatedAt,
-    assets.current_sn AS currentSn, assets.product_name_snapshot AS productName
+    assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName
     FROM asset_inspection_tasks JOIN assets ON assets.id = asset_inspection_tasks.asset_id
     WHERE ${canSeeAll ? '1 = 1' : 'asset_inspection_tasks.assigned_to = ?'}
     ORDER BY asset_inspection_tasks.updated_at DESC`, ...(canSeeAll ? [] : [user.id]));
@@ -4702,18 +4698,39 @@ app.post('/certified/tasks', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
   const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), assignedTo: z.string().uuid().optional(), processCode: z.string().min(1).max(80).optional() }));
-  const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', input.assetId);
-  if (!asset) throw notFound('未找到资产');
+  await requireAssetAccess(c.env.DB, user, input.assetId);
   const taskId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO asset_inspection_tasks (id, asset_id, assigned_to, process_code, created_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(taskId, input.assetId, input.assignedTo ?? user.id, input.processCode ?? 'certified-inspection', user.id),
     c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
-      VALUES (?, ?, 'inspection_started', CURRENT_TIMESTAMP, 'Certified 检测任务已创建', '', ?, 'admin_private', 'international-v1')`)
+      VALUES (?, ?, 'inspection_assigned', CURRENT_TIMESTAMP, 'Certified 检测任务已分配', '', ?, 'admin_private', 'international-v1.2a')`)
       .bind(id(), input.assetId, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.create', entityType: 'asset_inspection_task', entityId: taskId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: taskId }, 201);
+});
+
+app.post('/certified/tasks/:id/start', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'certified:manage');
+  const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string; startedAt: string | null }>(c.env.DB,
+    'SELECT id, asset_id AS assetId, assigned_to AS assignedTo, status, started_at AS startedAt FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
+  if (!task) throw notFound('未找到检测任务');
+  requireInspectionAssignment(user, task.assignedTo);
+  if (task.status === 'in_progress' && task.startedAt) return c.json({ id: task.id, status: task.status, startedAt: task.startedAt, idempotent: true });
+  if (task.status !== 'assigned') throw conflict('该检测任务当前状态不能开始');
+  const startedAt = new Date().toISOString();
+  const result = await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE asset_inspection_tasks SET status = 'in_progress', started_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'assigned'`)
+      .bind(startedAt, task.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source)
+      VALUES (?, ?, 'inspection_started', ?, 'Certified 检测已开始', ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), task.assetId, startedAt, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.start', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: { status: 'in_progress', startedAt } })
+  ]);
+  if (result[0].meta.changes !== 1) throw conflict('检测任务已被其他操作更新，请刷新后重试');
+  return c.json({ id: task.id, status: 'in_progress', startedAt });
 });
 
 app.post('/certified/tasks/:id/evidence', requireAuth, async (c) => {
@@ -4721,7 +4738,7 @@ app.post('/certified/tasks/:id/evidence', requireAuth, async (c) => {
   assertInternationalPermission(user, 'certified:read');
   const task = await one<{ id: string; assignedTo: string | null }>(c.env.DB, 'SELECT id, assigned_to AS assignedTo FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
   if (!task) throw notFound('未找到检测任务');
-  if (!can(user, 'data:read:all') && task.assignedTo !== user.id) throw forbidden('只能为分配给自己的任务上传证据');
+  requireInspectionAssignment(user, task.assignedTo);
   const form = await c.req.raw.formData();
   const evidenceType = String(form.get('evidenceType') ?? '').toLowerCase();
   if (!['photo', 'video', 'note', 'test_data'].includes(evidenceType)) throw badRequest('证据类别不正确');
@@ -4751,9 +4768,10 @@ app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
   const input = await parseBody(c.req.raw, z.object({ result: z.enum(['PASS', 'FAIL', 'ADVISORY', 'N/A']), grade: z.enum(['A', 'B', 'C', 'D']).optional(), finalQc: z.boolean(), notes: z.string().max(4000).default('') }));
-  const task = await one<{ id: string; assetId: string; assignedTo: string | null }>(c.env.DB, 'SELECT id, asset_id AS assetId, assigned_to AS assignedTo FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
+  const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string }>(c.env.DB, 'SELECT id, asset_id AS assetId, assigned_to AS assignedTo, status FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
   if (!task) throw notFound('未找到检测任务');
-  if (!can(user, 'data:read:all') && task.assignedTo !== user.id) throw forbidden('只能完成分配给自己的检测任务');
+  requireInspectionAssignment(user, task.assignedTo);
+  if (task.status !== 'in_progress') throw conflict('请先开始检测，再提交检测结果');
   if (input.result === 'PASS' && (!input.grade || !input.finalQc)) throw badRequest('通过认证必须填写 Grade 并完成 Final QC');
   const certificationId = input.result === 'PASS' && input.finalQc ? id() : null;
   const verificationCode = certificationId ? crypto.randomUUID().replaceAll('-', '').slice(0, 16).toUpperCase() : null;
@@ -4761,7 +4779,7 @@ app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
     c.env.DB.prepare(`UPDATE asset_inspection_tasks SET status = ?, result = ?, grade = ?, final_qc = ?, notes = ?, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
       .bind(input.result === 'PASS' ? 'completed' : 'failed', input.result, input.grade ?? null, Number(input.finalQc), input.notes, task.id),
     c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
-      VALUES (?, ?, 'inspection_completed', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1')`)
+      VALUES (?, ?, 'inspection_completed', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1.2a')`)
       .bind(id(), task.assetId, input.result === 'PASS' ? 'Certified 检测通过' : 'Certified 检测未通过', input.notes, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'certified.task.complete', entityType: 'asset_inspection_task', entityId: task.id, requestId: c.get('requestId'), after: input })
   ];
@@ -4770,9 +4788,14 @@ app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
       c.env.DB.prepare(`INSERT INTO asset_certifications (id, asset_id, inspection_task_id, grade, inspection_result, final_qc, warranty_reference, verification_code_hash, created_by)
         VALUES (?, ?, ?, ?, ?, 1, '', ?, ?)`)
         .bind(certificationId, task.assetId, task.id, input.grade, input.result, await hashIdentifier(verificationCode), user.id),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+        VALUES (?, ?, 'asset_graded', CURRENT_TIMESTAMP, '资产评级完成', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, input.grade, user.id),
       c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source)
-        VALUES (?, ?, 'refurbished', CURRENT_TIMESTAMP, 'MaxCINE Certified', ?, 'admin_private', 'international-v1')`).bind(id(), task.assetId, user.id)
+        VALUES (?, ?, 'certification_issued', CURRENT_TIMESTAMP, 'MaxCINE Certified', ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, user.id)
     );
+  } else {
+    statements.push(c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source)
+      VALUES (?, ?, 'certification_rejected', CURRENT_TIMESTAMP, '认证未通过', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), task.assetId, input.notes, user.id));
   }
   await c.env.DB.batch(statements);
   return c.json({ id: task.id, certificationId, ...(verificationCode ? { verificationCode } : {}) });
@@ -4785,10 +4808,10 @@ app.get('/international/warehouses/assets', requireAuth, async (c) => {
   const permittedWarehouseIds = workspaceScopeIds(user, 'warehouseIds');
   if (requestedWarehouseId && permittedWarehouseIds.length && !can(user, 'data:read:all') && !permittedWarehouseIds.includes(requestedWarehouseId)) throw forbidden('该仓库不在你的数据范围内');
   if (!requestedWarehouseId && !can(user, 'data:read:all') && !permittedWarehouseIds.length) throw forbidden('当前账户没有国际仓库数据范围');
-  const rows = await all(c.env.DB, `SELECT assets.id AS assetId, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
-    asset_locations.status, warehouses.id AS warehouseId, warehouses.code AS warehouseCode, warehouses.name AS warehouseName
+  const rows = await all(c.env.DB, `SELECT assets.id AS assetId, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    asset_locations.status AS locationStatus, asset_locations.custody, warehouses.id AS warehouseId, warehouses.code AS warehouseCode, warehouses.name AS warehouseName
     FROM asset_locations JOIN assets ON assets.id = asset_locations.asset_id JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
-    WHERE ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
+    WHERE asset_locations.custody = 'WAREHOUSE' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
   return c.json({ assets: rows });
 });
 
@@ -4797,16 +4820,23 @@ app.post('/international/transfers', requireAuth, async (c) => {
   assertInternationalPermission(user, 'transfer:manage');
   const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), fromWarehouseId: z.string().min(1), toWarehouseId: z.string().min(1) }));
   if (input.fromWarehouseId === input.toWarehouseId) throw badRequest('调出仓与调入仓不能相同');
-  const location = await one<{ warehouseId: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId FROM asset_locations WHERE asset_id = ?', input.assetId);
-  if (!location || location.warehouseId !== input.fromWarehouseId) throw conflict('资产当前不在指定调出仓');
+  requireWarehouseScope(user, input.fromWarehouseId);
+  await requireAssetAccess(c.env.DB, user, input.assetId);
+  const [fromWarehouse, toWarehouse, location] = await Promise.all([
+    one<{ id: string; marketRegion: string }>(c.env.DB, 'SELECT id, market_region AS marketRegion FROM warehouses WHERE id = ?', input.fromWarehouseId),
+    one<{ id: string; marketRegion: string }>(c.env.DB, 'SELECT id, market_region AS marketRegion FROM warehouses WHERE id = ?', input.toWarehouseId),
+    one<{ warehouseId: string; status: string; custody: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId, status, custody FROM asset_locations WHERE asset_id = ?', input.assetId)
+  ]);
+  if (!fromWarehouse || !toWarehouse || fromWarehouse.marketRegion === 'TRANSIT' || toWarehouse.marketRegion === 'TRANSIT') throw badRequest('调拨必须使用真实实体仓库');
+  if (!location || location.warehouseId !== input.fromWarehouseId || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE') throw conflict('资产当前不在指定调出仓或不可调拨');
   const transferId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO asset_transfers (id, asset_id, from_warehouse_id, to_warehouse_id, created_by) VALUES (?, ?, ?, ?, ?)`)
       .bind(transferId, input.assetId, input.fromWarehouseId, input.toWarehouseId, user.id),
     // A created transfer reserves the Asset at its source warehouse. It only
     // becomes in-transit after the explicit ship action below.
-    c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '国际调拨已创建', ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, user.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'transfer_created', CURRENT_TIMESTAMP, '国际调拨已创建', ?, 'admin_private', 'international-v1.2a')`).bind(id(), input.assetId, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'international.transfer.create', entityType: 'asset_transfer', entityId: transferId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: transferId }, 201);
@@ -4817,18 +4847,20 @@ app.post('/international/transfers/:id/:action', requireAuth, async (c) => {
   assertInternationalPermission(user, 'transfer:manage');
   const action = c.req.param('action');
   if (action !== 'ship' && action !== 'receive') throw notFound('未找到调拨操作');
-  const input = await parseBody(c.req.raw, z.object({ trackingNumber: z.string().max(160).optional() }));
-  const transfer = await one<{ id: string; assetId: string; toWarehouseId: string; status: string }>(c.env.DB, `SELECT id, asset_id AS assetId, to_warehouse_id AS toWarehouseId, status FROM asset_transfers WHERE id = ?`, c.req.param('id'));
+  const input = await parseBody(c.req.raw, z.object({ carrier: z.string().trim().max(120).optional(), trackingNumber: z.string().trim().max(160).optional() }));
+  const transfer = await one<{ id: string; assetId: string; fromWarehouseId: string; toWarehouseId: string; status: string }>(c.env.DB, `SELECT id, asset_id AS assetId, from_warehouse_id AS fromWarehouseId, to_warehouse_id AS toWarehouseId, status FROM asset_transfers WHERE id = ?`, c.req.param('id'));
   if (!transfer) throw notFound('未找到调拨单');
+  requireWarehouseScope(user, action === 'ship' ? transfer.fromWarehouseId : transfer.toWarehouseId);
   if ((action === 'ship' && transfer.status !== 'created') || (action === 'receive' && transfer.status !== 'shipped')) throw conflict('调拨当前状态不能执行该操作');
+  if (action === 'ship' && (!input.carrier || !input.trackingNumber)) throw badRequest('发运调拨必须填写承运商和运单号');
   const isReceived = action === 'receive';
   await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE asset_transfers SET status = ?, tracking_number = COALESCE(?, tracking_number), ${isReceived ? 'received_at' : 'shipped_at'} = CURRENT_TIMESTAMP WHERE id = ?`)
-      .bind(isReceived ? 'received' : 'shipped', input.trackingNumber ?? null, transfer.id),
-    c.env.DB.prepare(`UPDATE asset_locations SET warehouse_id = CASE WHEN ? THEN ? ELSE warehouse_id END, status = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`)
-      .bind(Number(isReceived), transfer.toWarehouseId, isReceived ? 'on_hand' : 'in_transit', user.id, transfer.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1')`)
-      .bind(id(), transfer.assetId, isReceived ? '国际调拨已收货' : '国际调拨已发运', input.trackingNumber ?? '', user.id),
+    c.env.DB.prepare(`UPDATE asset_transfers SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking_number = COALESCE(NULLIF(?, ''), tracking_number), ${isReceived ? 'received_at' : 'shipped_at'} = CURRENT_TIMESTAMP WHERE id = ?`)
+      .bind(isReceived ? 'received' : 'shipped', input.carrier ?? '', input.trackingNumber ?? '', transfer.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET warehouse_id = CASE WHEN ? THEN ? ELSE warehouse_id END, status = ?, custody = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`)
+      .bind(Number(isReceived), transfer.toWarehouseId, isReceived ? 'on_hand' : 'in_transit', isReceived ? 'WAREHOUSE' : 'IN_TRANSIT', user.id, transfer.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), transfer.assetId, isReceived ? 'transfer_received' : 'transfer_shipped', isReceived ? '国际调拨已收货' : '国际调拨已发运', [input.carrier, input.trackingNumber].filter(Boolean).join(' / '), user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: `international.transfer.${action}`, entityType: 'asset_transfer', entityId: transfer.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: transfer.id, status: isReceived ? 'received' : 'shipped' });
@@ -4841,7 +4873,7 @@ app.get('/marketplace/listings', requireAuth, async (c) => {
   if (!can(user, 'data:read:all') && !salesAccountIds.length) throw forbidden('当前账户没有销售账号数据范围');
   const listings = await all(c.env.DB, `SELECT marketplace_listings.id, marketplace_listings.asset_id AS assetId, marketplace_listings.external_listing_id AS externalListingId,
     marketplace_listings.title, marketplace_listings.price_minor AS priceMinor, marketplace_listings.currency, marketplace_listings.status,
-    sales_channels.code AS channelCode, sales_accounts.account_name AS salesAccountName, assets.current_sn AS currentSn
+    sales_channels.code AS channelCode, sales_accounts.account_name AS salesAccountName, assets.asset_code AS assetCode, assets.current_sn AS currentSn
     FROM marketplace_listings JOIN sales_channels ON sales_channels.id = marketplace_listings.channel_id
     JOIN sales_accounts ON sales_accounts.id = marketplace_listings.sales_account_id JOIN assets ON assets.id = marketplace_listings.asset_id
     WHERE ${can(user, 'data:read:all') ? '1 = 1' : `marketplace_listings.sales_account_id IN (${placeholders(salesAccountIds)})`}
@@ -4853,80 +4885,169 @@ app.post('/marketplace/listings', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'marketplace:manage');
   const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), channelId: z.string().min(1), salesAccountId: z.string().min(1), externalListingId: z.string().max(160).default(''), title: z.string().min(1).max(240), priceMinor: z.number().int().min(0), currency: z.string().length(3).default('GBP') }));
-  const salesAccountIds = workspaceScopeIds(user, 'salesAccountIds');
-  if (!can(user, 'data:read:all') && !salesAccountIds.includes(input.salesAccountId)) throw forbidden('该销售账号不在你的数据范围内');
+  requireSalesAccountScope(user, input.salesAccountId);
+  await requireAssetAccess(c.env.DB, user, input.assetId);
+  const account = await one<{ channelId: string }>(c.env.DB, 'SELECT channel_id AS channelId FROM sales_accounts WHERE id = ? AND is_active = 1', input.salesAccountId);
+  if (!account || account.channelId !== input.channelId) throw badRequest('销售账号与渠道不匹配或不可用');
   const listingId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO marketplace_listings (id, asset_id, channel_id, sales_account_id, external_listing_id, title, price_minor, currency, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`)
       .bind(listingId, input.assetId, input.channelId, input.salesAccountId, input.externalListingId, input.title, input.priceMinor, input.currency?.toUpperCase() ?? 'GBP', user.id),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'resold', CURRENT_TIMESTAMP, '海外 Listing 已建立', ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source) VALUES (?, ?, 'listing_created', CURRENT_TIMESTAMP, '海外 Listing 已建立', ?, 'admin_private', 'international-v1.2a')`).bind(id(), input.assetId, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'marketplace.listing.create', entityType: 'marketplace_listing', entityId: listingId, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: listingId }, 201);
+});
+
+app.post('/marketplace/listings/:id/:action', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'marketplace:manage');
+  const action = c.req.param('action');
+  if (action !== 'activate' && action !== 'cancel') throw notFound('未找到 Listing 操作');
+  const listing = await one<{ id: string; assetId: string; salesAccountId: string; status: string }>(c.env.DB,
+    'SELECT id, asset_id AS assetId, sales_account_id AS salesAccountId, status FROM marketplace_listings WHERE id = ?', c.req.param('id'));
+  if (!listing) throw notFound('未找到 Listing');
+  requireSalesAccountScope(user, listing.salesAccountId);
+  if (action === 'activate' && !['draft', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能激活');
+  if (action === 'cancel' && !['draft', 'active', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能取消');
+  const nextStatus = action === 'activate' ? 'active' : 'cancelled';
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`UPDATE marketplace_listings SET status = ?, activated_at = CASE WHEN ? = 'active' THEN COALESCE(activated_at, CURRENT_TIMESTAMP) ELSE activated_at END,
+        ended_at = CASE WHEN ? = 'cancelled' THEN CURRENT_TIMESTAMP ELSE ended_at END, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+        .bind(nextStatus, nextStatus, nextStatus, listing.id),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, operator_user_id, visibility, source)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP, ?, ?, 'admin_private', 'international-v1.2a')`)
+        .bind(id(), listing.assetId, action === 'activate' ? 'listing_activated' : 'listing_cancelled', action === 'activate' ? '海外 Listing 已激活' : '海外 Listing 已取消', user.id),
+      dbAudit(c.env.DB, { actorId: user.id, action: `marketplace.listing.${action}`, entityType: 'marketplace_listing', entityId: listing.id, requestId: c.get('requestId'), after: { status: nextStatus } })
+    ]);
+  } catch (error) {
+    if (error instanceof Error && /idx_listings_one_effective_per_asset|UNIQUE constraint failed/i.test(error.message)) throw conflict('该资产已经存在有效 Listing');
+    throw error;
+  }
+  return c.json({ id: listing.id, status: nextStatus });
 });
 
 app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
   const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), listingId: z.string().uuid().optional() }));
-  const order = await one<{ id: string }>(c.env.DB, 'SELECT id FROM orders WHERE id = ?', c.req.param('id'));
-  if (!order) throw notFound('未找到订单');
-  const location = await one<{ status: string }>(c.env.DB, 'SELECT status FROM asset_locations WHERE asset_id = ?', input.assetId);
-  if (!location || location.status !== 'on_hand') throw conflict('资产不可用或已被锁定');
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  if (['shipped', 'delivered', 'cancelled'].includes(order.status)) throw conflict('订单当前状态不能绑定 Asset');
+  await requireAssetAccess(c.env.DB, user, input.assetId);
+  const location = await one<{ warehouseId: string; status: string; custody: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId, status, custody FROM asset_locations WHERE asset_id = ?', input.assetId);
+  if (!location || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE' || location.warehouseId !== order.fulfilmentWarehouseId) throw conflict('资产不可用、已被锁定或不在订单履约仓');
+  const listing = input.listingId ? await one<{ id: string; assetId: string; salesAccountId: string; status: string }>(c.env.DB,
+    'SELECT id, asset_id AS assetId, sales_account_id AS salesAccountId, status FROM marketplace_listings WHERE id = ?', input.listingId) : null;
+  if (input.listingId && (!listing || listing.assetId !== input.assetId || listing.salesAccountId !== order.salesAccountId || listing.status !== 'active')) throw conflict('Listing 与订单、资产或销售账号不匹配');
+  const allocationId = id();
+  try {
+    await c.env.DB.batch([
+      c.env.DB.prepare(`INSERT INTO international_asset_allocations (allocation_id, asset_id, order_id, listing_id, status, reserved_by) VALUES (?, ?, ?, ?, 'reserved', ?)`)
+        .bind(allocationId, input.assetId, order.id, input.listingId ?? null, user.id),
+      c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'reserved', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'active'`).bind(input.listingId ?? null),
+      c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'asset_reserved', CURRENT_TIMESTAMP, '国际订单已绑定并锁定资产', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), input.assetId, order.id, user.id),
+      dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.bind_asset', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...input, allocationId } })
+    ]);
+  } catch (error) {
+    if (error instanceof Error && /idx_allocations_one_reserved_per_asset|UNIQUE constraint failed/i.test(error.message)) throw conflict('该资产已经被其他订单预留');
+    throw error;
+  }
+  return c.json({ orderId: order.id, assetId: input.assetId, allocationId, status: 'reserved' });
+});
+
+app.post('/international/orders/:id/release-asset', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  const allocation = await one<{ allocationId: string; assetId: string; listingId: string | null }>(c.env.DB,
+    `SELECT allocation_id AS allocationId, asset_id AS assetId, listing_id AS listingId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved' ORDER BY created_at DESC LIMIT 1`, order.id);
+  if (!allocation) throw conflict('该订单没有可释放的 Asset Reservation');
   await c.env.DB.batch([
-    c.env.DB.prepare(`INSERT INTO international_asset_allocations (asset_id, order_id, listing_id, status, reserved_by) VALUES (?, ?, ?, 'reserved', ?)`)
-      .bind(input.assetId, order.id, input.listingId ?? null, user.id),
-    c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sold', CURRENT_TIMESTAMP, '国际订单已绑定并锁定资产', ?, ?, 'admin_private', 'international-v1')`).bind(id(), input.assetId, order.id, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.bind_asset', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: input })
+    c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'released', released_at = CURRENT_TIMESTAMP WHERE allocation_id = ? AND status = 'reserved'`).bind(allocation.allocationId),
+    c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'active', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reserved'`).bind(allocation.listingId),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'on_hand', custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'allocation_released', CURRENT_TIMESTAMP, '订单资产预留已释放', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), allocation.assetId, order.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.release_asset', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { allocationId: allocation.allocationId } })
   ]);
-  return c.json({ orderId: order.id, assetId: input.assetId, status: 'reserved' });
+  return c.json({ orderId: order.id, assetId: allocation.assetId, allocationId: allocation.allocationId, status: 'released' });
+});
+
+app.post('/international/orders/:id/cancel-allocation', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  const allocation = await one<{ allocationId: string; assetId: string; listingId: string | null }>(c.env.DB,
+    `SELECT allocation_id AS allocationId, asset_id AS assetId, listing_id AS listingId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved' ORDER BY created_at DESC LIMIT 1`, order.id);
+  if (!allocation) throw conflict('该订单没有可取消的 Asset Reservation');
+  await c.env.DB.batch([
+    c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'cancelled', released_at = CURRENT_TIMESTAMP WHERE allocation_id = ? AND status = 'reserved'`).bind(allocation.allocationId),
+    c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'cancelled', ended_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reserved'`).bind(allocation.listingId),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'on_hand', custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'allocation_released', CURRENT_TIMESTAMP, '订单资产预留已取消', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), allocation.assetId, order.id, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source)
+      VALUES (?, ?, 'listing_cancelled', CURRENT_TIMESTAMP, '关联 Listing 已取消', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), allocation.assetId, order.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.cancel_allocation', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { allocationId: allocation.allocationId } })
+  ]);
+  return c.json({ orderId: order.id, assetId: allocation.assetId, allocationId: allocation.allocationId, status: 'cancelled' });
 });
 
 app.post('/international/orders/:id/ship', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
   const input = await parseBody(c.req.raw, z.object({ carrier: z.string().min(1).max(80), trackingNumber: z.string().min(1).max(160) }));
-  const allocation = await one<{ assetId: string }>(c.env.DB, `SELECT asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved'`, c.req.param('id'));
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  if (['shipped', 'delivered', 'cancelled'].includes(order.status)) throw conflict('订单当前状态不能发货');
+  const allocation = await one<{ allocationId: string; assetId: string; listingId: string | null }>(c.env.DB, `SELECT allocation_id AS allocationId, asset_id AS assetId, listing_id AS listingId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved' ORDER BY created_at DESC LIMIT 1`, order.id);
   if (!allocation) throw conflict('该订单尚未绑定可出库的 Asset');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, fulfillment_updated_at = CURRENT_TIMESTAMP, fulfillment_updated_by = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status NOT IN ('cancelled','delivered')`)
-      .bind(input.carrier, input.trackingNumber, user.id, user.id, c.req.param('id')),
-    c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'fulfilled' WHERE asset_id = ?`).bind(allocation.assetId),
-    c.env.DB.prepare(`UPDATE asset_locations SET status = 'shipped', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'shipped', CURRENT_TIMESTAMP, '已向客户发货', ?, ?, ?, 'admin_private', 'international-v1')`)
-      .bind(id(), allocation.assetId, `${input.carrier} / ${input.trackingNumber}`, c.req.param('id'), user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.ship', entityType: 'order', entityId: c.req.param('id'), requestId: c.get('requestId'), after: input })
+      .bind(input.carrier, input.trackingNumber, user.id, user.id, order.id),
+    c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'fulfilled', fulfilled_at = CURRENT_TIMESTAMP WHERE allocation_id = ? AND status = 'reserved'`).bind(allocation.allocationId),
+    c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'sold', ended_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reserved'`).bind(allocation.listingId),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'shipped', custody = 'IN_TRANSIT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'customer_shipped', CURRENT_TIMESTAMP, '已向客户发货', ?, ?, ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), allocation.assetId, `${input.carrier} / ${input.trackingNumber}`, order.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...input, allocationId: allocation.allocationId } })
   ]);
-  return c.json({ orderId: c.req.param('id'), assetId: allocation.assetId, status: 'shipped' });
+  return c.json({ orderId: order.id, assetId: allocation.assetId, allocationId: allocation.allocationId, status: 'shipped' });
 });
 
 app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
-  const allocation = await one<{ assetId: string }>(c.env.DB, `SELECT asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'fulfilled'`, c.req.param('id'));
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  if (order.status !== 'shipped') throw conflict('只有已发货订单可以标记妥投');
+  const allocation = await one<{ allocationId: string; assetId: string }>(c.env.DB, `SELECT allocation_id AS allocationId, asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'fulfilled' ORDER BY created_at DESC LIMIT 1`, order.id);
   if (!allocation) throw conflict('该订单尚未完成国际发货');
   const result = await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE orders SET status = 'delivered', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'shipped'`).bind(user.id, c.req.param('id')),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sold', CURRENT_TIMESTAMP, '订单已妥投', ?, ?, 'admin_private', 'international-v1')`)
-      .bind(id(), allocation.assetId, c.req.param('id'), user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: c.req.param('id'), requestId: c.get('requestId'), after: { status: 'delivered' } })
+    c.env.DB.prepare(`UPDATE orders SET status = 'delivered', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'shipped'`).bind(user.id, order.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET custody = 'CUSTOMER', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'customer_delivered', CURRENT_TIMESTAMP, '订单已妥投', ?, ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), allocation.assetId, order.id, user.id),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sale_completed', CURRENT_TIMESTAMP, '国际销售已完成', ?, ?, 'admin_private', 'international-v1.2a')`)
+      .bind(id(), allocation.assetId, order.id, user.id),
+    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { status: 'delivered', custody: 'CUSTOMER' } })
   ]);
   if (result[0].meta.changes !== 1) throw conflict('订单当前状态不能标记为已妥投');
-  return c.json({ orderId: c.req.param('id'), assetId: allocation.assetId, status: 'delivered' });
+  return c.json({ orderId: order.id, assetId: allocation.assetId, status: 'delivered', custody: 'CUSTOMER' });
 });
 
 app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
   const input = await parseBody(c.req.raw, z.object({ startDate: z.string().date(), endDate: z.string().date(), warrantyReference: z.string().trim().max(160).default('') }).refine((value) => value.endDate >= value.startDate, { message: '保修结束日期不能早于开始日期', path: ['endDate'] }));
+  await requireAssetAccess(c.env.DB, user, c.req.param('id'));
   const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', c.req.param('id'));
   if (!asset) throw notFound('未找到资产');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE assets SET warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(input.startDate, input.endDate, user.id, asset.id),
     c.env.DB.prepare(`UPDATE asset_certifications SET warranty_reference = ? WHERE asset_id = ?`).bind(input.warrantyReference, asset.id),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'warranty_started', CURRENT_TIMESTAMP, '国际保修已激活', ?, ?, 'admin_private', 'international-v1')`)
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'warranty_activated', CURRENT_TIMESTAMP, '国际保修已激活', ?, ?, 'admin_private', 'international-v1.2a')`)
       .bind(id(), asset.id, input.warrantyReference, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'international.warranty.activate', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: input })
   ]);
@@ -4937,15 +5058,16 @@ app.post('/international/after-sales/:id/rma', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-after-sales:manage');
   const input = await parseBody(c.req.raw, z.object({ marketRegion: z.enum(['CN', 'SG', 'UK']), returnWarehouseId: z.string().min(1), returnTracking: z.string().trim().max(160).default(''), returnReason: z.string().trim().min(1).max(1000), rmaReference: z.string().trim().min(1).max(160), crossBorderResolution: z.string().trim().max(1000).default('') }));
-  const warehouseIds = workspaceScopeIds(user, 'warehouseIds');
-  if (!can(user, 'data:read:all') && !warehouseIds.includes(input.returnWarehouseId)) throw forbidden('该退货仓不在你的数据范围内');
-  const serviceCase = await one<{ id: string; assetId: string | null }>(c.env.DB, 'SELECT id, asset_id AS assetId FROM after_sales_cases WHERE id = ?', c.req.param('id'));
+  requireWarehouseScope(user, input.returnWarehouseId);
+  const serviceCase = await requireRmaAccess(c.env.DB, user, c.req.param('id'), { returnWarehouseId: input.returnWarehouseId, marketRegion: input.marketRegion });
   if (!serviceCase?.assetId) throw notFound('未找到关联 Asset 的售后工单');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE after_sales_cases SET market_region = ?, return_warehouse_id = ?, return_tracking = ?, return_reason = ?, rma_reference = ?, cross_border_resolution = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(input.marketRegion, input.returnWarehouseId, input.returnTracking, input.returnReason, input.rmaReference, input.crossBorderResolution, user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source) VALUES (?, ?, 'service_received', CURRENT_TIMESTAMP, '国际 RMA 已创建', ?, ?, ?, 'admin_private', 'international-v1')`)
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source) VALUES (?, ?, 'rma_opened', CURRENT_TIMESTAMP, '国际 RMA 已创建', ?, ?, ?, 'admin_private', 'international-v1.2a')`)
       .bind(id(), serviceCase.assetId, `${input.rmaReference} · ${input.returnReason}`, serviceCase.id, user.id),
+    ...(input.returnTracking ? [c.env.DB.prepare(`UPDATE asset_locations SET status = 'returned', custody = 'RETURN_TRANSIT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`)
+      .bind(user.id, serviceCase.assetId)] : []),
     dbAudit(c.env.DB, { actorId: user.id, action: 'international.rma.register', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
   ]);
   return c.json({ id: serviceCase.id, rmaReference: input.rmaReference, marketRegion: input.marketRegion });
@@ -4954,13 +5076,14 @@ app.post('/international/after-sales/:id/rma', requireAuth, async (c) => {
 app.get('/international/assets/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:read');
-  const warehouseIds = workspaceScopeIds(user, 'warehouseIds');
-  if (!can(user, 'data:read:all') && !warehouseIds.length) throw forbidden('当前账户没有国际仓库数据范围');
-  const asset = await one(c.env.DB, `SELECT assets.id, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
-    asset_certifications.grade, asset_certifications.certification_status AS certificationStatus, warehouses.code AS warehouseCode, asset_locations.status AS locationStatus
+  await requireAssetAccess(c.env.DB, user, c.req.param('id'));
+  const asset = await one(c.env.DB, `SELECT assets.id, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    asset_certifications.grade, asset_certifications.certification_status AS certificationStatus,
+    CASE WHEN asset_locations.custody = 'WAREHOUSE' THEN warehouses.code ELSE NULL END AS warehouseCode,
+    asset_locations.status AS locationStatus, asset_locations.custody
     FROM assets LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id
     LEFT JOIN asset_locations ON asset_locations.asset_id = assets.id LEFT JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
-    WHERE assets.id = ? AND ${can(user, 'data:read:all') ? '1 = 1' : `asset_locations.warehouse_id IN (${placeholders(warehouseIds)})`}`, c.req.param('id'), ...(!can(user, 'data:read:all') ? warehouseIds : []));
+    WHERE assets.id = ?`, c.req.param('id'));
   if (!asset) throw notFound('未找到资产');
   const events = await all(c.env.DB, `SELECT event_type AS eventType, occurred_at AS occurredAt, title, description, source FROM asset_events WHERE asset_id = ? ORDER BY occurred_at DESC, created_at DESC`, c.req.param('id'));
   return c.json({ asset, events });
