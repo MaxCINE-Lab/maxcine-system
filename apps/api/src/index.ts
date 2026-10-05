@@ -4905,9 +4905,12 @@ app.get('/international/warehouses/assets', requireAuth, async (c) => {
   if (requestedWarehouseId && permittedWarehouseIds.length && !can(user, 'data:read:all') && !permittedWarehouseIds.includes(requestedWarehouseId)) throw forbidden('该仓库不在你的数据范围内');
   if (!requestedWarehouseId && !can(user, 'data:read:all') && !permittedWarehouseIds.length) throw forbidden('当前账户没有国际仓库数据范围');
   const rows = await all(c.env.DB, `SELECT assets.id AS assetId, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
-    asset_locations.status AS locationStatus, asset_locations.custody, warehouses.id AS warehouseId, warehouses.code AS warehouseCode, warehouses.name AS warehouseName
+    asset_locations.status AS locationStatus, asset_locations.custody, warehouses.id AS warehouseId, warehouses.code AS warehouseCode, warehouses.name AS warehouseName,
+    COALESCE(asset_certifications.grade_display, asset_certifications.grade) AS grade,
+    asset_certifications.certification_status AS certificationStatus
     FROM asset_locations JOIN assets ON assets.id = asset_locations.asset_id JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
-    WHERE asset_locations.custody = 'WAREHOUSE' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
+    LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id AND asset_certifications.certification_status = 'certified'
+    WHERE asset_locations.custody = 'WAREHOUSE' AND asset_locations.status = 'on_hand' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
   return c.json({ assets: rows });
 });
 
@@ -4915,8 +4918,10 @@ app.get('/international/transfers', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'transfer:manage');
   const fromWarehouseId = c.req.query('fromWarehouseId');
-  if (!fromWarehouseId) throw badRequest('必须指定调出仓');
-  requireWarehouseScope(user, fromWarehouseId);
+  const toWarehouseId = c.req.query('toWarehouseId');
+  if ((!fromWarehouseId && !toWarehouseId) || (fromWarehouseId && toWarehouseId)) throw badRequest('必须且只能指定调出仓或调入仓');
+  const scopedWarehouseId = fromWarehouseId || toWarehouseId!;
+  requireWarehouseScope(user, scopedWarehouseId);
   const transfers = await all(c.env.DB, `SELECT asset_transfers.id, asset_transfers.asset_id AS assetId,
     assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
     asset_transfers.from_warehouse_id AS fromWarehouseId, source.code AS fromWarehouseCode,
@@ -4927,8 +4932,8 @@ app.get('/international/transfers', requireAuth, async (c) => {
     JOIN assets ON assets.id = asset_transfers.asset_id
     JOIN warehouses source ON source.id = asset_transfers.from_warehouse_id
     JOIN warehouses destination ON destination.id = asset_transfers.to_warehouse_id
-    WHERE asset_transfers.from_warehouse_id = ?
-    ORDER BY asset_transfers.created_at DESC`, fromWarehouseId);
+    WHERE ${fromWarehouseId ? 'asset_transfers.from_warehouse_id' : 'asset_transfers.to_warehouse_id'} = ?
+    ORDER BY asset_transfers.created_at DESC`, scopedWarehouseId);
   return c.json({ transfers });
 });
 
@@ -4964,12 +4969,13 @@ app.post('/international/transfers/:id/:action', requireAuth, async (c) => {
   assertInternationalPermission(user, 'transfer:manage');
   const action = c.req.param('action');
   if (action !== 'ship' && action !== 'receive') throw notFound('未找到调拨操作');
-  const input = await parseBody(c.req.raw, z.object({ carrier: z.string().trim().max(120).optional(), trackingNumber: z.string().trim().max(160).optional() }));
-  const transfer = await one<{ id: string; assetId: string; fromWarehouseId: string; toWarehouseId: string; status: string }>(c.env.DB, `SELECT id, asset_id AS assetId, from_warehouse_id AS fromWarehouseId, to_warehouse_id AS toWarehouseId, status FROM asset_transfers WHERE id = ?`, c.req.param('id'));
+  const input = await parseBody(c.req.raw, z.object({ carrier: z.string().trim().max(120).optional(), trackingNumber: z.string().trim().max(160).optional(), assetCode: z.string().trim().max(80).optional() }));
+  const transfer = await one<{ id: string; assetId: string; assetCode: string; fromWarehouseId: string; toWarehouseId: string; status: string }>(c.env.DB, `SELECT asset_transfers.id, asset_transfers.asset_id AS assetId, assets.asset_code AS assetCode, asset_transfers.from_warehouse_id AS fromWarehouseId, asset_transfers.to_warehouse_id AS toWarehouseId, asset_transfers.status FROM asset_transfers JOIN assets ON assets.id = asset_transfers.asset_id WHERE asset_transfers.id = ?`, c.req.param('id'));
   if (!transfer) throw notFound('未找到调拨单');
   requireWarehouseScope(user, action === 'ship' ? transfer.fromWarehouseId : transfer.toWarehouseId);
   if ((action === 'ship' && transfer.status !== 'created') || (action === 'receive' && transfer.status !== 'shipped')) throw conflict('调拨当前状态不能执行该操作');
   if (action === 'ship' && (!input.carrier || !input.trackingNumber)) throw badRequest('发运调拨必须填写承运商和运单号');
+  if (action === 'receive' && (!input.assetCode || input.assetCode.toUpperCase() !== transfer.assetCode.toUpperCase())) throw badRequest('Asset 不匹配');
   const isReceived = action === 'receive';
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE asset_transfers SET status = ?, carrier = COALESCE(NULLIF(?, ''), carrier), tracking_number = COALESCE(NULLIF(?, ''), tracking_number), ${isReceived ? 'received_at' : 'shipped_at'} = CURRENT_TIMESTAMP WHERE id = ?`)

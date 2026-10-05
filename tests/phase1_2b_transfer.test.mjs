@@ -30,7 +30,7 @@ test('CN-SD may ship its transfer while UK remains forbidden by server scope', (
 test('Transfer list and ship routes enforce transfer permission and source warehouse scope', () => {
   const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
   assert.match(source, /app\.get\('\/international\/transfers'/);
-  assert.match(source, /requireWarehouseScope\(user, fromWarehouseId\)/);
+  assert.match(source, /requireWarehouseScope\(user, scopedWarehouseId\)/);
   assert.match(source, /app\.post\('\/international\/transfers\/:id\/:action'/);
   assert.match(source, /requireWarehouseScope\(user, action === 'ship' \? transfer\.fromWarehouseId : transfer\.toWarehouseId\)/);
   assert.match(source, /'transfer_created'/);
@@ -40,13 +40,14 @@ test('Transfer list and ship routes enforce transfer permission and source wareh
 
 test('Warehouse UI exposes only the CN-SD create and ship workflow', () => {
   const portal = readFileSync(new URL('../apps/web/src/InternationalPortal.tsx', import.meta.url), 'utf8');
+  const warehousePortal = portal.slice(portal.indexOf('function CnSdTransfers'), portal.indexOf('function Listings'));
   const app = readFileSync(new URL('../apps/web/src/App.tsx', import.meta.url), 'utf8');
   const navigation = readFileSync(new URL('../apps/web/src/systemNavigation.tsx', import.meta.url), 'utf8');
   assert.match(portal, /function CnSdTransfers/);
   assert.match(portal, /fromWarehouseId: 'wh-cn-sd', toWarehouseId: 'wh-uk'/);
   assert.match(portal, /\/international\/transfers\/\$\{transfer\.id\}\/ship/);
   assert.match(portal, /CN-SD → UK · In Transit/);
-  assert.doesNotMatch(portal, /确认收货/);
+  assert.doesNotMatch(warehousePortal, /确认收货/);
   assert.match(app, /path\.startsWith\('\/system\/warehouse\/transfers'\)/);
   assert.match(navigation, /\['调拨', '\/system\/warehouse\/transfers'\]/);
 });

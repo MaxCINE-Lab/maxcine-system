@@ -190,7 +190,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
     groups.push({ label: '国际业务', items: [['国际工作台', '/system/international'], ['全球库存', '/system/international/inventory'], ['调拨', '/system/international/transfers'], ['渠道与 Listing', '/system/international/listings']] });
   }
   if (hasUkFulfilmentAccess(user)) {
-    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['UK 库存', '/system/uk-fulfilment/inventory'], ['UK 订单', '/system/uk-fulfilment/orders'], ['UK RMA', '/system/uk-fulfilment/rma']] });
+    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['待收货', '/system/uk-fulfilment/receiving'], ['UK 库存', '/system/uk-fulfilment/inventory']] });
   }
   return groups;
 }
@@ -205,6 +205,7 @@ export function systemNavActive(path: string, href: string): boolean {
     || (href === '/system/admin/mail-center' && path.startsWith('/system/admin/mail-center'))
     || (href === '/system/warehouse' && (path === '/system/warehouse' || path.startsWith('/system/warehouse/order/')))
     || (href === '/system/warehouse/transfers' && path.startsWith('/system/warehouse/transfers'))
+    || (href === '/system/uk-fulfilment/receiving' && path.startsWith('/system/uk-fulfilment/receiving'))
     || (href === '/system/customer-risk' && path.startsWith('/system/customer-risk'))
     || (href === '/system/intelligence' && path.startsWith('/system/intelligence'))
     || (href === '/system/orders' && path.startsWith('/system/orders/'))
