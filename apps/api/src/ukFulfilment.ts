@@ -10,7 +10,7 @@ export const ukShipEligible = `o.fulfilment_warehouse_id = 'wh-uk'
 
 export const ukOrderSelect = `SELECT o.id, o.order_no AS orderNo, o.external_order_id AS externalOrderId,
   channel.code AS channel, account.account_name AS salesAccount, o.sales_account_id AS salesAccountId,
-  o.currency, o.status, o.delivered_at AS deliveredAt, o.shipping_address AS shippingAddress, o.created_at AS createdAt,
+  o.currency, o.status, o.delivered_at AS deliveredAt, o.certified_warranty_eligibility AS warrantyEligibility, o.shipping_address AS shippingAddress, o.created_at AS createdAt,
   o.fulfillment_carrier AS carrier, o.fulfillment_tracking_number AS trackingNumber, o.fulfillment_updated_at AS shippedAt,
   allocation.allocation_id AS allocationId, allocation.status AS allocationStatus,
   asset.id AS assetId, asset.asset_code AS assetCode, asset.product_name_snapshot AS productName, asset.current_sn AS currentSn,

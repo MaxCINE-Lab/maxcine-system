@@ -74,11 +74,17 @@ function watchUnexpectedBrowserErrors(page) {
   return errors;
 }
 
-test('核心导航可进入且没有明显空路由或未捕获异常', async ({ page }) => {
-  const errors = watchUnexpectedBrowserErrors(page);
+test('核心导航可进入且没有明显空路由或未捕获异常', async ({ browser }) => {
   const accounts = ['9353xuyan@maxcine.cn', '8016sun@maxcine.cn', '8982warehouse@maxcine.cn'];
   for (const email of accounts) {
+    // Isolate persona cookies and pending page requests instead of revoking
+    // the current session underneath still-mounted authenticated components.
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    const errors = watchUnexpectedBrowserErrors(page);
+    try {
     await login(page, email);
+    await page.waitForLoadState('networkidle');
     if (email === '8982warehouse@maxcine.cn') {
       // This legacy demo warehouse account has no International transfer grant
       // or CN-SD workspace scope. Do not offer an action the API must reject.
@@ -90,6 +96,7 @@ test('核心导航可进入且没有明显空路由或未捕获异常', async ({
     expect(hrefs.length).toBeGreaterThan(0);
     for (const href of hrefs) {
       await page.goto(`/${href}`);
+      await page.waitForLoadState('networkidle');
       await expect(page.locator('.system-main')).toBeVisible();
       await expect(page.getByText('页面未找到。')).toHaveCount(0);
       const inertControls = await page.evaluate(() => Array.from(document.querySelectorAll('a, button')).filter((element) => {
@@ -106,9 +113,9 @@ test('核心导航可进入且没有明显空路由或未捕获异常', async ({
       }).map((element) => element.textContent?.trim() || element.getAttribute('aria-label') || element.outerHTML.slice(0, 80)));
       expect(inertControls).toEqual([]);
     }
-    await logout(page);
+    expect(errors).toEqual([]);
+    } finally { await context.close(); }
   }
-  expect(errors).toEqual([]);
 });
 
 test('历史保修 Excel 只进入预检查，不写入正式资产或 SN 数据', async ({ page }) => {

@@ -12,6 +12,7 @@ import { mailSubject, mailTemplates, renderMailHtml, renderMailText, sendEmail, 
 import type { Env, Variables } from './types';
 import { requireAssetAccess, requireOrderAccess, requireRmaAccess } from './internationalAuthorization';
 import { ukOrderSelect, ukShipEligible } from './ukFulfilment';
+import { certifiedEligibilitySql, certifiedWarrantyEnd, certifiedWarrantyPolicy, internalCertifiedWarranty, type WarrantyEligibility } from './certifiedWarranty';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -3777,9 +3778,9 @@ app.get('/assets', requireAuth, async (c) => {
   if (warehouse) { filters.push('assets.shipping_warehouse = ?'); params.push(warehouse); }
   if (quality === 'exception') filters.push(`(assets.data_quality_status <> 'normal' OR assets.warranty_override_status IN ('exception','denied','cancelled','scrapped'))`);
   else if (quality) { filters.push('assets.data_quality_status = ?'); params.push(quality); }
-  if (warrantyStatus === '保修中' || warrantyStatus === '在保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_start_at <= ? AND assets.warranty_end_at >= ?`); params.push(today, today); }
-  if (warrantyStatus === '待生效') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_start_at > ?`); params.push(today); }
-  if (warrantyStatus === '已过保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_end_at IS NOT NULL AND assets.warranty_end_at < ?`); params.push(today); }
+  if (warrantyStatus === '保修中' || warrantyStatus === '在保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND assets.warranty_end_at IS NOT NULL AND ((assets.certified_warranty_policy_code IS NULL AND assets.warranty_start_at <= ? AND assets.warranty_end_at >= ?) OR (assets.certified_warranty_policy_code IS NOT NULL AND julianday(assets.warranty_start_at) <= julianday('now') AND julianday(assets.warranty_end_at) > julianday('now')))`); params.push(today, today); }
+  if (warrantyStatus === '待生效') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_start_at IS NOT NULL AND ((assets.certified_warranty_policy_code IS NULL AND assets.warranty_start_at > ?) OR (assets.certified_warranty_policy_code IS NOT NULL AND julianday(assets.warranty_start_at) > julianday('now')))`); params.push(today); }
+  if (warrantyStatus === '已过保') { filters.push(`assets.warranty_override_status IS NULL AND assets.warranty_end_at IS NOT NULL AND ((assets.certified_warranty_policy_code IS NULL AND assets.warranty_end_at < ?) OR (assets.certified_warranty_policy_code IS NOT NULL AND julianday(assets.warranty_end_at) <= julianday('now')))`); params.push(today); }
   if (warrantyStatus === '无有效日期') filters.push(`assets.warranty_override_status IS NULL AND (assets.warranty_start_at IS NULL OR assets.warranty_end_at IS NULL)`);
   const overrideMap: Record<string, string> = { '无保修': 'no_warranty', '拒保': 'denied', '异常': 'exception', '注销': 'cancelled', '报废': 'scrapped' };
   if (overrideMap[warrantyStatus]) { filters.push('assets.warranty_override_status = ?'); params.push(overrideMap[warrantyStatus]); }
@@ -3856,7 +3857,7 @@ app.get('/assets/:id', requireAuth, async (c) => {
   ]);
   return c.json({
     asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) },
-    identifiers, events, serviceCases, notes, sales, audit,
+    identifiers, events, serviceCases, notes, sales, audit, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, asset.id),
     publicWarranty: publicWarranty ? { ...publicWarranty, entitlements: publicEntitlements, warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) } : null,
     factoryPhotos: factoryPhotos.map((photo) => ({ ...photo, contentUrl: `/assets/${asset.id}/factory-photos/${(photo as { id: string }).id}/content` })),
     photos: [...shipmentPhotos, ...afterSalesPhotos]
@@ -4035,6 +4036,11 @@ app.patch('/admin/assets/:id', requireAuth, async (c) => {
   if (input.latestOrderId) {
     const order = await one<{ id: string }>(c.env.DB, 'SELECT id FROM orders WHERE id = ?', input.latestOrderId);
     if (!order) throw badRequest('所选订单不存在');
+  }
+  const managedWarranty = await one<{ policyCode: string | null }>(c.env.DB,
+    'SELECT certified_warranty_policy_code AS policyCode FROM assets WHERE id = ?', assetId);
+  if (managedWarranty?.policyCode && ['warrantyPolicy', 'warrantyStartAt', 'warrantyEndAt'].some((key) => Object.prototype.hasOwnProperty.call(input, key))) {
+    throw conflict('该 Certified Warranty 由送达订单管理，不能手工修改 Policy 或起止时间。');
   }
   const columnMap: Record<string, string> = {
     currentSn: 'current_sn',
@@ -5072,10 +5078,13 @@ app.get('/international/orders/:id', requireAuth, async (c) => {
   assertInternationalPermission(user, 'international-order:manage');
   const scoped = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
   if (scoped.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
-  const order = await one(c.env.DB, `${ukOrderSelect.replace('FROM orders o', `, (${ukShipEligible}) AS canShip FROM orders o`)}
+  const order = await one<Record<string, unknown>>(c.env.DB, `${ukOrderSelect.replace('FROM orders o', `, (${ukShipEligible}) AS canShip FROM orders o`)}
     WHERE o.id = ? AND allocation.status IN ('reserved','fulfilled') ORDER BY allocation.created_at DESC LIMIT 1`, scoped.id);
   if (!order) throw conflict('该设备当前未被此订单有效预留。');
-  return c.json({ order: { ...order, canDeliver: scoped.status === 'shipped' && (can(user, 'international-order:deliver') || can(user, 'data:read:all')) } });
+  const deliveryPermission = can(user, 'international-order:deliver') || can(user, 'data:read:all');
+  return c.json({ order: { ...order, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, String(order.assetId), scoped.id),
+    canDeliver: scoped.status === 'shipped' && deliveryPermission,
+    canRecoverWarranty: scoped.status === 'delivered' && order.warrantyEligibility === null && deliveryPermission } });
 });
 
 app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
@@ -5189,19 +5198,29 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
   const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
   if (order.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
   const currentResult = async () => {
-    const delivered = await one(c.env.DB, `SELECT o.id AS orderId, o.status, o.delivered_at AS deliveredAt,
+    const delivered = await one<{ orderId: string; status: string; deliveredAt: string; assetId: string; custody: string; locationStatus: string }>(c.env.DB, `SELECT o.id AS orderId, o.status, o.delivered_at AS deliveredAt,
       a.asset_id AS assetId, l.custody, l.status AS locationStatus FROM orders o
       JOIN international_asset_allocations a ON a.order_id = o.id AND a.status = 'fulfilled'
       JOIN asset_locations l ON l.asset_id = a.asset_id WHERE o.id = ? AND o.status = 'delivered'
       AND o.delivered_at IS NOT NULL AND l.custody = 'CUSTOMER' AND l.status = 'delivered'`, order.id);
     if (!delivered) throw conflict('送达记录不完整，请联系管理员核对。');
-    return delivered;
+    return { ...delivered, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, delivered.assetId, order.id) };
   };
-  if (order.status === 'delivered') return c.json(await currentResult());
-  if (order.status !== 'shipped') throw conflict('只有已发货订单可以标记已送达。');
+  const prior = await one<{ deliveredAt: string | null; eligibility: WarrantyEligibility | null }>(c.env.DB,
+    'SELECT delivered_at AS deliveredAt, certified_warranty_eligibility AS eligibility FROM orders WHERE id = ?', order.id);
+  if (order.status === 'delivered' && prior?.eligibility) return c.json(await currentResult());
+  if (!['shipped', 'delivered'].includes(order.status)) throw conflict('只有已发货订单可以标记已送达。');
+  const recovering = order.status === 'delivered';
+  if (recovering) await currentResult();
   const allocation = await one<{ allocationId: string; assetId: string }>(c.env.DB, `SELECT allocation_id AS allocationId, asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'fulfilled' ORDER BY created_at DESC LIMIT 1`, order.id);
   if (!allocation) throw conflict('该订单尚未完成国际发货');
-  const deliveredAt = new Date().toISOString();
+  const deliveredAt = recovering ? prior!.deliveredAt! : new Date().toISOString();
+  const activatedAt = new Date().toISOString();
+  const endAt = certifiedWarrantyEnd(deliveredAt);
+  const decision = await one<{ eligibility: WarrantyEligibility }>(c.env.DB, `SELECT ${certifiedEligibilitySql} AS eligibility
+    FROM assets asset LEFT JOIN asset_certifications cert ON cert.asset_id = asset.id WHERE asset.id = ?`, deliveredAt, allocation.assetId);
+  if (!decision) throw conflict('未找到关联设备。');
+  const warrantyMetadata = { policy_code: certifiedWarrantyPolicy.code, source_order_id: order.id, start_date: deliveredAt, end_date: endAt, market_region: 'UK', activation_source: 'sale_delivery' };
   const reference = await one<{ externalOrderId: string; channel: string }>(c.env.DB, `SELECT o.external_order_id AS externalOrderId, ch.code AS channel FROM orders o JOIN sales_channels ch ON ch.id = o.channel_id WHERE o.id = ?`, order.id);
   const metadata = { order_id: order.id, external_order_id: reference?.externalOrderId ?? '', channel: reference?.channel ?? '', delivered_at: deliveredAt };
   try {
@@ -5210,28 +5229,44 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
       c.env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM orders o
         JOIN international_asset_allocations a ON a.order_id = o.id
         JOIN asset_locations l ON l.asset_id = a.asset_id
-        WHERE o.id = ? AND o.status = 'shipped' AND o.fulfilment_warehouse_id = 'wh-uk' AND o.sales_account_id = ?
-        AND a.allocation_id = ? AND a.status = 'fulfilled' AND l.custody = 'IN_TRANSIT' AND l.status = 'in_transit'
+        JOIN assets asset ON asset.id = a.asset_id LEFT JOIN asset_certifications cert ON cert.asset_id = asset.id
+        WHERE o.id = ? AND o.status = ? AND o.fulfilment_warehouse_id = 'wh-uk' AND o.sales_account_id = ?
+        AND o.certified_warranty_eligibility IS NULL
+        AND a.allocation_id = ? AND a.status = 'fulfilled' AND l.custody = ? AND l.status = ?
+        AND (o.delivered_at IS NULL OR o.delivered_at = ?)
+        AND (${certifiedEligibilitySql}) = ?
         AND (SELECT COUNT(*) FROM international_asset_allocations x WHERE x.order_id = o.id AND x.status = 'fulfilled') = 1
         AND EXISTS (SELECT 1 FROM asset_events e WHERE e.asset_id = a.asset_id AND e.related_order_id = o.id AND e.event_type = 'customer_shipped')
         AND NOT EXISTS (SELECT 1 FROM asset_transfers t WHERE t.asset_id = a.asset_id AND t.status IN ('created','shipped'))
         AND NOT EXISTS (SELECT 1 FROM international_asset_allocations x WHERE x.asset_id = a.asset_id AND x.status = 'reserved')
         AND NOT EXISTS (SELECT 1 FROM after_sales_cases r WHERE r.asset_id = a.asset_id AND r.status IN ('open','in_progress'))
-      ) THEN 1 ELSE json('delivery state changed') END`).bind(order.id, order.salesAccountId, allocation.allocationId),
-      c.env.DB.prepare(`UPDATE orders SET status = 'delivered', delivered_at = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(deliveredAt, user.id, order.id),
+      ) THEN 1 ELSE json('delivery state changed') END`).bind(order.id, recovering ? 'delivered' : 'shipped', order.salesAccountId, allocation.allocationId,
+        recovering ? 'CUSTOMER' : 'IN_TRANSIT', recovering ? 'delivered' : 'in_transit', deliveredAt, deliveredAt, decision.eligibility),
+      c.env.DB.prepare(`UPDATE orders SET status = 'delivered', delivered_at = ?, certified_warranty_eligibility = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(deliveredAt, decision.eligibility, user.id, order.id),
       c.env.DB.prepare(`UPDATE asset_locations SET custody = 'CUSTOMER', status = 'delivered', warehouse_id = NULL, location_id = NULL, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
-      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
+      ...(!recovering ? [c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
         VALUES (?, ?, 'customer_delivered', ?, '订单已送达', ?, ?, ?, 'admin_private', 'international-delivery')`)
         .bind(id(), allocation.assetId, deliveredAt, order.id, JSON.stringify(metadata), user.id),
       c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
         VALUES (?, ?, 'sale_completed', ?, '国际销售已完成', ?, ?, ?, 'admin_private', 'international-delivery')`)
-        .bind(id(), allocation.assetId, deliveredAt, order.id, JSON.stringify(metadata), user.id),
-      dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...metadata, custody: 'CUSTOMER', locationStatus: 'delivered' } })
+        .bind(id(), allocation.assetId, deliveredAt, order.id, JSON.stringify(metadata), user.id)] : []),
+      ...(decision.eligibility === 'activated' ? [
+        c.env.DB.prepare(`UPDATE assets SET warranty_policy = 'standard', certified_warranty_policy_code = ?, warranty_source_order_id = ?,
+          warranty_market_region = 'UK', warranty_activation_source = 'sale_delivery', warranty_activated_at = ?,
+          warranty_start_at = ?, warranty_end_at = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
+          .bind(certifiedWarrantyPolicy.code, order.id, activatedAt, deliveredAt, endAt, user.id, allocation.assetId),
+        c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
+          VALUES (?, ?, 'warranty_activated', ?, 'MaxCINE Certified 商业保修已激活', ?, ?, ?, 'admin_private', 'certified-sale-delivery')`)
+          .bind(id(), allocation.assetId, activatedAt, order.id, JSON.stringify(warrantyMetadata), user.id),
+        dbAudit(c.env.DB, { actorId: user.id, action: 'international.warranty.activate', entityType: 'asset', entityId: allocation.assetId, requestId: c.get('requestId'), after: warrantyMetadata })
+      ] : []),
+      dbAudit(c.env.DB, { actorId: user.id, action: recovering ? 'international.order.warranty_eligibility' : 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...metadata, custody: 'CUSTOMER', locationStatus: 'delivered', certifiedWarrantyEligibility: decision.eligibility } })
     ]);
   } catch (error) {
     if (error instanceof Error && /malformed JSON|delivery state changed/i.test(error.message)) {
       const latest = await requireOrderAccess(c.env.DB, user, order.id);
-      if (latest.status === 'delivered') return c.json(await currentResult());
+      const settled = await one<{ eligibility: string | null }>(c.env.DB, 'SELECT certified_warranty_eligibility AS eligibility FROM orders WHERE id = ?', order.id);
+      if (latest.status === 'delivered' && settled?.eligibility) return c.json(await currentResult());
       throw conflict('订单或设备状态已变化，不能确认送达。请刷新后重试。');
     }
     throw error;
@@ -5244,8 +5279,9 @@ app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) =
   assertInternationalPermission(user, 'international-order:manage');
   const input = await parseBody(c.req.raw, z.object({ startDate: z.string().date(), endDate: z.string().date(), warrantyReference: z.string().trim().max(160).default('') }).refine((value) => value.endDate >= value.startDate, { message: '保修结束日期不能早于开始日期', path: ['endDate'] }));
   await requireAssetAccess(c.env.DB, user, c.req.param('id'));
-  const asset = await one<{ id: string }>(c.env.DB, 'SELECT id FROM assets WHERE id = ?', c.req.param('id'));
+  const asset = await one<{ id: string; policyCode: string | null }>(c.env.DB, 'SELECT id, certified_warranty_policy_code AS policyCode FROM assets WHERE id = ?', c.req.param('id'));
   if (!asset) throw notFound('未找到资产');
+  if (asset.policyCode) throw conflict('该 Certified Warranty 已由送达订单激活，不能重复手工激活或修改起止时间。');
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE assets SET warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(input.startDate, input.endDate, user.id, asset.id),
@@ -5289,7 +5325,7 @@ app.get('/international/assets/:id', requireAuth, async (c) => {
     WHERE assets.id = ?`, c.req.param('id'));
   if (!asset) throw notFound('未找到资产');
   const events = await all(c.env.DB, `SELECT event_type AS eventType, occurred_at AS occurredAt, title, description, source FROM asset_events WHERE asset_id = ? ORDER BY occurred_at DESC, created_at DESC`, c.req.param('id'));
-  return c.json({ asset, events });
+  return c.json({ asset, events, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, c.req.param('id')) });
 });
 
 export default app;

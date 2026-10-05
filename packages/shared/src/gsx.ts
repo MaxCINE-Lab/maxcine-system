@@ -190,6 +190,12 @@ export function warrantyDisplayStatus(asset: { warrantyEndAt: string | null; war
   const overrides: Record<string, '无保修' | '拒保' | '异常' | '注销' | '报废'> = { no_warranty: '无保修', denied: '拒保', exception: '异常', cancelled: '注销', scrapped: '报废' };
   if (asset.warrantyOverrideStatus && overrides[asset.warrantyOverrideStatus]) return overrides[asset.warrantyOverrideStatus];
   if (!asset.warrantyStartAt || !asset.warrantyEndAt) return '无有效日期';
+  if (asset.warrantyStartAt.includes('T') && asset.warrantyEndAt.includes('T')) {
+    const start = Date.parse(asset.warrantyStartAt), end = Date.parse(asset.warrantyEndAt);
+    if (!Number.isFinite(start) || !Number.isFinite(end)) return '无有效日期';
+    if (now.getTime() < start) return '待生效';
+    return now.getTime() >= end ? '已过保' : '保修中';
+  }
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   if (today < asset.warrantyStartAt) return '待生效';
   return today > asset.warrantyEndAt ? '已过保' : '保修中';
