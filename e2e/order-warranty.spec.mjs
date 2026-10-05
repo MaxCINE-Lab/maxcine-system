@@ -47,8 +47,10 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   const product = inventory.body.items.find((item) => item.sku === 'W101' && item.availableQuantity > 0);
   expect(product).toBeTruthy();
   const selectedSn = `E2E-W101-${unique}`;
-  execute(`INSERT INTO assets (id, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, data_quality_status, created_at, updated_at)
-    VALUES (${sqlString(randomUUID())}, ${sqlString(selectedSn)}, ${sqlString(selectedSn)}, ${sqlString(product.productId)}, ${sqlString(product.name)}, '标准套装', 'active', 'normal', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
+  const fixtureAssetId = randomUUID();
+  const fixtureAssetCode = `MC-26-W101-${fixtureAssetId.replaceAll('-', '').slice(-12).toUpperCase()}`;
+  execute(`INSERT INTO assets (id, asset_code, current_sn, original_sn, product_id, product_name_snapshot, version_snapshot, asset_status, data_quality_status, created_at, updated_at)
+    VALUES (${sqlString(fixtureAssetId)}, ${sqlString(fixtureAssetCode)}, ${sqlString(selectedSn)}, ${sqlString(selectedSn)}, ${sqlString(product.productId)}, ${sqlString(product.name)}, '标准套装', 'active', 'normal', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
   execute(`INSERT INTO serial_numbers (id, product_id, serial_number, state, production_date, warehouse_location, internal_note, created_at, updated_at)
     VALUES (${sqlString(randomUUID())}, ${sqlString(product.productId)}, ${sqlString(selectedSn)}, 'available', '2026-08-01', 'E2E 山东云仓', 'E2E 可售库存 SN', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`);
   const created = await request(page, '/orders', 'POST', {
@@ -99,6 +101,7 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   const detail = await request(page, `/assets/${lookup.body.items[0].id}`);
   expect(detail.status).toBe(200);
   expect(detail.body.asset.currentSn).toBe(selectedSn);
+  expect(detail.body.asset.assetCode).toBe(fixtureAssetCode);
   expect(detail.body.asset.warrantyStartAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(detail.body.asset.warrantyEndAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   expect(detail.body.publicWarranty.publicWarrantyStartDate).toBe(detail.body.asset.warrantyStartAt);
@@ -113,7 +116,8 @@ test('提交订单资料完整，发货后自动建立 W101 的 GSX 保修资产
   expect(completed.status).toBe(200);
   const publicLookup = await request(page, `/public/warranty/${encodeURIComponent(selectedSn)}?challengeId=${encodeURIComponent(challenge.body.challengeId)}&token=${encodeURIComponent(completed.body.token)}`);
   expect(publicLookup.status).toBe(200);
-  expect(Object.keys(publicLookup.body).sort()).toEqual(['productName', 'productVersion', 'publicNote', 'serialNumber', 'warrantyEndDate', 'warrantyStartDate', 'warrantyStatus'].sort());
+  expect(Object.keys(publicLookup.body).sort()).toEqual(['productName', 'productVersion', 'publicEntitlements', 'publicNote', 'purchaseDate', 'serialNumber', 'warrantyEndDate', 'warrantyStartDate', 'warrantyStatus'].sort());
+  expect(Array.isArray(publicLookup.body.publicEntitlements)).toBe(true);
   expect(publicLookup.body.serialNumber).toBe(selectedSn);
   expect(publicLookup.body.warrantyStartDate).toBe(detail.body.asset.warrantyStartAt);
   expect(JSON.stringify(publicLookup.body)).not.toMatch(/internal|factory|photo|object_key|dealer|customer|admin_private/i);

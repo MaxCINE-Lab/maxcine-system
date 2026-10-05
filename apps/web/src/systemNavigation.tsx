@@ -178,7 +178,9 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
     });
   }
   if (hasWarehouseAccess(user)) {
-    groups.push({ label: '仓库', items: [['发货', '/system/warehouse'], ['库存明细', '/system/warehouse/inventory'], ['调拨', '/system/warehouse/transfers']] });
+    const cnSdScope = user.workspaces?.some((workspace) => Array.isArray(workspace.dataScope.warehouseIds) && workspace.dataScope.warehouseIds.includes('wh-cn-sd'));
+    const canTransfer = user.permissions.includes('data:read:all') || (user.permissions.includes('transfer:manage') && cnSdScope);
+    groups.push({ label: '仓库', items: [['发货', '/system/warehouse'], ['库存明细', '/system/warehouse/inventory'], ...(canTransfer ? [['调拨', '/system/warehouse/transfers'] as NavItem] : [])] });
   }
   if (hasServiceCenterAccess(user)) {
     groups.push({ label: '工程师', items: [['服务中心工单', '/system/service-center'], ['SN 查询', '/system/service-center/assets']] });

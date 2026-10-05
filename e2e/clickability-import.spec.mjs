@@ -69,7 +69,7 @@ function watchUnexpectedBrowserErrors(page) {
   });
   page.on('response', (response) => {
     const url = response.url();
-    if (url.startsWith(apiBase) && response.status() >= 500) errors.push(`${response.status()} ${url}`);
+    if (url.startsWith(apiBase) && response.status() >= 400 && response.status() !== 401) errors.push(`${response.status()} ${url}`);
   });
   return errors;
 }
@@ -79,6 +79,13 @@ test('核心导航可进入且没有明显空路由或未捕获异常', async ({
   const accounts = ['9353xuyan@maxcine.cn', '8016sun@maxcine.cn', '8982warehouse@maxcine.cn'];
   for (const email of accounts) {
     await login(page, email);
+    if (email === '8982warehouse@maxcine.cn') {
+      // This legacy demo warehouse account has no International transfer grant
+      // or CN-SD workspace scope. Do not offer an action the API must reject.
+      await expect(page.locator('.system-nav a[href="#/system/warehouse/transfers"]')).toHaveCount(0);
+      const response = await page.request.get(`${apiBase}/international/transfers?fromWarehouseId=wh-cn-sd`);
+      expect(response.status()).toBe(403);
+    }
     const hrefs = await page.locator('.system-nav a[href^="#/system"]').evaluateAll((links) => Array.from(new Set(links.map((link) => link.getAttribute('href')).filter(Boolean))));
     expect(hrefs.length).toBeGreaterThan(0);
     for (const href of hrefs) {
