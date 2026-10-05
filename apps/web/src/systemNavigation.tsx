@@ -190,7 +190,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
     groups.push({ label: '国际业务', items: [['国际工作台', '/system/international'], ['全球库存', '/system/international/inventory'], ['调拨', '/system/international/transfers'], ['渠道与 Listing', '/system/international/listings']] });
   }
   if (hasUkFulfilmentAccess(user)) {
-    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['待收货', '/system/uk-fulfilment/receiving'], ['待发货订单', '/system/uk-fulfilment/orders'], ['UK 库存', '/system/uk-fulfilment/inventory']] });
+    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['待收货', '/system/uk-fulfilment/receiving'], ['待发货订单', '/system/uk-fulfilment/orders'], ...(user.permissions.includes('international-order:deliver') ? [['待确认送达', '/system/uk-fulfilment/deliveries'] as NavItem] : []), ['UK 库存', '/system/uk-fulfilment/inventory']] });
   }
   return groups;
 }

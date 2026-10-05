@@ -1,0 +1,55 @@
+name: Customer Delivery Cloud Acceptance
+
+on:
+  push:
+    branches: ['codex/customer-delivery-4a']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: customer-delivery-cloud-staging
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - name: Typecheck and targeted lint
+        run: |
+          npm run typecheck
+          npx eslint apps/api/src/index.ts apps/api/src/ukFulfilment.ts apps/web/src/UkOrders.tsx apps/web/src/InternationalPortal.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts scripts/verify-delivery-staging.mjs --max-warnings=0
+      - name: Core and operations regression suites
+        run: |
+          npm run test:phase1-2a
+          npm run test:phase1-2b-certified
+          npm run test:phase1-2b-transfer
+          npm run test:phase1-2b-uk-receive
+          npm run test:phase1-2b-uk-ship
+          npm run test:phase1-2b-delivery
+      - name: Security suite
+        run: npm test
+      - name: Web and API build
+        run: |
+          npm run build -w @maxcine/web
+          npm run build -w @maxcine/api
+      - name: Install headless Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Staging browser, API, idempotency and scope acceptance
+        run: node scripts/verify-delivery-staging.mjs
+      - name: Save acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: customer-delivery-staging-evidence
+          path: test-results/delivery-staging/
+          if-no-files-found: ignore
+          retention-days: 14

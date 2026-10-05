@@ -392,7 +392,7 @@ export function InternationalPortal({ user, route, logout, mode }: Props & { mod
   const path = route.split('?')[0];
   if (path.startsWith('/system/warehouse/transfers')) return <CnSdTransfers user={user} route={route} logout={logout} />;
   if (path.startsWith('/system/uk-fulfilment/receiving')) return <UkReceiving user={user} route={route} logout={logout} />;
-  if (path.startsWith('/system/uk-fulfilment/orders')) return <UkOrders user={user} route={route} logout={logout} />;
+  if (path.startsWith('/system/uk-fulfilment/orders') || path === '/system/uk-fulfilment/deliveries') return <UkOrders user={user} route={route} logout={logout} />;
   const taskMatch = path.match(/^\/system\/certified\/tasks\/([^/]+)$/);
   if (taskMatch) return <InspectionTaskPage user={user} route={route} logout={logout} taskId={taskMatch[1]} />;
   if (path === '/system/certified/final-qc' && canFinalQc(user)) return <CertifiedTasks user={user} route={route} logout={logout} finalQcOnly />;

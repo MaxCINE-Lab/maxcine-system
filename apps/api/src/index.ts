@@ -5060,7 +5060,9 @@ app.get('/international/orders', requireAuth, async (c) => {
   requireWarehouseScope(user, 'wh-uk');
   const accounts = workspaceScopeIds(user, 'salesAccountIds');
   if (!can(user, 'data:read:all') && !accounts.length) throw forbidden('你没有操作该订单的权限。');
-  const orders = await all(c.env.DB, `${ukOrderSelect} WHERE ${ukShipEligible}
+  const deliveryQueue = c.req.query('view') === 'delivery';
+  if (deliveryQueue) assertInternationalPermission(user, 'international-order:deliver');
+  const orders = await all(c.env.DB, `${ukOrderSelect} WHERE ${deliveryQueue ? "o.fulfilment_warehouse_id = 'wh-uk' AND o.status = 'shipped' AND allocation.status = 'fulfilled'" : ukShipEligible}
     ${can(user, 'data:read:all') ? '' : `AND o.sales_account_id IN (${placeholders(accounts)})`} ORDER BY o.created_at DESC`, ...(!can(user, 'data:read:all') ? accounts : []));
   return c.json({ orders });
 });
@@ -5073,7 +5075,7 @@ app.get('/international/orders/:id', requireAuth, async (c) => {
   const order = await one(c.env.DB, `${ukOrderSelect.replace('FROM orders o', `, (${ukShipEligible}) AS canShip FROM orders o`)}
     WHERE o.id = ? AND allocation.status IN ('reserved','fulfilled') ORDER BY allocation.created_at DESC LIMIT 1`, scoped.id);
   if (!order) throw conflict('该设备当前未被此订单有效预留。');
-  return c.json({ order });
+  return c.json({ order: { ...order, canDeliver: scoped.status === 'shipped' && (can(user, 'international-order:deliver') || can(user, 'data:read:all')) } });
 });
 
 app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
@@ -5183,22 +5185,58 @@ app.post('/international/orders/:id/ship', requireAuth, async (c) => {
 
 app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
   const user = c.get('user');
-  assertInternationalPermission(user, 'international-order:manage');
+  assertInternationalPermission(user, 'international-order:deliver');
   const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
-  if (order.status !== 'shipped') throw conflict('只有已发货订单可以标记妥投');
+  if (order.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
+  const currentResult = async () => {
+    const delivered = await one(c.env.DB, `SELECT o.id AS orderId, o.status, o.delivered_at AS deliveredAt,
+      a.asset_id AS assetId, l.custody, l.status AS locationStatus FROM orders o
+      JOIN international_asset_allocations a ON a.order_id = o.id AND a.status = 'fulfilled'
+      JOIN asset_locations l ON l.asset_id = a.asset_id WHERE o.id = ? AND o.status = 'delivered'
+      AND o.delivered_at IS NOT NULL AND l.custody = 'CUSTOMER' AND l.status = 'delivered'`, order.id);
+    if (!delivered) throw conflict('送达记录不完整，请联系管理员核对。');
+    return delivered;
+  };
+  if (order.status === 'delivered') return c.json(await currentResult());
+  if (order.status !== 'shipped') throw conflict('只有已发货订单可以标记已送达。');
   const allocation = await one<{ allocationId: string; assetId: string }>(c.env.DB, `SELECT allocation_id AS allocationId, asset_id AS assetId FROM international_asset_allocations WHERE order_id = ? AND status = 'fulfilled' ORDER BY created_at DESC LIMIT 1`, order.id);
   if (!allocation) throw conflict('该订单尚未完成国际发货');
-  const result = await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE orders SET status = 'delivered', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ? AND status = 'shipped'`).bind(user.id, order.id),
-    c.env.DB.prepare(`UPDATE asset_locations SET custody = 'CUSTOMER', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'customer_delivered', CURRENT_TIMESTAMP, '订单已妥投', ?, ?, 'admin_private', 'international-v1.2a')`)
-      .bind(id(), allocation.assetId, order.id, user.id),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'sale_completed', CURRENT_TIMESTAMP, '国际销售已完成', ?, ?, 'admin_private', 'international-v1.2a')`)
-      .bind(id(), allocation.assetId, order.id, user.id),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { status: 'delivered', custody: 'CUSTOMER' } })
-  ]);
-  if (result[0].meta.changes !== 1) throw conflict('订单当前状态不能标记为已妥投');
-  return c.json({ orderId: order.id, assetId: allocation.assetId, status: 'delivered', custody: 'CUSTOMER' });
+  const deliveredAt = new Date().toISOString();
+  const reference = await one<{ externalOrderId: string; channel: string }>(c.env.DB, `SELECT o.external_order_id AS externalOrderId, ch.code AS channel FROM orders o JOIN sales_channels ch ON ch.id = o.channel_id WHERE o.id = ?`, order.id);
+  const metadata = { order_id: order.id, external_order_id: reference?.externalOrderId ?? '', channel: reference?.channel ?? '', delivered_at: deliveredAt };
+  try {
+    await c.env.DB.batch([
+      // D1 batch is transactional. A stale guard aborts before any writes.
+      c.env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM orders o
+        JOIN international_asset_allocations a ON a.order_id = o.id
+        JOIN asset_locations l ON l.asset_id = a.asset_id
+        WHERE o.id = ? AND o.status = 'shipped' AND o.fulfilment_warehouse_id = 'wh-uk' AND o.sales_account_id = ?
+        AND a.allocation_id = ? AND a.status = 'fulfilled' AND l.custody = 'IN_TRANSIT' AND l.status = 'in_transit'
+        AND (SELECT COUNT(*) FROM international_asset_allocations x WHERE x.order_id = o.id AND x.status = 'fulfilled') = 1
+        AND EXISTS (SELECT 1 FROM asset_events e WHERE e.asset_id = a.asset_id AND e.related_order_id = o.id AND e.event_type = 'customer_shipped')
+        AND NOT EXISTS (SELECT 1 FROM asset_transfers t WHERE t.asset_id = a.asset_id AND t.status IN ('created','shipped'))
+        AND NOT EXISTS (SELECT 1 FROM international_asset_allocations x WHERE x.asset_id = a.asset_id AND x.status = 'reserved')
+        AND NOT EXISTS (SELECT 1 FROM after_sales_cases r WHERE r.asset_id = a.asset_id AND r.status IN ('open','in_progress'))
+      ) THEN 1 ELSE json('delivery state changed') END`).bind(order.id, order.salesAccountId, allocation.allocationId),
+      c.env.DB.prepare(`UPDATE orders SET status = 'delivered', delivered_at = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(deliveredAt, user.id, order.id),
+      c.env.DB.prepare(`UPDATE asset_locations SET custody = 'CUSTOMER', status = 'delivered', warehouse_id = NULL, location_id = NULL, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
+        VALUES (?, ?, 'customer_delivered', ?, '订单已送达', ?, ?, ?, 'admin_private', 'international-delivery')`)
+        .bind(id(), allocation.assetId, deliveredAt, order.id, JSON.stringify(metadata), user.id),
+      c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
+        VALUES (?, ?, 'sale_completed', ?, '国际销售已完成', ?, ?, ?, 'admin_private', 'international-delivery')`)
+        .bind(id(), allocation.assetId, deliveredAt, order.id, JSON.stringify(metadata), user.id),
+      dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...metadata, custody: 'CUSTOMER', locationStatus: 'delivered' } })
+    ]);
+  } catch (error) {
+    if (error instanceof Error && /malformed JSON|delivery state changed/i.test(error.message)) {
+      const latest = await requireOrderAccess(c.env.DB, user, order.id);
+      if (latest.status === 'delivered') return c.json(await currentResult());
+      throw conflict('订单或设备状态已变化，不能确认送达。请刷新后重试。');
+    }
+    throw error;
+  }
+  return c.json(await currentResult());
 });
 
 app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) => {
