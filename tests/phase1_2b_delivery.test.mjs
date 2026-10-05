@@ -7,6 +7,7 @@ import app from '../apps/api/src/index.ts';
 import { createSessionToken } from '../apps/api/src/auth.ts';
 import { certifiedWarrantyEnd } from '../apps/api/src/certifiedWarranty.ts';
 import { warrantyDisplayStatus } from '../packages/shared/dist/index.js';
+import { certifiedPublicWarrantyDto } from '../apps/api/src/publicWarrantyProjection.ts';
 
 async function fixture() {
   const sqlite = new DatabaseSync(':memory:');
@@ -18,14 +19,21 @@ async function fixture() {
     INSERT INTO asset_locations (asset_id, warehouse_id) VALUES ('43000000-0000-4000-8000-000000000099', 'wh-uk');
     INSERT INTO orders (id, order_no, dealer_id, store_id, created_by, status, channel_id, sales_account_id, fulfilment_warehouse_id, external_order_id)
       VALUES ('order-test', 'TEST-DELIVERY', 'dealer', 'store', 'uk', 'approved', 'channel-ebay-uk', 'account-test', 'wh-uk', 'EXT-DELIVERY');`);
+  // The legacy administrator role is normally created by the application seed,
+  // not migrations. Supply its existing grants in this isolated fixture only.
+  sqlite.exec(`INSERT OR IGNORE INTO roles (id, code, name) VALUES ('role-test-admin', 'super_admin', 'Test admin');
+    INSERT OR IGNORE INTO role_permissions (role_id, permission_code)
+      SELECT roles.id, permissions.code FROM roles CROSS JOIN permissions
+      WHERE roles.code = 'super_admin' AND permissions.code IN ('asset:read','asset:manage','data:read:all');`);
   const tokens = {};
   for (const [user, role, scope] of [
     ['uk', 'uk_fulfilment_operator', { warehouseIds: ['wh-uk'], salesAccountIds: ['account-test'] }],
     ['cn', 'warehouse_manager', { warehouseIds: ['wh-cn-sd'] }],
     ['cert', 'certified_operator', {}],
-    ['other', 'uk_fulfilment_operator', { warehouseIds: ['wh-uk'], salesAccountIds: ['account-other'] }]
+    ['other', 'uk_fulfilment_operator', { warehouseIds: ['wh-uk'], salesAccountIds: ['account-other'] }],
+    ['admin', 'super_admin', {}]
   ]) {
-    sqlite.prepare(`INSERT INTO users (id, email, name, password_hash, role) VALUES (?, ?, ?, 'unused', 'warehouse')`).run(user, `${user}@example.test`, user);
+    sqlite.prepare(`INSERT INTO users (id, email, name, password_hash, role) VALUES (?, ?, ?, 'unused', ?)`).run(user, `${user}@example.test`, user, user === 'admin' ? 'admin' : 'warehouse');
     sqlite.prepare(`INSERT INTO user_roles (user_id, role_id) SELECT ?, id FROM roles WHERE code = ?`).run(user, role);
     sqlite.prepare(`INSERT INTO user_workspaces (user_id, workspace_id, data_scope_json) VALUES (?, 'ws-uk-fulfilment', ?)`).run(user, JSON.stringify(scope));
     tokens[user] = await createSessionToken({ id: user, email: `${user}@example.test`, name: user, sessionVersion: 1 }, 'test-only-session-secret');
@@ -48,7 +56,7 @@ async function fixture() {
     }
   };
   const env = { DB: db, SESSION_SECRET: 'test-only-session-secret', APP_ORIGIN: 'https://test.example', APP_ENV: 'staging' };
-  const request = (user, path, body) => app.request(`https://test.example${path}`, { method: body ? 'POST' : 'GET', headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }, env);
+  const request = (user, path, body, method = body ? 'POST' : 'GET') => app.request(`https://test.example${path}`, { method, headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }, env);
   const ship = async () => {
     assert.equal((await request('uk', '/international/orders/order-test/bind-asset', { assetId: '43000000-0000-4000-8000-000000000099' })).status, 200);
     assert.equal((await request('uk', '/international/orders/order-test/ship', { assetCode: 'MC-26-TEST-000099', carrier: 'Royal Mail', trackingNumber: 'RM-DELIVERY' })).status, 200);
@@ -140,8 +148,9 @@ test('Certified Delivered activates existing Asset internal warranty with exact 
   assert.equal(f.sqlite.prepare('SELECT certified_warranty_eligibility AS eligibility FROM orders').get().eligibility, 'activated');
   assert.equal((await (await f.request('uk', '/international/orders/order-test')).json()).order.certifiedWarranty.status, 'active');
   assert.equal((await (await f.request('uk', '/international/assets/43000000-0000-4000-8000-000000000099')).json()).certifiedWarranty.sourceOrderId, 'order-test');
-  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranties').get().n, 0);
-  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranty_entitlements').get().n, 0);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranties').get().n, 1);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranty_entitlements').get().n, 1);
+  assert.equal(result.publicWarrantyProjection.synced, true);
   f.sqlite.close();
 });
 
@@ -157,17 +166,20 @@ test('Certified delivery retries are idempotent, preserve dates and produce one 
   f.sqlite.close();
 });
 
-test('activation leaves a pre-existing Public Warranty and its entitlements completely unchanged', async () => {
+test('Public projection reuses this Asset legacy row while preserving unrelated data and entitlements', async () => {
   const f = await fixture(); f.certify(); await f.ship();
   f.sqlite.exec(`INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, public_warranty_start_date, public_warranty_end_date, public_note)
     VALUES ('public-existing', '43000000-0000-4000-8000-000000000099', 'TEST-PUBLIC-SN', '2025-01-01', '2025-04-01', 'existing projection');
     INSERT INTO asset_public_warranty_entitlements (id, public_warranty_id, entitlement_type, display_name)
     VALUES ('entitlement-existing', 'public-existing', 'standard', 'Existing entitlement');`);
-  const before = f.sqlite.prepare('SELECT * FROM asset_public_warranties').all();
+  f.sqlite.exec(`INSERT INTO assets (id, asset_code) VALUES ('other-asset', 'MC-26-OTHER-000001');
+    INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, public_note) VALUES ('unrelated', 'other-asset', 'OTHER-SN', 'keep');`);
+  const before = f.sqlite.prepare("SELECT * FROM asset_public_warranties WHERE id = 'unrelated'").get();
   const entitlements = f.sqlite.prepare('SELECT * FROM asset_public_warranty_entitlements').all();
   assert.equal((await f.deliver()).status, 200);
-  assert.deepEqual(f.sqlite.prepare('SELECT * FROM asset_public_warranties').all(), before);
-  assert.deepEqual(f.sqlite.prepare('SELECT * FROM asset_public_warranty_entitlements').all(), entitlements);
+  assert.deepEqual(f.sqlite.prepare("SELECT * FROM asset_public_warranties WHERE id = 'unrelated'").get(), before);
+  assert.deepEqual(f.sqlite.prepare("SELECT * FROM asset_public_warranty_entitlements WHERE id = 'entitlement-existing'").all(), entitlements);
+  assert.equal(f.sqlite.prepare("SELECT projection_policy_code FROM asset_public_warranties WHERE id = 'public-existing'").get().projection_policy_code, 'MAXCINE_CERTIFIED_STANDARD_12M');
   f.sqlite.close();
 });
 
@@ -245,4 +257,131 @@ test('12 calendar months clamp leap-day anniversaries, preserve time, and differ
   const asset = { warrantyStartAt: '2026-10-05T12:00:00.000Z', warrantyEndAt: '2027-10-05T12:00:00.000Z', warrantyOverrideStatus: null };
   assert.equal(warrantyDisplayStatus(asset, new Date('2026-10-05T12:00:00.000Z')), '保修中');
   assert.equal(warrantyDisplayStatus(asset, new Date('2027-10-05T12:00:00.000Z')), '已过保');
+});
+
+const assetId = '43000000-0000-4000-8000-000000000099';
+async function publicQuery(f, identifier = 'MC-26-TEST-000099', lang = 'en') {
+  const challenge = await (await f.request('uk', '/public/warranty/challenges', {})).json();
+  const completed = await (await f.request('uk', `/public/warranty/challenges/${challenge.challengeId}/complete`, { sliderValue: 100 })).json();
+  return f.request('uk', `/public/warranty/${identifier}?challengeId=${challenge.challengeId}&token=${completed.token}&lang=${lang}`);
+}
+
+test('Public projection is automatic on new Delivered and public SN/Asset Code query returns only consumer whitelist', async () => {
+  const f = await fixture(); f.certify();
+  f.sqlite.exec(`UPDATE assets SET current_sn = 'SECRET-SN-000099', product_name_snapshot = 'DJI Test Product', warranty_override_reason = 'PRIVATE-NOTE';
+    UPDATE orders SET shipping_address = 'PRIVATE-ADDRESS', customer_profile = 'PRIVATE-BUYER';`);
+  await f.ship(); const delivered = await (await f.deliver()).json();
+  for (const identifier of ['MC-26-TEST-000099', 'SECRET-SN-000099']) {
+    const response = await publicQuery(f, identifier); assert.equal(response.status, 200); const dto = await response.json();
+    assert.deepEqual(Object.keys(dto).sort(), ['serialNumber','assetCode','productName','productVersion','warrantyStatus','warrantyStatusCode','warrantyPolicyName','warrantyStartDate','warrantyEndDate','marketRegion','certificationStatus','grade','purchaseDate','publicNote','publicEntitlements'].sort());
+    assert.equal(dto.serialNumber, '***0099'); assert.equal(dto.assetCode, 'MC-26-TEST-000099');
+    assert.equal(dto.productName, 'DJI Test Product'); assert.equal(dto.warrantyStatusCode, 'ACTIVE');
+    assert.equal(dto.warrantyPolicyName, 'MaxCINE Certified 12-Month Limited Warranty');
+    assert.equal(dto.warrantyStartDate, delivered.deliveredAt.slice(0,10));
+    assert.equal(dto.warrantyEndDate, delivered.certifiedWarranty.end.slice(0,10));
+    assert.equal(dto.publicEntitlements.length, 1); assert.equal(dto.publicEntitlements[0].marketRegion, 'UK');
+    assert.doesNotMatch(JSON.stringify(dto), /SECRET-SN|PRIVATE-|order-test|EXT-DELIVERY|account-test|sourceOrder|warehouse|cost|margin|supplier|audit/i);
+  }
+  assert.equal((await (await publicQuery(f, undefined, 'zh')).json()).warrantyPolicyName, 'MaxCINE Certified 12个月有限保修');
+  f.sqlite.close();
+});
+
+test('Public historical backfill and repeated sync/Delivered/reads are idempotent and preserve original dates', async () => {
+  const f = await fixture(); f.certify(); await f.ship(); const original = await (await f.deliver()).json();
+  f.sqlite.exec('DELETE FROM asset_public_warranty_entitlements; DELETE FROM asset_public_warranties;');
+  const path = '/international/orders/order-test/public-warranty-sync';
+  assert.equal((await f.request('uk', path, {})).status, 200);
+  const warranty = f.sqlite.prepare('SELECT * FROM asset_public_warranties').all();
+  const entitlements = f.sqlite.prepare('SELECT * FROM asset_public_warranty_entitlements').all();
+  for (let i = 0; i < 3; i++) {
+    assert.equal((await f.request('uk', path, {})).status, 200);
+    const repeated = await (await f.deliver()).json(); assert.equal(repeated.deliveredAt, original.deliveredAt);
+    assert.deepEqual(repeated.certifiedWarranty, original.certifiedWarranty);
+    assert.equal((await publicQuery(f)).status, 200);
+  }
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM asset_public_warranties').all(), warranty);
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM asset_public_warranty_entitlements').all(), entitlements);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM asset_events WHERE event_type = 'warranty_activated'").get().n, 1);
+  f.sqlite.exec('DELETE FROM asset_public_warranty_entitlements; DELETE FROM asset_public_warranties;');
+  assert.equal((await f.deliver()).status, 200); // Repeat Delivered is also a recoverable backfill.
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranties').get().n, 1);
+  f.sqlite.close();
+});
+
+test('Public status/dates ignore corrupted cache and follow canonical boundaries/VOID/SUSPENDED', async () => {
+  const f = await fixture(); f.certify(); await f.ship(); const delivered = await (await f.deliver()).json();
+  f.sqlite.exec("UPDATE asset_public_warranties SET public_warranty_status = 'expired', public_warranty_end_date = '2000-01-01';");
+  assert.equal((await (await publicQuery(f)).json()).warrantyStatusCode, 'ACTIVE');
+  const start = new Date(delivered.certifiedWarranty.start); const end = new Date(delivered.certifiedWarranty.end);
+  assert.equal((await certifiedPublicWarrantyDto(f.db, assetId, 'en', start)).warrantyStatusCode, 'ACTIVE');
+  assert.equal((await certifiedPublicWarrantyDto(f.db, assetId, 'en', end)).warrantyStatusCode, 'EXPIRED');
+  assert.equal((await certifiedPublicWarrantyDto(f.db, assetId, 'en', new Date(start.getTime()-1))).warrantyStatusCode, 'PENDING');
+  for (const [override, status] of [['cancelled','VOID'], ['exception','SUSPENDED']]) {
+    f.sqlite.prepare('UPDATE assets SET warranty_override_status = ?').run(override);
+    const dto = await (await publicQuery(f)).json(); assert.equal(dto.warrantyStatusCode, status);
+    assert.equal(dto.publicEntitlements[0].status, dto.warrantyStatus);
+  }
+  f.sqlite.close();
+});
+
+test('Public query does not falsely advertise revoked/suspended/invalid Certification', async () => {
+  for (const mutation of ["UPDATE asset_certifications SET certification_status = 'revoked'", "UPDATE asset_certifications SET certification_status = 'suspended'", "UPDATE asset_certifications SET final_qc = 0", "UPDATE asset_certifications SET grade = 'D'", "UPDATE asset_certifications SET inspection_result = 'FAIL'"]) {
+    const f = await fixture(); f.certify(); await f.ship(); await f.deliver(); f.sqlite.exec(mutation);
+    const response = await publicQuery(f); assert.equal(response.status, 404); assert.doesNotMatch(await response.text(), /MaxCINE Certified|SECRET/);
+    f.sqlite.close();
+  }
+});
+
+test('Public sync denies CN/Certified/unauthorized account and non-Certified order', async () => {
+  const f = await fixture(); await f.ship(); await f.deliver();
+  const path = '/international/orders/order-test/public-warranty-sync';
+  for (const user of ['cn','cert','other']) assert.equal((await f.request(user, path, {})).status, 403);
+  assert.equal((await f.request('uk', path, {})).status, 409);
+  assert.equal(f.sqlite.prepare('SELECT COUNT(*) AS n FROM asset_public_warranties').get().n, 0);
+  f.sqlite.close();
+});
+
+test('Public projection write failure rolls back Delivered, internal activation, custody, events and audit', async () => {
+  const f = await fixture(); f.certify(); await f.ship();
+  f.sqlite.exec("CREATE TRIGGER test_public_failure BEFORE INSERT ON asset_public_warranty_entitlements BEGIN SELECT RAISE(ABORT, 'projection storage failure'); END;");
+  assert.equal((await f.deliver()).status, 500);
+  assert.equal(f.sqlite.prepare('SELECT status FROM orders').get().status, 'shipped');
+  assert.equal(f.sqlite.prepare('SELECT warranty_source_order_id AS source FROM assets').get().source, null);
+  assert.equal(f.sqlite.prepare('SELECT custody FROM asset_locations').get().custody, 'IN_TRANSIT');
+  for (const table of ['asset_public_warranties', 'asset_public_warranty_entitlements']) assert.equal(f.sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get().n, 0);
+  assert.equal(f.sqlite.prepare("SELECT COUNT(*) AS n FROM asset_events WHERE event_type IN ('customer_delivered','warranty_activated')").get().n, 0);
+  f.sqlite.close();
+});
+
+test('Public backfill preserves legacy visibility opt-out', async () => {
+  const f = await fixture(); f.certify(); await f.ship();
+  f.sqlite.exec(`INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, public_warranty_status)
+    VALUES ('hidden-public', '${assetId}', 'HIDDEN-SN', 'hidden');`);
+  await f.deliver(); assert.equal((await publicQuery(f)).status, 404);
+  assert.equal(f.sqlite.prepare('SELECT is_public_query_enabled AS enabled FROM asset_public_warranties').get().enabled, 0);
+  f.sqlite.close();
+});
+
+test('Public legacy non-Certified query DTO remains compatible', async () => {
+  const f = await fixture();
+  f.sqlite.exec(`INSERT INTO asset_public_warranties (id, asset_id, serial_number_snapshot, product_name_snapshot, public_note)
+    VALUES ('legacy', '${assetId}', 'LEGACY-SN', 'Legacy Product', 'Safe public note');`);
+  const response = await publicQuery(f, 'LEGACY-SN'); assert.equal(response.status, 200); const dto = await response.json();
+  assert.equal(dto.serialNumber, 'LEGACY-SN'); assert.equal(dto.publicNote, 'Safe public note');
+  assert.equal(dto.assetCode, undefined); assert.equal(dto.warrantyStatusCode, undefined);
+  f.sqlite.close();
+});
+
+test('Public managed warranty cannot be independently edited; internal override is visible in Admin and Consumer DTOs', async () => {
+  const f = await fixture(); f.certify(); await f.ship(); await f.deliver();
+  const response = await f.request('admin', `/admin/assets/${assetId}/public-warranty`, {
+    publicWarrantyStartDate: '2000-01-01', publicWarrantyEndDate: '2001-01-01', publicWarrantyStatus: 'expired', isPublicQueryEnabled: true
+  }, 'PATCH');
+  assert.equal(response.status, 409);
+  f.sqlite.exec("UPDATE assets SET warranty_override_status = 'cancelled'; UPDATE asset_public_warranties SET public_warranty_status = 'active';");
+  const detail = await (await f.request('admin', `/assets/${assetId}`)).json();
+  assert.equal(detail.publicWarranty.isManagedProjection, true);
+  assert.equal(detail.publicWarranty.warrantyStatus, detail.asset.warrantyStatus);
+  assert.equal((await (await publicQuery(f)).json()).warrantyStatusCode, 'VOID');
+  f.sqlite.close();
 });

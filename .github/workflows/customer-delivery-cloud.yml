@@ -31,7 +31,7 @@ jobs:
       - name: Typecheck and targeted lint
         run: |
           npm run typecheck
-          npx eslint apps/api/src/index.ts apps/api/src/ukFulfilment.ts apps/api/src/certifiedWarranty.ts apps/web/src/UkOrders.tsx apps/web/src/InternationalPortal.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts packages/shared/src/gsx.ts scripts/verify-delivery-staging.mjs tests/phase1_2b_delivery.test.mjs --max-warnings=0
+          npx eslint apps/api/src/index.ts apps/api/src/ukFulfilment.ts apps/api/src/certifiedWarranty.ts apps/api/src/publicWarrantyProjection.ts apps/web/src/UkOrders.tsx apps/web/src/InternationalPortal.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts packages/shared/src/gsx.ts scripts/verify-delivery-staging.mjs tests/phase1_2b_delivery.test.mjs apps/website/warranty-certified.js --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
@@ -46,6 +46,7 @@ jobs:
         run: |
           npm run build -w @maxcine/web
           npm run build -w @maxcine/api
+          npm run build -w @maxcine/website
       - name: Install headless Chromium
         run: npx playwright install --with-deps chromium
       - name: General E2E regression

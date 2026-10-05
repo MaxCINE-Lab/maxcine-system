@@ -24,12 +24,13 @@ const get = async (request, path) => { const response = await request(path); ass
 const before = await get(uk, `/international/orders/${orderId}`);
 assert.ok(['shipped', 'delivered'].includes(before.order.status), 'Use the normal B-3 shipment fixture only');
 const beforeAsset = await get(admin, `/assets/${assetId}`);
-const publicWarrantySnapshot = (data) => data.publicWarranty;
 for (const persona of ['CN_SD_WAREHOUSE', 'CERTIFIED']) {
   const request = await login(persona);
   assert.equal((await request(`/international/orders/${orderId}/deliver`, {})).status, 403, persona);
+  assert.equal((await request(`/international/orders/${orderId}/public-warranty-sync`, {})).status, 403, `${persona} projection sync`);
 }
 assert.equal((await uk(`/international/orders/${unauthorizedOrder}/deliver`, {})).status, 403, 'Unauthorized Sales Account');
+assert.equal((await uk(`/international/orders/${unauthorizedOrder}/public-warranty-sync`, {})).status, 403, 'Unauthorized Sales Account projection sync');
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1100 } });
@@ -51,6 +52,10 @@ try {
     await page.goto(`${web}/#/system/uk-fulfilment/orders/${orderId}`);
     if (before.order.canRecoverWarranty) await page.getByRole('button', { name: '补齐内部保修评估', exact: true }).click();
   }
+  await page.getByRole('heading', { name: '已送达', exact: true }).waitFor();
+  const syncButton = page.getByRole('button', { name: '同步公开保修', exact: true });
+  if (await syncButton.count()) await syncButton.click();
+  await page.getByText('Public Warranty: Synced', { exact: true }).waitFor();
   await page.getByRole('heading', { name: '已送达', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: '标记已送达', exact: true }).count(), 0);
   await page.getByText('Delivered At', { exact: true }).waitFor();
@@ -99,7 +104,44 @@ assert.equal(asset.events.filter((event) => event.eventType === 'customer_delive
 assert.equal(asset.events.filter((event) => event.eventType === 'warranty_activated' && event.source === 'certified-sale-delivery').length, 1);
 const finalInternal = await get(admin, `/assets/${assetId}`);
 assert.equal(finalInternal.asset.warrantyStartAt, warranty.start); assert.equal(finalInternal.asset.warrantyEndAt, warranty.end);
-assert.deepEqual(publicWarrantySnapshot(finalInternal), publicWarrantySnapshot(beforeAsset), 'Internal activation must not change Public Warranty');
-const report = { environment: 'GitHub Actions cloud / Staging only', orderId, assetCode, initialStatus: before.order.status, deliveredAt: delivered.order.deliveredAt, status: delivered.order.status, custody: delivered.order.custody, locationStatus: delivered.order.locationStatus, allocationStatus: delivered.order.allocationStatus, lifecycle: 'customer_delivered x1 / warranty_activated x1', warranty, idempotentRetries: 3, scope403: ['CN_SD_WAREHOUSE', 'CERTIFIED', 'unauthorized Sales Account'], inventoryExcluded: true, publicWarrantyUnchanged: true };
+assert.equal(finalInternal.publicWarranty.publicWarrantyStartDate, warranty.start);
+assert.equal(finalInternal.publicWarranty.publicWarrantyEndDate, warranty.end);
+for (let i = 0; i < 3; i++) assert.equal((await uk(`/international/orders/${orderId}/public-warranty-sync`, {})).status, 200);
+const website = 'https://maxcine-website-staging.pages.dev';
+const publicBrowser = await chromium.launch({ headless: true });
+const consumer = await publicBrowser.newPage();
+let publicDto;
+try {
+  await consumer.goto(`${website}/warranty.html`, { waitUntil: 'networkidle' });
+  await consumer.locator('#sn-input').fill(assetCode);
+  await consumer.locator('#slider-input').evaluate((slider) => {
+    slider.value = '100';
+    slider.dispatchEvent(new Event('input', { bubbles: true }));
+    slider.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await consumer.locator('#sn-btn').waitFor();
+  const publicResponse = consumer.waitForResponse((response) => response.url().includes(`/public/warranty/${assetCode}?`) && response.status() === 200);
+  await consumer.locator('#sn-btn').click();
+  publicDto = await (await publicResponse).json();
+  await consumer.locator('#certified-warranty-details').waitFor();
+  assert.equal(publicDto.assetCode, assetCode); assert.equal(publicDto.warrantyStatusCode, 'ACTIVE');
+  assert.equal(publicDto.warrantyStartDate, warranty.start.slice(0,10)); assert.equal(publicDto.warrantyEndDate, warranty.end.slice(0,10));
+  assert.equal(publicDto.marketRegion, 'UK'); assert.equal(publicDto.certificationStatus, 'certified');
+  assert.equal(publicDto.publicEntitlements.length, 1); assert.match(publicDto.serialNumber, /^\*\*\*/);
+  assert.equal(publicDto.productName, before.order.productName);
+  assert.doesNotMatch(JSON.stringify(publicDto), /sourceOrder|orderId|buyer|address|email|phone|margin|cost|supplier|audit|warehouse/i);
+  const challenge = await (await fetch(`${api}/public/warranty/challenges`, { method: 'POST' })).json();
+  const completed = await (await fetch(`${api}/public/warranty/challenges/${challenge.challengeId}/complete`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sliderValue: 100 }) })).json();
+  const sn = beforeAsset.asset.currentSn || beforeAsset.asset.originalSn;
+  assert.ok(sn, 'Existing serial-number query remains available');
+  const snQuery = await fetch(`${api}/public/warranty/${encodeURIComponent(sn)}?challengeId=${challenge.challengeId}&token=${completed.token}`);
+  assert.equal(snQuery.status, 200); assert.deepEqual(await snQuery.json(), publicDto);
+  await consumer.screenshot({ path: 'test-results/delivery-staging/public-query.png', fullPage: true });
+} catch (error) {
+  await consumer.screenshot({ path: 'test-results/delivery-staging/public-query-failure.png', fullPage: true });
+  await writeFile('test-results/delivery-staging/public-query-failure.txt', await consumer.locator('body').innerText());
+  throw error;
+} finally { await publicBrowser.close(); }
+const report = { environment: 'GitHub Actions cloud / Staging only', orderId, assetCode, initialStatus: before.order.status, deliveredAt: delivered.order.deliveredAt, status: delivered.order.status, custody: delivered.order.custody, locationStatus: delivered.order.locationStatus, allocationStatus: delivered.order.allocationStatus, lifecycle: 'customer_delivered x1 / warranty_activated x1', warranty, idempotentRetries: 3, scope403: ['CN_SD_WAREHOUSE', 'CERTIFIED', 'unauthorized Sales Account'], inventoryExcluded: true, publicProjectionSynced: true, historicalBackfill: !beforeAsset.publicWarranty?.publicWarrantyStartDate, publicDto };
 await writeFile('test-results/delivery-staging/report.json', JSON.stringify(report, null, 2));
 console.log(JSON.stringify(report, null, 2));

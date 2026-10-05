@@ -153,6 +153,7 @@ function setHidden(id, hidden) {
 }
 
 function setResult(response) {
+  void import('./warranty-certified.js').then(({ renderCertifiedWarranty }) => renderCertifiedWarranty(response));
   const publicWarranty = {
     serialNumber: response.serialNumber,
     productName: response.productName,

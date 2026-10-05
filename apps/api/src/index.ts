@@ -13,6 +13,7 @@ import type { Env, Variables } from './types';
 import { requireAssetAccess, requireOrderAccess, requireRmaAccess } from './internationalAuthorization';
 import { ukOrderSelect, ukShipEligible } from './ukFulfilment';
 import { certifiedEligibilitySql, certifiedWarrantyEnd, certifiedWarrantyPolicy, internalCertifiedWarranty, type WarrantyEligibility } from './certifiedWarranty';
+import { certifiedPublicWarrantyDto, publicWarrantyProjectionState, publicWarrantyProjectionStatements, syncPublicWarrantyProjection } from './publicWarrantyProjection';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -195,6 +196,10 @@ function publicWarrantyStatus(row: { publicWarrantyStatus: string; publicWarrant
     return ({ pending: '待生效', active: '保修中', expired: '已过保', no_warranty: '无保修', blocked: '不可查询', hidden: '不可查询', unknown: '待确认' } as Record<string, string>)[row.publicWarrantyStatus] ?? '待确认';
   }
   if (!row.publicWarrantyStartDate || !row.publicWarrantyEndDate) return '待确认';
+  if (row.publicWarrantyStartDate.includes('T') && row.publicWarrantyEndDate.includes('T')) {
+    return now.getTime() < Date.parse(row.publicWarrantyStartDate) ? '待生效'
+      : now.getTime() >= Date.parse(row.publicWarrantyEndDate) ? '已过保' : '保修中';
+  }
   const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(now);
   if (today < row.publicWarrantyStartDate) return '待生效';
   return today > row.publicWarrantyEndDate ? '已过保' : '保修中';
@@ -239,7 +244,7 @@ function publicPurchaseDate(row: { initializedOrderSubmittedAt: string | null; f
 }
 
 async function completePublicWarrantyChallenge(db: D1Database, challengeId: string): Promise<string> {
-  const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, 'SELECT id, used_at AS usedAt, expires_at AS expiresAt FROM public_warranty_challenges WHERE id = ?', challengeId);
+  const challenge = await one<{ id: string; usedAt: string | null; expiresAt: string }>(db, "SELECT id, used_at AS usedAt, strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) AS expiresAt FROM public_warranty_challenges WHERE id = ?", challengeId);
   if (!challenge) throw forbidden('请先完成滑块验证');
   if (challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
   const token = crypto.randomUUID().replaceAll('-', '') + crypto.randomUUID().replaceAll('-', '');
@@ -251,7 +256,7 @@ async function completePublicWarrantyChallenge(db: D1Database, challengeId: stri
 
 async function consumePublicWarrantyToken(db: D1Database, challengeId: string, token: string): Promise<void> {
   const tokenHash = await hashIdentifier(token);
-  const challenge = await one<{ id: string; expiresAt: string; usedAt: string | null }>(db, 'SELECT id, expires_at AS expiresAt, used_at AS usedAt FROM public_warranty_challenges WHERE id = ? AND token_hash = ?', challengeId, tokenHash);
+  const challenge = await one<{ id: string; expiresAt: string; usedAt: string | null }>(db, "SELECT id, strftime('%Y-%m-%dT%H:%M:%fZ', expires_at) AS expiresAt, used_at AS usedAt FROM public_warranty_challenges WHERE id = ? AND token_hash = ?", challengeId, tokenHash);
   if (!challenge || challenge.usedAt || Date.parse(challenge.expiresAt) <= Date.now()) throw forbidden('滑块验证已失效，请重新验证');
   await db.prepare(`UPDATE public_warranty_challenges SET used_at = CURRENT_TIMESTAMP WHERE id = ? AND token_hash = ? AND used_at IS NULL`)
     .bind(challengeId, tokenHash)
@@ -1488,8 +1493,9 @@ app.get('/public/warranty/:sn', async (c) => {
   const token = url.searchParams.get('token') ?? '';
   if (!challengeId || !token) throw forbidden('请先完成滑块验证');
   await consumePublicWarrantyToken(c.env.DB, challengeId, token);
-  const row = await one<{ id: string; serialNumber: string; publicProductName: string; productName: string; productVersion: string; legacyPublicPurchaseDate: string | null; initializedOrderSubmittedAt: string | null; firstOrderSubmittedAt: string | null; latestOrderSubmittedAt: string | null; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
-    `SELECT public_warranty.id, public_warranty.serial_number_snapshot AS serialNumber,
+  const row = await one<{ id: string; assetId: string; canonicalPolicy: string | null; serialNumber: string; publicProductName: string; productName: string; productVersion: string; legacyPublicPurchaseDate: string | null; initializedOrderSubmittedAt: string | null; firstOrderSubmittedAt: string | null; latestOrderSubmittedAt: string | null; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null; publicWarrantyStatus: string; publicNote: string }>(c.env.DB,
+    `SELECT public_warranty.id, public_warranty.asset_id AS assetId, assets.certified_warranty_policy_code AS canonicalPolicy,
+      public_warranty.serial_number_snapshot AS serialNumber,
       public_warranty.public_product_name AS publicProductName,
       public_warranty.product_name_snapshot AS productName,
       public_warranty.product_version_snapshot AS productVersion,
@@ -1514,8 +1520,15 @@ app.get('/public/warranty/:sn', async (c) => {
        LIMIT 1
      )
      WHERE public_warranty.is_public_query_enabled = 1
-       AND public_warranty.serial_number_snapshot = ? COLLATE NOCASE
-     LIMIT 1`, sn);
+       AND (public_warranty.serial_number_snapshot = ? COLLATE NOCASE
+         OR (assets.certified_warranty_policy_code IS NOT NULL AND (assets.asset_code = ? COLLATE NOCASE
+           OR COALESCE(NULLIF(assets.current_sn,''), assets.original_sn) = ? COLLATE NOCASE)))
+     LIMIT 1`, sn, sn, sn);
+  if (row?.canonicalPolicy) {
+    const dto = await certifiedPublicWarrantyDto(c.env.DB, row.assetId, url.searchParams.get('lang') ?? 'zh');
+    if (!dto) throw notFound('未查询到可公开的保修信息，请检查序列号后重试。');
+    return c.json(dto);
+  }
   if (!row || ['hidden', 'blocked'].includes(row.publicWarrantyStatus)) throw notFound('未查询到可公开的保修信息，请检查序列号后重试。');
   const entitlements = await all<{ type: string; name: string; dateMode: string; startDate: string | null; endDate: string | null }>(c.env.DB,
     `SELECT entitlement_type AS type, display_name AS name, date_mode AS dateMode, start_date AS startDate, end_date AS endDate
@@ -3858,7 +3871,12 @@ app.get('/assets/:id', requireAuth, async (c) => {
   return c.json({
     asset: { ...asset, warrantyStatus: warrantyDisplayStatus(asset), warrantyDays: asset.sku ? shipmentWarrantyRule(asset.sku)?.durationDays ?? null : null, ...(hasGlobalAssetAccess(user) || user.roles.includes('authorized_service_center') ? {} : { warrantyOverrideReason: '' }) },
     identifiers, events, serviceCases, notes, sales, audit, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, asset.id),
-    publicWarranty: publicWarranty ? { ...publicWarranty, entitlements: publicEntitlements, warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) } : null,
+    publicWarranty: publicWarranty ? { ...publicWarranty, entitlements: publicEntitlements,
+      ...((await internalCertifiedWarranty(c.env.DB, asset.id)).policyCode ? {
+        publicWarrantyStartDate: asset.warrantyStartAt, publicWarrantyEndDate: asset.warrantyEndAt,
+        publicWarrantyStatus: 'auto', warrantyStatus: warrantyDisplayStatus(asset), isManagedProjection: true
+      } : { warrantyStatus: publicWarrantyStatus(publicWarranty as { publicWarrantyStatus: string; publicWarrantyStartDate: string | null; publicWarrantyEndDate: string | null }) })
+    } : null,
     factoryPhotos: factoryPhotos.map((photo) => ({ ...photo, contentUrl: `/assets/${asset.id}/factory-photos/${(photo as { id: string }).id}/content` })),
     photos: [...shipmentPhotos, ...afterSalesPhotos]
   });
@@ -3884,9 +3902,10 @@ app.patch('/admin/assets/:id/public-warranty', requireAuth, async (c) => {
   const user = c.get('user');
   assertPermission(user, 'asset:manage');
   const input = await parseBody(c.req.raw, updatePublicWarrantySchema);
-  const asset = await one<{ id: string; currentSn: string | null; originalSn: string | null; productName: string; version: string }>(c.env.DB,
-    'SELECT id, current_sn AS currentSn, original_sn AS originalSn, product_name_snapshot AS productName, version_snapshot AS version FROM assets WHERE id = ?', c.req.param('id'));
+  const asset = await one<{ id: string; policyCode: string | null; currentSn: string | null; originalSn: string | null; productName: string; version: string }>(c.env.DB,
+    'SELECT id, certified_warranty_policy_code AS policyCode, current_sn AS currentSn, original_sn AS originalSn, product_name_snapshot AS productName, version_snapshot AS version FROM assets WHERE id = ?', c.req.param('id'));
   if (!asset) throw notFound('未找到该资产');
+  if (asset.policyCode) throw conflict('Certified Public Warranty 由内部保修派生，不能单独编辑，请同步 Projection。');
   const before = await one(c.env.DB, 'SELECT * FROM asset_public_warranties WHERE asset_id = ?', asset.id);
   const publicWarrantyId = before ? (before as { id: string }).id : id();
   const statements: D1PreparedStatement[] = [
@@ -5083,8 +5102,22 @@ app.get('/international/orders/:id', requireAuth, async (c) => {
   if (!order) throw conflict('该设备当前未被此订单有效预留。');
   const deliveryPermission = can(user, 'international-order:deliver') || can(user, 'data:read:all');
   return c.json({ order: { ...order, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, String(order.assetId), scoped.id),
+    publicWarrantyProjection: await publicWarrantyProjectionState(c.env.DB, String(order.assetId), scoped.id),
     canDeliver: scoped.status === 'shipped' && deliveryPermission,
     canRecoverWarranty: scoped.status === 'delivered' && order.warrantyEligibility === null && deliveryPermission } });
+});
+
+app.post('/international/orders/:id/public-warranty-sync', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:deliver');
+  const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  if (order.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
+  if (order.status !== 'delivered') throw conflict('只有已送达订单可以补齐 Public Warranty Projection。');
+  const asset = await one<{ assetId: string }>(c.env.DB, `SELECT asset_id AS assetId FROM international_asset_allocations
+    WHERE order_id = ? AND status = 'fulfilled'`, order.id);
+  if (!asset) throw conflict('未找到有效的订单设备关联。');
+  await syncPublicWarrantyProjection(c.env.DB, asset.assetId, order.id);
+  return c.json({ publicWarrantyProjection: await publicWarrantyProjectionState(c.env.DB, asset.assetId, order.id) });
 });
 
 app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
@@ -5204,11 +5237,16 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
       JOIN asset_locations l ON l.asset_id = a.asset_id WHERE o.id = ? AND o.status = 'delivered'
       AND o.delivered_at IS NOT NULL AND l.custody = 'CUSTOMER' AND l.status = 'delivered'`, order.id);
     if (!delivered) throw conflict('送达记录不完整，请联系管理员核对。');
-    return { ...delivered, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, delivered.assetId, order.id) };
+    return { ...delivered, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, delivered.assetId, order.id),
+      publicWarrantyProjection: await publicWarrantyProjectionState(c.env.DB, delivered.assetId, order.id) };
   };
   const prior = await one<{ deliveredAt: string | null; eligibility: WarrantyEligibility | null }>(c.env.DB,
     'SELECT delivered_at AS deliveredAt, certified_warranty_eligibility AS eligibility FROM orders WHERE id = ?', order.id);
-  if (order.status === 'delivered' && prior?.eligibility) return c.json(await currentResult());
+  if (order.status === 'delivered' && prior?.eligibility) {
+    const current = await currentResult();
+    if (current.certifiedWarranty.policyCode === certifiedWarrantyPolicy.code) await syncPublicWarrantyProjection(c.env.DB, current.assetId, order.id);
+    return c.json(await currentResult());
+  }
   if (!['shipped', 'delivered'].includes(order.status)) throw conflict('只有已发货订单可以标记已送达。');
   const recovering = order.status === 'delivered';
   if (recovering) await currentResult();
@@ -5258,6 +5296,7 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
         c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, new_value_json, operator_user_id, visibility, source)
           VALUES (?, ?, 'warranty_activated', ?, 'MaxCINE Certified 商业保修已激活', ?, ?, ?, 'admin_private', 'certified-sale-delivery')`)
           .bind(id(), allocation.assetId, activatedAt, order.id, JSON.stringify(warrantyMetadata), user.id),
+        ...publicWarrantyProjectionStatements(c.env.DB, allocation.assetId),
         dbAudit(c.env.DB, { actorId: user.id, action: 'international.warranty.activate', entityType: 'asset', entityId: allocation.assetId, requestId: c.get('requestId'), after: warrantyMetadata })
       ] : []),
       dbAudit(c.env.DB, { actorId: user.id, action: recovering ? 'international.order.warranty_eligibility' : 'international.order.deliver', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...metadata, custody: 'CUSTOMER', locationStatus: 'delivered', certifiedWarrantyEligibility: decision.eligibility } })

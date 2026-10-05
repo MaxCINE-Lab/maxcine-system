@@ -4,7 +4,7 @@ import { api, ApiClientError } from './api';
 import { Shell } from './OperationsPortal';
 
 type CertifiedWarranty = { status: string; reason: string; policyCode: string | null; start: string | null; end: string | null; sourceOrderId: string | null };
-type Order = { id: string; orderNo: string; externalOrderId: string; channel: string; salesAccount: string; currency: string; status: string; assetCode: string; productName: string; currentSn: string | null; grade: string | null; certificationStatus: string | null; warehouseCode: string | null; custody: string; locationStatus: string; allocationStatus: string; shippingAddress: string; createdAt: string; carrier: string; trackingNumber: string; shippedAt: string; deliveredAt: string; canShip?: number; canDeliver?: boolean; canRecoverWarranty?: boolean; certifiedWarranty?: CertifiedWarranty };
+type Order = { id: string; orderNo: string; externalOrderId: string; channel: string; salesAccount: string; currency: string; status: string; assetCode: string; productName: string; currentSn: string | null; grade: string | null; certificationStatus: string | null; warehouseCode: string | null; custody: string; locationStatus: string; allocationStatus: string; shippingAddress: string; createdAt: string; carrier: string; trackingNumber: string; shippedAt: string; deliveredAt: string; canShip?: number; canDeliver?: boolean; canRecoverWarranty?: boolean; certifiedWarranty?: CertifiedWarranty; publicWarrantyProjection?: { synced: boolean } };
 const errorText = (error: unknown) => error instanceof ApiClientError ? error.code === 'FORBIDDEN' ? '你没有操作该订单的权限。' : error.message : '操作未完成，请稍后重试。';
 const dateTime = (value: string) => value ? new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`).toLocaleString('zh-CN') : '—';
 
@@ -62,6 +62,15 @@ export function UkOrders({ user, route, logout }: { user: SessionUser; route: st
     } catch (reason) { setError(errorText(reason)); }
     finally { setSaving(false); }
   };
+  const syncPublicWarranty = async () => {
+    if (!order || saving) return;
+    setSaving(true); setError('');
+    try {
+      await api(`/international/orders/${order.id}/public-warranty-sync`, { method: 'POST', body: '{}' });
+      setOrder((await api<{ order: Order }>(`/international/orders/${order.id}`)).order);
+    } catch (reason) { setError(errorText(reason)); }
+    finally { setSaving(false); }
+  };
   return <Shell user={user} route={route} title={orderId ? '订单履约' : deliveryView ? '待确认送达' : '待发货订单'} subtitle="UK 客户订单履约" logout={logout}>
     {error && <div className="notice notice--error" role="alert">{error}</div>}
     {loading ? <div role="status" className="certified-loading">正在加载订单…</div> : orderId ? !order ? <div className="empty-state"><h2>无法加载订单。</h2><a href="#/system/uk-fulfilment/orders">返回待发货订单</a></div> : <div className="receiving-layout">
@@ -70,6 +79,7 @@ export function UkOrders({ user, route, logout }: { user: SessionUser; route: st
       {order.status === 'delivered' && <section className="panel transfer-detail" role="status"><h2>已送达</h2><dl><dt>Delivered At</dt><dd>{dateTime(order.deliveredAt)}</dd><dt>Asset Code</dt><dd>{order.assetCode}</dd><dt>Custody</dt><dd>CUSTOMER</dd><dt>Location Status</dt><dd>{order.locationStatus}</dd></dl><a href="#/system/uk-fulfilment/deliveries">返回待确认送达</a></section>}
       {order.canRecoverWarranty && <section className="panel receive-confirmation"><p>旧送达记录尚未评估内部 Certified Warranty。重试不会改变原送达时间。</p><button className="button" disabled={saving} onClick={() => void deliver()}>{saving ? '正在评估…' : '补齐内部保修评估'}</button></section>}
       {order.status === 'delivered' && order.certifiedWarranty && <section className="panel transfer-detail"><h2>{order.certifiedWarranty.status === 'not_activated' ? 'Certified Warranty not activated' : 'MaxCINE Certified Warranty'}</h2>{order.certifiedWarranty.policyCode ? <><div className={`asset-match asset-match--${order.certifiedWarranty.status === 'active' ? 'success' : 'error'}`} role="status"><strong>{order.certifiedWarranty.status === 'active' ? 'Active' : order.certifiedWarranty.status}</strong></div><dl><dt>Policy</dt><dd>{order.certifiedWarranty.policyCode}</dd><dt>Start</dt><dd>{dateTime(order.certifiedWarranty.start || '')}</dd><dt>End</dt><dd>{dateTime(order.certifiedWarranty.end || '')}</dd><dt>Source Order</dt><dd>{order.certifiedWarranty.sourceOrderId}</dd></dl><p>12 个月 MaxCINE Certified 商业保修，不替代消费者依法享有的权利。</p></> : <p>{order.certifiedWarranty.reason}</p>}</section>}
+      {order.status === 'delivered' && order.certifiedWarranty?.policyCode && <section className="panel transfer-detail"><h2>Public Warranty</h2><p role="status">{order.publicWarrantyProjection?.synced ? 'Public Warranty: Synced' : 'Public Warranty: Not synced'}</p>{!order.publicWarrantyProjection?.synced && (user.permissions.includes('international-order:deliver') || user.permissions.includes('data:read:all')) && <button className="button" disabled={saving} onClick={() => void syncPublicWarranty()}>{saving ? '正在同步…' : '同步公开保修'}</button>}</section>}
       <section className="panel transfer-detail"><h2>Order</h2><dl><dt>Internal Order ID</dt><dd>{order.id}<br />{order.orderNo}</dd><dt>External Order ID</dt><dd>{order.externalOrderId || '—'}</dd><dt>Channel</dt><dd>{order.channel}</dd><dt>Sales Account</dt><dd>{order.salesAccount}</dd><dt>Currency</dt><dd>{order.currency}</dd><dt>Order Status</dt><dd>{order.status}</dd></dl></section>
       <section className="panel transfer-detail"><h2>Expected Asset</h2><dl><dt>Asset Code</dt><dd>{order.assetCode}</dd><dt>Product</dt><dd>{order.productName}</dd><dt>SN 尾号</dt><dd>{order.currentSn?.slice(-6) || '—'}</dd><dt>Grade</dt><dd>{order.grade || '—'}</dd><dt>Certification Status</dt><dd>{order.certificationStatus || '—'}</dd><dt>Current Warehouse</dt><dd>{order.custody === 'WAREHOUSE' ? order.warehouseCode : '—'}</dd><dt>Custody</dt><dd>{order.custody}</dd><dt>Allocation Status</dt><dd>{order.allocationStatus}</dd></dl></section>
       <section className="panel transfer-detail"><h2>Shipping</h2><dl><dt>Buyer / Shipping Address</dt><dd>{order.shippingAddress || '未提供收货信息'}</dd></dl></section>
