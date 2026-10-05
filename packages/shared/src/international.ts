@@ -71,7 +71,7 @@ export function requireRmaAccess(user: SessionUser, rma: InternationalRmaAccess)
   requireWarehouseScope(user, rma.assetWarehouseId ?? rma.fulfilmentWarehouseId);
   const explicitRegions = workspaceScopeIds(user, 'marketRegions');
   const inferredRegions = rma.scopedWarehouseRegions ?? [];
-  if (rma.marketRegion && !explicitRegions.includes(rma.marketRegion) && !inferredRegions.includes(rma.marketRegion)) {
+  if (rma.marketRegion && !(explicitRegions.length ? explicitRegions : inferredRegions).includes(rma.marketRegion)) {
     throw forbidden('该市场区域不在你的数据范围内');
   }
 }

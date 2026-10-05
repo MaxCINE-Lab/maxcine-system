@@ -32,6 +32,7 @@ jobs:
         run: |
           npm run typecheck
           npx eslint apps/api/src/index.ts apps/api/src/ukFulfilment.ts apps/api/src/certifiedWarranty.ts apps/api/src/publicWarrantyProjection.ts apps/web/src/UkOrders.tsx apps/web/src/InternationalPortal.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts packages/shared/src/gsx.ts scripts/verify-delivery-staging.mjs tests/phase1_2b_delivery.test.mjs apps/website/warranty-certified.js --max-warnings=0
+          npx eslint apps/api/src/rmaIntake.ts apps/api/src/internationalAuthorization.ts apps/web/src/RmaIntake.tsx packages/shared/src/international.ts tests/helpers/deliveryFixture.mjs tests/phase1_2b_rma_intake.test.mjs scripts/verify-rma-staging.mjs --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
@@ -40,6 +41,7 @@ jobs:
           npm run test:phase1-2b-uk-receive
           npm run test:phase1-2b-uk-ship
           npm run test:phase1-2b-delivery
+          npm run test:phase1-2b-rma-intake
       - name: Security suite
         run: npm test
       - name: Web and API build
@@ -57,11 +59,22 @@ jobs:
       - name: Staging browser, API, idempotency and scope acceptance
         if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
         run: node scripts/verify-delivery-staging.mjs
+      - name: Staging RMA browser, immutable warranties, idempotency and scope acceptance
+        if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
+        run: node scripts/verify-rma-staging.mjs
       - name: Save acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: customer-delivery-staging-evidence
           path: test-results/delivery-staging/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Save RMA acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rma-intake-staging-evidence
+          path: test-results/rma-staging/
           if-no-files-found: ignore
           retention-days: 14

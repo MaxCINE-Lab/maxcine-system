@@ -7,6 +7,23 @@ import {
 } from '@maxcine/shared';
 import { all, one } from './db';
 
+async function assertRmaRecordAccess(db: D1Database, user: SessionUser, record: {
+  salesAccountId: string | null; fulfilmentWarehouseId: string | null; assetWarehouseId: string | null;
+  returnWarehouseId: string | null; marketRegion: string | null;
+}) {
+  const warehouseIds = Array.from(new Set([record.returnWarehouseId, record.assetWarehouseId, record.fulfilmentWarehouseId].filter((value): value is string => Boolean(value))));
+  const regions = warehouseIds.length ? await all<{ marketRegion: string }>(db,
+    `SELECT DISTINCT market_region AS marketRegion FROM warehouses WHERE id IN (${warehouseIds.map(() => '?').join(',')})`, ...warehouseIds) : [];
+  requireRmaScope(user, { ...record, scopedWarehouseRegions: regions.map((row) => row.marketRegion) });
+}
+
+export async function requireRmaIntakeAccess(db: D1Database, user: SessionUser, orderId: string, returnWarehouseId: string) {
+  const order = await requireOrderAccess(db, user, orderId);
+  const account = await one<{ marketRegion: string }>(db, 'SELECT market_region AS marketRegion FROM sales_accounts WHERE id = ?', order.salesAccountId);
+  await assertRmaRecordAccess(db, user, { ...order, assetWarehouseId: null, returnWarehouseId, marketRegion: account?.marketRegion ?? null });
+  return { ...order, marketRegion: account?.marketRegion ?? null };
+}
+
 export async function requireAssetAccess(db: D1Database, user: SessionUser, assetId: string): Promise<{ assetId: string; warehouseId: string | null; salesAccountId: string | null; custody: string | null }> {
   const asset = await one<{ assetId: string; warehouseId: string | null; salesAccountId: string | null; custody: string | null }>(db, `
     SELECT assets.id AS assetId, asset_locations.warehouse_id AS warehouseId, asset_locations.custody,
@@ -55,9 +72,6 @@ export async function requireRmaAccess(db: D1Database, user: SessionUser, caseId
   if (!serviceCase) throw notFound('未找到售后工单');
   const effectiveReturnWarehouseId = requested?.returnWarehouseId ?? serviceCase.returnWarehouseId;
   const effectiveMarketRegion = requested?.marketRegion ?? serviceCase.marketRegion;
-  const warehouseIds = Array.from(new Set([effectiveReturnWarehouseId, serviceCase.assetWarehouseId, serviceCase.fulfilmentWarehouseId].filter((value): value is string => Boolean(value))));
-  const regions = warehouseIds.length ? await all<{ marketRegion: string }>(db,
-    `SELECT DISTINCT market_region AS marketRegion FROM warehouses WHERE id IN (${warehouseIds.map(() => '?').join(',')})`, ...warehouseIds) : [];
-  requireRmaScope(user, { ...serviceCase, returnWarehouseId: effectiveReturnWarehouseId, marketRegion: effectiveMarketRegion, scopedWarehouseRegions: regions.map((row) => row.marketRegion) });
+  await assertRmaRecordAccess(db, user, { ...serviceCase, returnWarehouseId: effectiveReturnWarehouseId, marketRegion: effectiveMarketRegion });
   return serviceCase;
 }

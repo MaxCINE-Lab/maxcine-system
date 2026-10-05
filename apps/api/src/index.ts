@@ -14,6 +14,7 @@ import { requireAssetAccess, requireOrderAccess, requireRmaAccess } from './inte
 import { ukOrderSelect, ukShipEligible } from './ukFulfilment';
 import { certifiedEligibilitySql, certifiedWarrantyEnd, certifiedWarrantyPolicy, internalCertifiedWarranty, type WarrantyEligibility } from './certifiedWarranty';
 import { certifiedPublicWarrantyDto, publicWarrantyProjectionState, publicWarrantyProjectionStatements, syncPublicWarrantyProjection } from './publicWarrantyProjection';
+import { openRma, rmaDetail, rmaIntakeContext, rmaIntakeSchema, rmaList } from './rmaIntake';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -5101,7 +5102,11 @@ app.get('/international/orders/:id', requireAuth, async (c) => {
     WHERE o.id = ? AND allocation.status IN ('reserved','fulfilled') ORDER BY allocation.created_at DESC LIMIT 1`, scoped.id);
   if (!order) throw conflict('该设备当前未被此订单有效预留。');
   const deliveryPermission = can(user, 'international-order:deliver') || can(user, 'data:read:all');
+  const activeRma = await one(c.env.DB, `SELECT id, rma_reference AS rmaReference, return_authorized_at AS authorizedAt
+    FROM after_sales_cases WHERE asset_id = ? AND status IN ('open','in_progress') LIMIT 1`, order.assetId);
   return c.json({ order: { ...order, certifiedWarranty: await internalCertifiedWarranty(c.env.DB, String(order.assetId), scoped.id),
+    activeRma, canOpenRma: scoped.status === 'delivered' && order.custody === 'CUSTOMER' && order.locationStatus === 'delivered'
+      && !activeRma && (can(user, 'international-after-sales:manage') || can(user, 'data:read:all')),
     publicWarrantyProjection: await publicWarrantyProjectionState(c.env.DB, String(order.assetId), scoped.id),
     canDeliver: scoped.status === 'shipped' && deliveryPermission,
     canRecoverWarranty: scoped.status === 'delivered' && order.warrantyEligibility === null && deliveryPermission } });
@@ -5332,23 +5337,41 @@ app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) =
   return c.json({ assetId: asset.id, status: 'active', startDate: input.startDate, endDate: input.endDate });
 });
 
+app.get('/international/rmas/intake-context', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-after-sales:manage');
+  const orderId = c.req.query('orderId');
+  if (!orderId) throw badRequest('请选择已送达订单。');
+  return c.json({ context: await rmaIntakeContext(c.env.DB, user, orderId) });
+});
+
+app.get('/international/rmas', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-after-sales:read');
+  return c.json({ rmas: await rmaList(c.env.DB, user) });
+});
+
+app.get('/international/rmas/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-after-sales:read');
+  await requireRmaAccess(c.env.DB, user, c.req.param('id'));
+  return c.json({ rma: await rmaDetail(c.env.DB, user, c.req.param('id')) });
+});
+
+app.post('/international/rmas', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-after-sales:manage');
+  const input = rmaIntakeSchema.parse(await parseBody(c.req.raw, rmaIntakeSchema));
+  return c.json({ rma: await openRma(c.env.DB, user, input, c.get('requestId')) });
+});
+
 app.post('/international/after-sales/:id/rma', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-after-sales:manage');
-  const input = await parseBody(c.req.raw, z.object({ marketRegion: z.enum(['CN', 'SG', 'UK']), returnWarehouseId: z.string().min(1), returnTracking: z.string().trim().max(160).default(''), returnReason: z.string().trim().min(1).max(1000), rmaReference: z.string().trim().min(1).max(160), crossBorderResolution: z.string().trim().max(1000).default('') }));
-  requireWarehouseScope(user, input.returnWarehouseId);
-  const serviceCase = await requireRmaAccess(c.env.DB, user, c.req.param('id'), { returnWarehouseId: input.returnWarehouseId, marketRegion: input.marketRegion });
-  if (!serviceCase?.assetId) throw notFound('未找到关联 Asset 的售后工单');
-  await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE after_sales_cases SET market_region = ?, return_warehouse_id = ?, return_tracking = ?, return_reason = ?, rma_reference = ?, cross_border_resolution = ?, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
-      .bind(input.marketRegion, input.returnWarehouseId, input.returnTracking, input.returnReason, input.rmaReference, input.crossBorderResolution, user.id, serviceCase.id),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_service_case_id, operator_user_id, visibility, source) VALUES (?, ?, 'rma_opened', CURRENT_TIMESTAMP, '国际 RMA 已创建', ?, ?, ?, 'admin_private', 'international-v1.2a')`)
-      .bind(id(), serviceCase.assetId, `${input.rmaReference} · ${input.returnReason}`, serviceCase.id, user.id),
-    ...(input.returnTracking ? [c.env.DB.prepare(`UPDATE asset_locations SET status = 'returned', custody = 'RETURN_TRANSIT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`)
-      .bind(user.id, serviceCase.assetId)] : []),
-    dbAudit(c.env.DB, { actorId: user.id, action: 'international.rma.register', entityType: 'after_sales_case', entityId: serviceCase.id, requestId: c.get('requestId'), after: input })
-  ]);
-  return c.json({ id: serviceCase.id, rmaReference: input.rmaReference, marketRegion: input.marketRegion });
+  await requireRmaAccess(c.env.DB, user, c.req.param('id'));
+  // Retire the old free-text registration path: it bypassed intake invariants
+  // and incorrectly treated a tracking number as a physical return shipment.
+  throw conflict('请从已送达订单使用 Open RMA 创建退货授权；此旧注册入口已停用。');
 });
 
 app.get('/international/assets/:id', requireAuth, async (c) => {

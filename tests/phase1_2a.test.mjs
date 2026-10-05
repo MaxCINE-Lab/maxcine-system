@@ -158,7 +158,8 @@ test('Lifecycle accepts precise Phase 1.2A event types and Inspection assignment
 });
 
 test('International write routes call centralized scope helpers and write precise lifecycle types', () => {
-  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8');
+  const source = readFileSync(new URL('../apps/api/src/index.ts', import.meta.url), 'utf8')
+    + readFileSync(new URL('../apps/api/src/rmaIntake.ts', import.meta.url), 'utf8');
   assert.match(source, /requireWarehouseScope\(user, input\.fromWarehouseId\)/);
   assert.match(source, /requireWarehouseScope\(user, action === 'ship' \? transfer\.fromWarehouseId : transfer\.toWarehouseId\)/);
   assert.match(source, /requireOrderAccess\(c\.env\.DB, user, c\.req\.param\('id'\)\)/);
