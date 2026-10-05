@@ -235,6 +235,7 @@ function AppRouter({ route, user, onLogin, onLogout }: { route: string; user: Se
   if (path === '/system/intelligence' && hasIntelligenceAccess(user)) return <IntelligencePortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/after-sales') && user.permissions.includes('after-sales:create')) return <DealerPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/service-center') && hasServiceCenterAccess(user)) return <ServiceCenterPortal user={user} route={route} />;
+  if (path.startsWith('/system/warehouse/transfers') && hasWarehouseAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="warehouse" />;
   if (path.startsWith('/system/warehouse') && hasWarehouseAccess(user)) return <OperationsPortal user={user} route={route} logout={onLogout} />;
   if (path.startsWith('/system/certified') && hasCertifiedAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="certified" />;
   if (path.startsWith('/system/international') && hasInternationalAccess(user)) return <InternationalPortal user={user} route={route} logout={onLogout} mode="international" />;

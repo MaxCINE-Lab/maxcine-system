@@ -35,7 +35,24 @@ type Evidence = {
   createdByName?: string | null;
 };
 type TaskDetailResponse = { task: InspectionTask; evidence: Evidence[]; canFinalQc: boolean };
-type WarehouseAsset = { assetId: string; assetCode?: string; currentSn: string | null; productName: string; status: string; warehouseCode: string };
+type WarehouseAsset = { assetId: string; assetCode?: string; currentSn: string | null; productName: string; locationStatus: string; custody: string; warehouseId: string; warehouseCode: string };
+type AssetTransfer = {
+  id: string;
+  assetId: string;
+  assetCode: string;
+  currentSn: string | null;
+  productName: string;
+  fromWarehouseId: string;
+  fromWarehouseCode: string;
+  toWarehouseId: string;
+  toWarehouseCode: string;
+  status: 'created' | 'shipped' | 'received' | 'cancelled';
+  carrier: string | null;
+  trackingNumber: string | null;
+  createdAt: string;
+  shippedAt: string | null;
+  receivedAt: string | null;
+};
 type Listing = { id: string; currentSn: string | null; title: string; channelCode: string; salesAccountName: string; priceMinor: number; currency: string; status: string };
 type ChecklistAnswer = { code: string; label: string; result: InspectionResult | ''; note: string };
 type InspectionNotes = { version: 'certified-v1'; overallNote: string; checklist: ChecklistAnswer[] };
@@ -210,7 +227,93 @@ function WarehouseAssets({ user, route, logout, ukOnly }: Props & { ukOnly?: boo
   const [assets, setAssets] = useState<WarehouseAsset[]>([]);
   const [error, setError] = useState('');
   useEffect(() => { api<{ assets: WarehouseAsset[] }>(`/international/warehouses/assets${ukOnly ? '?warehouseId=wh-uk' : ''}`).then((value) => setAssets(value.assets)).catch((reason) => setError(errorText(reason))); }, [ukOnly]);
-  return <Shell user={user} route={route} title={ukOnly ? 'UK 库存' : '全球 Certified 库存'} subtitle="以同一 Asset 为中心；不替换国内新品库存。" logout={logout}>{error && <Notice tone="error">{error}</Notice>}<div className="table-wrap"><table><thead><tr><th>Asset / SN</th><th>产品</th><th>仓库</th><th>状态</th></tr></thead><tbody>{assets.map((asset) => <tr key={asset.assetId}><td>{asset.assetCode || asset.currentSn || asset.assetId}</td><td>{asset.productName}</td><td>{asset.warehouseCode}</td><td>{asset.status}</td></tr>)}</tbody></table>{!assets.length && <div className="empty-state"><h2>暂无可见库存。</h2></div>}</div></Shell>;
+  return <Shell user={user} route={route} title={ukOnly ? 'UK 库存' : '全球 Certified 库存'} subtitle="以同一 Asset 为中心；不替换国内新品库存。" logout={logout}>{error && <Notice tone="error">{error}</Notice>}<div className="table-wrap"><table><thead><tr><th>Asset / SN</th><th>产品</th><th>仓库</th><th>状态</th></tr></thead><tbody>{assets.map((asset) => <tr key={asset.assetId}><td>{asset.assetCode || asset.currentSn || asset.assetId}</td><td>{asset.productName}</td><td>{asset.warehouseCode}</td><td>{asset.locationStatus}</td></tr>)}</tbody></table>{!assets.length && <div className="empty-state"><h2>暂无可见库存。</h2></div>}</div></Shell>;
+}
+
+const transferStatusText = (status: AssetTransfer['status']) => ({ created: 'Reserved / 等待发运', shipped: 'In Transit', received: '已收货', cancelled: '已取消' })[status];
+
+function CnSdTransfers({ user, route, logout }: Props) {
+  const path = route.split('?')[0];
+  const detailId = path.match(/^\/system\/warehouse\/transfers\/([^/]+)$/)?.[1];
+  const creating = path === '/system/warehouse/transfers/new';
+  const [transfers, setTransfers] = useState<AssetTransfer[]>([]);
+  const [assets, setAssets] = useState<WarehouseAsset[]>([]);
+  const [assetQuery, setAssetQuery] = useState('');
+  const [carrier, setCarrier] = useState('');
+  const [trackingNumber, setTrackingNumber] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState(false);
+  const [notice, setNotice] = useState<{ tone: 'success' | 'error' | 'info'; text: string } | null>(null);
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [transferResult, assetResult] = await Promise.all([
+        api<{ transfers: AssetTransfer[] }>('/international/transfers?fromWarehouseId=wh-cn-sd'),
+        api<{ assets: WarehouseAsset[] }>('/international/warehouses/assets?warehouseId=wh-cn-sd')
+      ]);
+      setTransfers(transferResult.transfers);
+      setAssets(assetResult.assets.filter((asset) => asset.custody === 'WAREHOUSE' && asset.locationStatus === 'on_hand'));
+    } catch (reason) {
+      setNotice({ tone: 'error', text: errorText(reason) });
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+  useEffect(() => { void load(); }, [load, path]);
+  const selectedAsset = useMemo(() => {
+    const query = assetQuery.trim().toLowerCase();
+    return assets.find((asset) => asset.assetCode?.toLowerCase() === query || asset.currentSn?.toLowerCase() === query) ?? null;
+  }, [assetQuery, assets]);
+  const transfer = detailId ? transfers.find((item) => item.id === detailId) : null;
+  const createTransfer = async () => {
+    if (!selectedAsset) return setNotice({ tone: 'error', text: '请输入列表中可调拨的 Asset Code 或 SN。仅 CN-SD On Hand 设备可选。' });
+    setSubmitting(true); setNotice(null);
+    try {
+      const created = await api<{ id: string }>('/international/transfers', { method: 'POST', body: JSON.stringify({ assetId: selectedAsset.assetId, fromWarehouseId: 'wh-cn-sd', toWarehouseId: 'wh-uk' }) });
+      location.hash = `#/system/warehouse/transfers/${created.id}?created=1`;
+    } catch (reason) {
+      setNotice({ tone: 'error', text: errorText(reason) });
+    } finally { setSubmitting(false); }
+  };
+  const shipTransfer = async () => {
+    if (!transfer) return;
+    if (!carrier.trim() || !trackingNumber.trim()) return setNotice({ tone: 'error', text: '请填写 Carrier 和 Tracking / AWB 后再确认发运。' });
+    setSubmitting(true); setNotice(null);
+    try {
+      await api(`/international/transfers/${transfer.id}/ship`, { method: 'POST', body: JSON.stringify({ carrier, trackingNumber }) });
+      await load();
+      setNotice({ tone: 'success', text: '调拨已发运，设备当前为 CN-SD → UK · In Transit。' });
+    } catch (reason) {
+      setNotice({ tone: 'error', text: errorText(reason) });
+    } finally { setSubmitting(false); }
+  };
+
+  if (loading) return <Shell user={user} route={route} title="国际调拨" subtitle="CN-SD → UK 单机调拨" logout={logout}><Loading text="正在加载调拨数据…" /></Shell>;
+  if (creating) return <Shell user={user} route={route} title="创建调拨" subtitle="仅支持 CN-SD On Hand Asset → UK" logout={logout}>
+    {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+    <section className="panel transfer-form"><div className="transfer-route"><div><span>Source</span><strong>CN-SD</strong></div><b>→</b><div><span>Destination</span><strong>UK</strong></div></div>
+      <label>Asset Code / SN<input list="cn-sd-assets" value={assetQuery} onChange={(event) => setAssetQuery(event.target.value)} placeholder="输入或搜索 Asset Code" autoFocus /></label>
+      <datalist id="cn-sd-assets">{assets.map((asset) => <option key={asset.assetId} value={asset.assetCode || asset.currentSn || ''}>{asset.productName} · {asset.currentSn || '无 SN'}</option>)}</datalist>
+      {selectedAsset && <div className="transfer-asset-match"><strong>{selectedAsset.assetCode}</strong><span>{selectedAsset.productName} · SN {selectedAsset.currentSn || '—'}</span><small>CN-SD · WAREHOUSE / on_hand</small></div>}
+      {!assets.length && <div className="empty-state"><h2>当前没有可调拨设备。</h2><p>仅显示 CN-SD、WAREHOUSE、on_hand 的 Asset。</p></div>}
+      <div className="action-list"><button className="button" disabled={submitting || !selectedAsset} onClick={() => void createTransfer()}>{submitting ? '正在创建…' : '确认创建调拨'}</button><a className="button button--secondary" href="#/system/warehouse/transfers">取消</a></div>
+    </section>
+  </Shell>;
+  if (detailId) return <Shell user={user} route={route} title="调拨详情" subtitle={transfer?.id || detailId} logout={logout}>
+    {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+    {!transfer ? <div className="empty-state"><h2>未找到调拨单。</h2><a className="button button--secondary" href="#/system/warehouse/transfers">返回调拨列表</a></div> : <section className="panel transfer-detail">
+      <div className="transfer-route"><div><span>Source</span><strong>{transfer.fromWarehouseCode}</strong></div><b>→</b><div><span>Destination</span><strong>{transfer.toWarehouseCode}</strong></div></div>
+      <dl><dt>Asset Code</dt><dd>{transfer.assetCode}</dd><dt>Product</dt><dd>{transfer.productName}</dd><dt>Status</dt><dd><span className={`status transfer-status transfer-status--${transfer.status}`}>{transferStatusText(transfer.status)}</span></dd><dt>Carrier</dt><dd>{transfer.carrier || '—'}</dd><dt>Tracking / AWB</dt><dd>{transfer.trackingNumber || '—'}</dd></dl>
+      {transfer.status === 'created' && <div className="transfer-ship-form"><label>Carrier<input value={carrier} onChange={(event) => setCarrier(event.target.value)} placeholder="例如 DHL / UPS / FedEx" /></label><label>Tracking / AWB<input value={trackingNumber} onChange={(event) => setTrackingNumber(event.target.value)} placeholder="输入运单号" /></label><button className="button" disabled={submitting} onClick={() => void shipTransfer()}>{submitting ? '正在发运…' : '确认发运'}</button></div>}
+      {transfer.status === 'shipped' && <Notice tone="success">CN-SD → UK · In Transit</Notice>}
+      <a className="text-link" href="#/system/warehouse/transfers">返回调拨列表</a>
+    </section>}
+  </Shell>;
+  return <Shell user={user} route={route} title="国际调拨" subtitle="CN-SD → UK 单机 Asset 调拨" logout={logout}>
+    {notice && <Notice tone={notice.tone}>{notice.text}</Notice>}
+    <div className="certified-toolbar"><a className="button" href="#/system/warehouse/transfers/new">创建调拨</a></div>
+    <div className="table-wrap"><table><thead><tr><th>Transfer ID</th><th>Asset Code</th><th>Product</th><th>Destination</th><th>Status</th><th>Carrier</th><th>Tracking</th><th>操作</th></tr></thead><tbody>{transfers.map((item) => <tr key={item.id}><td><small>{item.id}</small></td><td><strong>{item.assetCode}</strong></td><td>{item.productName}</td><td>{item.toWarehouseCode}</td><td><span className={`status transfer-status transfer-status--${item.status}`}>{transferStatusText(item.status)}</span></td><td>{item.carrier || '—'}</td><td>{item.trackingNumber || '—'}</td><td><a className="button button--secondary" href={`#/system/warehouse/transfers/${item.id}`}>打开</a></td></tr>)}</tbody></table>{!transfers.length && <div className="empty-state"><h2>当前没有 CN-SD 调拨。</h2><p>创建后会在这里显示发运状态。</p></div>}</div>
+  </Shell>;
 }
 
 function Listings({ user, route, logout }: Props) {
@@ -220,14 +323,15 @@ function Listings({ user, route, logout }: Props) {
   return <Shell user={user} route={route} title="渠道与 Listing" subtitle="每台 Asset 保留完整 Listing 历史。" logout={logout}>{error && <Notice tone="error">{error}</Notice>}<div className="table-wrap"><table><thead><tr><th>Asset / SN</th><th>Listing</th><th>渠道</th><th>销售账号</th><th>价格</th><th>状态</th></tr></thead><tbody>{listings.map((listing) => <tr key={listing.id}><td>{listing.currentSn || '—'}</td><td>{listing.title}</td><td>{listing.channelCode}</td><td>{listing.salesAccountName}</td><td>{formatMoney(listing.priceMinor, listing.currency)}</td><td>{listing.status}</td></tr>)}</tbody></table>{!listings.length && <div className="empty-state"><h2>暂无 Listing。</h2></div>}</div></Shell>;
 }
 
-function InternationalHome({ user, route, logout, title, subtitle, mode }: Props & { title: string; subtitle: string; mode: 'certified' | 'international' | 'uk' }) {
+function InternationalHome({ user, route, logout, title, subtitle, mode }: Props & { title: string; subtitle: string; mode: 'certified' | 'international' | 'uk' | 'warehouse' }) {
   if (mode === 'certified') return <CertifiedTasks user={user} route={route} logout={logout} />;
   const cards = mode === 'uk' ? [['UK 库存', '/system/uk-fulfilment/inventory', '查看可履约 Asset'], ['UK 订单', '/system/uk-fulfilment/orders', '处理待发订单'], ['UK RMA', '/system/uk-fulfilment/rma', '处理退货与售后']] : [['Certified 检测', '/system/certified', '处理认证任务'], ['全球库存', '/system/international/inventory', '查看 Asset 位置'], ['渠道与 Listing', '/system/international/listings', '管理 Listing 历史'], ['UK 履约', '/system/uk-fulfilment/inventory', 'UK 库存与发货']];
   return <Shell user={user} route={route} title={title} subtitle={subtitle} logout={logout}><div className="stats operations-stats">{cards.map(([label, href, detail]) => <a className="stat" href={`#${href}`} key={href}><p>{label}</p><strong>→</strong><span>{detail}</span></a>)}</div></Shell>;
 }
 
-export function InternationalPortal({ user, route, logout, mode }: Props & { mode: 'certified' | 'international' | 'uk' }) {
+export function InternationalPortal({ user, route, logout, mode }: Props & { mode: 'certified' | 'international' | 'uk' | 'warehouse' }) {
   const path = route.split('?')[0];
+  if (path.startsWith('/system/warehouse/transfers')) return <CnSdTransfers user={user} route={route} logout={logout} />;
   const taskMatch = path.match(/^\/system\/certified\/tasks\/([^/]+)$/);
   if (taskMatch) return <InspectionTaskPage user={user} route={route} logout={logout} taskId={taskMatch[1]} />;
   if (path === '/system/certified/final-qc' && canFinalQc(user)) return <CertifiedTasks user={user} route={route} logout={logout} finalQcOnly />;

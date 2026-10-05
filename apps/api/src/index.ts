@@ -4911,6 +4911,27 @@ app.get('/international/warehouses/assets', requireAuth, async (c) => {
   return c.json({ assets: rows });
 });
 
+app.get('/international/transfers', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'transfer:manage');
+  const fromWarehouseId = c.req.query('fromWarehouseId');
+  if (!fromWarehouseId) throw badRequest('必须指定调出仓');
+  requireWarehouseScope(user, fromWarehouseId);
+  const transfers = await all(c.env.DB, `SELECT asset_transfers.id, asset_transfers.asset_id AS assetId,
+    assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
+    asset_transfers.from_warehouse_id AS fromWarehouseId, source.code AS fromWarehouseCode,
+    asset_transfers.to_warehouse_id AS toWarehouseId, destination.code AS toWarehouseCode,
+    asset_transfers.status, asset_transfers.carrier, asset_transfers.tracking_number AS trackingNumber,
+    asset_transfers.created_at AS createdAt, asset_transfers.shipped_at AS shippedAt, asset_transfers.received_at AS receivedAt
+    FROM asset_transfers
+    JOIN assets ON assets.id = asset_transfers.asset_id
+    JOIN warehouses source ON source.id = asset_transfers.from_warehouse_id
+    JOIN warehouses destination ON destination.id = asset_transfers.to_warehouse_id
+    WHERE asset_transfers.from_warehouse_id = ?
+    ORDER BY asset_transfers.created_at DESC`, fromWarehouseId);
+  return c.json({ transfers });
+});
+
 app.post('/international/transfers', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'transfer:manage');
