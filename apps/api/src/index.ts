@@ -11,6 +11,7 @@ import { createSessionToken, hashIdentifier, hashPassword, loadSessionUser, requ
 import { mailSubject, mailTemplates, renderMailHtml, renderMailText, sendEmail, type MailTemplateData, type MailTemplateKey } from './email';
 import type { Env, Variables } from './types';
 import { requireAssetAccess, requireOrderAccess, requireRmaAccess } from './internationalAuthorization';
+import { ukOrderSelect, ukShipEligible } from './ukFulfilment';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -4951,6 +4952,8 @@ app.post('/international/transfers', requireAuth, async (c) => {
   ]);
   if (!fromWarehouse || !toWarehouse || fromWarehouse.marketRegion === 'TRANSIT' || toWarehouse.marketRegion === 'TRANSIT') throw badRequest('调拨必须使用真实实体仓库');
   if (!location || location.warehouseId !== input.fromWarehouseId || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE') throw conflict('资产当前不在指定调出仓或不可调拨');
+  const reservation = await one(c.env.DB, `SELECT allocation_id FROM international_asset_allocations WHERE asset_id = ? AND status = 'reserved'`, input.assetId);
+  if (reservation) throw conflict('该设备已被客户订单预留，不能调拨。');
   const transferId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO asset_transfers (id, asset_id, from_warehouse_id, to_warehouse_id, created_by) VALUES (?, ?, ?, ?, ?)`)
@@ -5051,6 +5054,28 @@ app.post('/marketplace/listings/:id/:action', requireAuth, async (c) => {
   return c.json({ id: listing.id, status: nextStatus });
 });
 
+app.get('/international/orders', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  requireWarehouseScope(user, 'wh-uk');
+  const accounts = workspaceScopeIds(user, 'salesAccountIds');
+  if (!can(user, 'data:read:all') && !accounts.length) throw forbidden('你没有操作该订单的权限。');
+  const orders = await all(c.env.DB, `${ukOrderSelect} WHERE ${ukShipEligible}
+    ${can(user, 'data:read:all') ? '' : `AND o.sales_account_id IN (${placeholders(accounts)})`} ORDER BY o.created_at DESC`, ...(!can(user, 'data:read:all') ? accounts : []));
+  return c.json({ orders });
+});
+
+app.get('/international/orders/:id', requireAuth, async (c) => {
+  const user = c.get('user');
+  assertInternationalPermission(user, 'international-order:manage');
+  const scoped = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
+  if (scoped.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
+  const order = await one(c.env.DB, `${ukOrderSelect.replace('FROM orders o', `, (${ukShipEligible}) AS canShip FROM orders o`)}
+    WHERE o.id = ? AND allocation.status IN ('reserved','fulfilled') ORDER BY allocation.created_at DESC LIMIT 1`, scoped.id);
+  if (!order) throw conflict('该设备当前未被此订单有效预留。');
+  return c.json({ order });
+});
+
 app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
@@ -5060,6 +5085,9 @@ app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
   await requireAssetAccess(c.env.DB, user, input.assetId);
   const location = await one<{ warehouseId: string; status: string; custody: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId, status, custody FROM asset_locations WHERE asset_id = ?', input.assetId);
   if (!location || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE' || location.warehouseId !== order.fulfilmentWarehouseId) throw conflict('资产不可用、已被锁定或不在订单履约仓');
+  const blocked = await one(c.env.DB, `SELECT id FROM asset_transfers WHERE asset_id = ? AND status IN ('created','shipped')
+    UNION ALL SELECT id FROM after_sales_cases WHERE asset_id = ? AND status IN ('open','in_progress')`, input.assetId, input.assetId);
+  if (blocked) throw conflict('该设备已进入调拨 / 售后流程，不能预留。');
   const listing = input.listingId ? await one<{ id: string; assetId: string; salesAccountId: string; status: string }>(c.env.DB,
     'SELECT id, asset_id AS assetId, sales_account_id AS salesAccountId, status FROM marketplace_listings WHERE id = ?', input.listingId) : null;
   if (input.listingId && (!listing || listing.assetId !== input.assetId || listing.salesAccountId !== order.salesAccountId || listing.status !== 'active')) throw conflict('Listing 与订单、资产或销售账号不匹配');
@@ -5069,7 +5097,7 @@ app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
       c.env.DB.prepare(`INSERT INTO international_asset_allocations (allocation_id, asset_id, order_id, listing_id, status, reserved_by) VALUES (?, ?, ?, ?, 'reserved', ?)`)
         .bind(allocationId, input.assetId, order.id, input.listingId ?? null, user.id),
       c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'reserved', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'active'`).bind(input.listingId ?? null),
-      c.env.DB.prepare(`UPDATE asset_locations SET status = 'reserved', custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, input.assetId),
+      c.env.DB.prepare(`UPDATE asset_locations SET status = ?, custody = 'WAREHOUSE', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(order.fulfilmentWarehouseId === 'wh-uk' ? 'on_hand' : 'reserved', user.id, input.assetId),
       c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'asset_reserved', CURRENT_TIMESTAMP, '国际订单已绑定并锁定资产', ?, ?, 'admin_private', 'international-v1.2a')`).bind(id(), input.assetId, order.id, user.id),
       dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.bind_asset', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...input, allocationId } })
     ]);
@@ -5121,21 +5149,35 @@ app.post('/international/orders/:id/cancel-allocation', requireAuth, async (c) =
 app.post('/international/orders/:id/ship', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-order:manage');
-  const input = await parseBody(c.req.raw, z.object({ carrier: z.string().min(1).max(80), trackingNumber: z.string().min(1).max(160) }));
+  const input = await parseBody(c.req.raw, z.object({ assetCode: z.string().trim().min(1).max(80), carrier: z.string().trim().min(1).max(80), trackingNumber: z.string().trim().min(1).max(160) }));
   const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
-  if (['shipped', 'delivered', 'cancelled'].includes(order.status)) throw conflict('订单当前状态不能发货');
+  if (order.fulfilmentWarehouseId !== 'wh-uk') throw forbidden('你没有操作该订单的权限。');
+  if (['shipped', 'delivered'].includes(order.status)) throw conflict('该订单已经完成发货。');
+  if (!['approved', 'picking', 'packed'].includes(order.status)) throw conflict('订单当前状态不能发货。');
   const allocation = await one<{ allocationId: string; assetId: string; listingId: string | null }>(c.env.DB, `SELECT allocation_id AS allocationId, asset_id AS assetId, listing_id AS listingId FROM international_asset_allocations WHERE order_id = ? AND status = 'reserved' ORDER BY created_at DESC LIMIT 1`, order.id);
-  if (!allocation) throw conflict('该订单尚未绑定可出库的 Asset');
-  await c.env.DB.batch([
+  if (!allocation) throw conflict('该设备当前未被此订单有效预留。');
+  const asset = await one<{ assetCode: string; warehouseId: string; custody: string; status: string }>(c.env.DB,
+    `SELECT a.asset_code AS assetCode, l.warehouse_id AS warehouseId, l.custody, l.status FROM assets a JOIN asset_locations l ON l.asset_id = a.id WHERE a.id = ?`, allocation.assetId);
+  if (!asset || asset.warehouseId !== 'wh-uk' || asset.custody !== 'WAREHOUSE' || asset.status !== 'on_hand') throw conflict('该设备当前不在 UK 可发库存中。');
+  if (input.assetCode.toUpperCase() !== asset.assetCode.toUpperCase()) throw badRequest('扫描/输入的设备与订单绑定设备不一致。');
+  const eligible = await one(c.env.DB, `${ukOrderSelect} WHERE o.id = ? AND allocation.allocation_id = ? AND ${ukShipEligible}`, order.id, allocation.allocationId);
+  if (!eligible) throw conflict('该设备当前未被此订单有效预留，或已进入调拨 / 售后流程。');
+  try { await c.env.DB.batch([
+    // D1 batches are transactional. A stale eligibility check aborts the entire
+    // batch before any writes, including concurrent repeat-shipment attempts.
+    c.env.DB.prepare(`SELECT CASE WHEN EXISTS (${ukOrderSelect} WHERE o.id = ? AND allocation.allocation_id = ? AND ${ukShipEligible}) THEN 1 ELSE json('shipment state changed') END`).bind(order.id, allocation.allocationId),
     c.env.DB.prepare(`UPDATE orders SET status = 'shipped', fulfillment_carrier = ?, fulfillment_tracking_number = ?, fulfillment_updated_at = CURRENT_TIMESTAMP, fulfillment_updated_by = ?, updated_by = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status NOT IN ('cancelled','delivered')`)
       .bind(input.carrier, input.trackingNumber, user.id, user.id, order.id),
     c.env.DB.prepare(`UPDATE international_asset_allocations SET status = 'fulfilled', fulfilled_at = CURRENT_TIMESTAMP WHERE allocation_id = ? AND status = 'reserved'`).bind(allocation.allocationId),
     c.env.DB.prepare(`UPDATE marketplace_listings SET status = 'sold', ended_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status = 'reserved'`).bind(allocation.listingId),
-    c.env.DB.prepare(`UPDATE asset_locations SET status = 'shipped', custody = 'IN_TRANSIT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
-    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, operator_user_id, visibility, source) VALUES (?, ?, 'customer_shipped', CURRENT_TIMESTAMP, '已向客户发货', ?, ?, ?, 'admin_private', 'international-v1.2a')`)
-      .bind(id(), allocation.assetId, `${input.carrier} / ${input.trackingNumber}`, order.id, user.id),
+    c.env.DB.prepare(`UPDATE asset_locations SET status = 'in_transit', custody = 'IN_TRANSIT', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE asset_id = ?`).bind(user.id, allocation.assetId),
+    c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, related_order_id, operator_user_id, visibility, source, new_value_json) VALUES (?, ?, 'customer_shipped', CURRENT_TIMESTAMP, '已向客户发货', ?, ?, ?, 'admin_private', 'international-v1.2a', ?)`)
+      .bind(id(), allocation.assetId, `${input.carrier} / ${input.trackingNumber}`, order.id, user.id, JSON.stringify({ orderId: order.id, carrier: input.carrier, trackingNumber: input.trackingNumber })),
     dbAudit(c.env.DB, { actorId: user.id, action: 'international.order.ship', entityType: 'order', entityId: order.id, requestId: c.get('requestId'), after: { ...input, allocationId: allocation.allocationId } })
-  ]);
+  ]); } catch (error) {
+    if (error instanceof Error && /malformed JSON/i.test(error.message)) throw conflict('订单或设备状态已变化，请刷新后重试。');
+    throw error;
+  }
   return c.json({ orderId: order.id, assetId: allocation.assetId, allocationId: allocation.allocationId, status: 'shipped' });
 });
 

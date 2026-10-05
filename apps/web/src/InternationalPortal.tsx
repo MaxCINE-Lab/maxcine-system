@@ -2,6 +2,7 @@ import { type ChangeEvent, useCallback, useEffect, useMemo, useState } from 'rea
 import type { SessionUser } from '@maxcine/shared';
 import { api, apiResourceUrl, ApiClientError, uploadFormData } from './api';
 import { Shell } from './OperationsPortal';
+import { UkOrders } from './UkOrders';
 
 type Props = { user: SessionUser; route: string; logout: () => void };
 type InspectionResult = 'PASS' | 'FAIL' | 'ADVISORY' | 'N/A';
@@ -383,7 +384,7 @@ function Listings({ user, route, logout }: Props) {
 
 function InternationalHome({ user, route, logout, title, subtitle, mode }: Props & { title: string; subtitle: string; mode: 'certified' | 'international' | 'uk' | 'warehouse' }) {
   if (mode === 'certified') return <CertifiedTasks user={user} route={route} logout={logout} />;
-  const cards = mode === 'uk' ? [['待收货', '/system/uk-fulfilment/receiving', '接收 CN-SD → UK Transfer'], ['UK 库存', '/system/uk-fulfilment/inventory', '查看 UK On Hand Asset']] : [['Certified 检测', '/system/certified', '处理认证任务'], ['全球库存', '/system/international/inventory', '查看 Asset 位置'], ['渠道与 Listing', '/system/international/listings', '管理 Listing 历史'], ['UK 履约', '/system/uk-fulfilment/inventory', 'UK 库存与发货']];
+  const cards = mode === 'uk' ? [['待收货', '/system/uk-fulfilment/receiving', '接收 CN-SD → UK Transfer'], ['待发货订单', '/system/uk-fulfilment/orders', '匹配设备并向客户发货'], ['UK 库存', '/system/uk-fulfilment/inventory', '查看 UK On Hand Asset']] : [['Certified 检测', '/system/certified', '处理认证任务'], ['全球库存', '/system/international/inventory', '查看 Asset 位置'], ['渠道与 Listing', '/system/international/listings', '管理 Listing 历史'], ['UK 履约', '/system/uk-fulfilment/inventory', 'UK 库存与发货']];
   return <Shell user={user} route={route} title={title} subtitle={subtitle} logout={logout}><div className="stats operations-stats">{cards.map(([label, href, detail]) => <a className="stat" href={`#${href}`} key={href}><p>{label}</p><strong>→</strong><span>{detail}</span></a>)}</div></Shell>;
 }
 
@@ -391,6 +392,7 @@ export function InternationalPortal({ user, route, logout, mode }: Props & { mod
   const path = route.split('?')[0];
   if (path.startsWith('/system/warehouse/transfers')) return <CnSdTransfers user={user} route={route} logout={logout} />;
   if (path.startsWith('/system/uk-fulfilment/receiving')) return <UkReceiving user={user} route={route} logout={logout} />;
+  if (path.startsWith('/system/uk-fulfilment/orders')) return <UkOrders user={user} route={route} logout={logout} />;
   const taskMatch = path.match(/^\/system\/certified\/tasks\/([^/]+)$/);
   if (taskMatch) return <InspectionTaskPage user={user} route={route} logout={logout} taskId={taskMatch[1]} />;
   if (path === '/system/certified/final-qc' && canFinalQc(user)) return <CertifiedTasks user={user} route={route} logout={logout} finalQcOnly />;

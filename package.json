@@ -21,6 +21,7 @@
     "test:phase1-2b-certified": "node --test tests/phase1_2b_certified.test.mjs",
     "test:phase1-2b-transfer": "node --test tests/phase1_2b_transfer.test.mjs",
     "test:phase1-2b-uk-receive": "npm run build -w @maxcine/shared && node --test tests/phase1_2b_uk_receive.test.mjs",
+    "test:phase1-2b-uk-ship": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_uk_ship.test.mjs",
     "test:scanner": "npm run build -w @maxcine/shared && node scripts/test-barcode-scanner.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api && npm run build -w @maxcine/website",
