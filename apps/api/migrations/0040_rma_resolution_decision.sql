@@ -59,8 +59,7 @@ CREATE UNIQUE INDEX idx_rma_resolution_event ON asset_events(related_service_cas
 CREATE TRIGGER trg_rma_resolution_valid BEFORE UPDATE OF resolution_decided_at,resolution_decided_by,resolution_inspection_id,resolution_decision_reason,resolution_decision_notes,cross_border_resolution ON after_sales_cases
 WHEN OLD.resolution_decided_at IS NULL AND
   (NEW.resolution_decided_at IS NOT NULL OR NEW.resolution_decided_by IS NOT NULL OR NEW.resolution_inspection_id IS NOT NULL OR NEW.resolution_decision_reason IS NOT NULL)
-BEGIN
-  SELECT CASE WHEN NEW.resolution_decided_at IS NOT NULL AND datetime(NEW.resolution_decided_at) IS NOT NULL
+  AND COALESCE(NEW.resolution_decided_at IS NOT NULL AND datetime(NEW.resolution_decided_at) IS NOT NULL
     AND NEW.resolution_decided_by IS NOT NULL AND length(trim(NEW.resolution_decision_reason)) BETWEEN 1 AND 1000
     AND length(NEW.resolution_decision_notes)<=4000 AND NEW.cross_border_resolution IN ('REPAIR','REPLACE','REFUND','REJECT')
     AND OLD.service_stage='INSPECTION_COMPLETED' AND OLD.status='in_progress'
@@ -74,9 +73,8 @@ BEGIN
         AND json_extract(i.findings_json,'$.conditionAssessment') IN ('GOOD','COSMETIC_DAMAGE','FUNCTIONAL_DEFECT','PHYSICAL_DAMAGE','INCOMPLETE','OTHER')
         AND length(trim(json_extract(i.findings_json,'$.inspectorNotes')))>0
         AND a.inventory_status='QUARANTINED' AND l.custody='WAREHOUSE' AND l.status='returned' AND l.warehouse_id='wh-uk'
-        AND area.warehouse_id='wh-uk' AND area.code='RETURN-QUARANTINE')
-  THEN 1 ELSE RAISE(ABORT,'Invalid RMA resolution decision') END;
-END;
+        AND area.warehouse_id='wh-uk' AND area.code='RETURN-QUARANTINE'),0)=0
+BEGIN SELECT RAISE(ABORT,'Invalid RMA resolution decision'); END;
 CREATE TRIGGER trg_rma_resolution_immutable BEFORE UPDATE ON after_sales_cases
 WHEN OLD.resolution_decided_at IS NOT NULL AND (
   NEW.cross_border_resolution IS NOT OLD.cross_border_resolution OR NEW.resolution_decision_reason IS NOT OLD.resolution_decision_reason
