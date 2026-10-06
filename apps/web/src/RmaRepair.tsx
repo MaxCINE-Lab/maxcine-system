@@ -55,7 +55,7 @@ export function RmaRepair({rmaId,updated}:{rmaId:string;updated:(status:string)=
           <dt>Repair Summary</dt><dd>{e.repairSummary}</dd><dt>Work Performed</dt><dd>{e.workPerformed}</dd><dt>Repair Notes</dt><dd>{e.repairNotes||'—'}</dd>
           <dt>Post-Repair Functional Check</dt><dd>{e.postRepairCheck} · {e.postCheckStatus}</dd></dl><h3>Parts Used</h3>
           {e.partsUsed.length?<ul>{e.partsUsed.map((p,index)=><li key={index}>{p.partName} · {p.partNumber||'未记录 Part Number'} · Quantity: {p.quantity}</li>)}</ul>:<p>未使用 / 未记录配件。</p>}
-          <div className="notice notice--success" role="status">REPAIR_COMPLETED{e.postRepairCheck==='FAIL'?' / POST_CHECK_FAILED':e.postRepairCheck==='INCONCLUSIVE'?' / POST_CHECK_INCONCLUSIVE':''} · 记录已锁定。Awaiting Reinspection / Re-Certification。设备继续隔离，绝不表示 Certified 已恢复。</div></>
+          <div className="notice notice--success" role="status">REPAIR_COMPLETED{e.postRepairCheck==='FAIL'?' / POST_CHECK_FAILED':e.postRepairCheck==='INCONCLUSIVE'?' / POST_CHECK_INCONCLUSIVE':''} · 记录已锁定。维修完成时等待独立 Reinspection / Re-Certification；后续结果见对应复检记录。设备继续隔离，此维修记录不代表 Certified 已恢复。</div></>
         :data.canComplete?<form className="receive-confirmation" onSubmit={(event)=>{event.preventDefault();void submit(true);}}>
           <label>Repair Summary<textarea aria-label="Repair Summary" required maxLength={1000} disabled={saving} value={summary} onChange={(event)=>setSummary(event.target.value)} /></label>
           <label>Work Performed<textarea aria-label="Work Performed" required maxLength={4000} disabled={saving} value={work} onChange={(event)=>setWork(event.target.value)} /></label>

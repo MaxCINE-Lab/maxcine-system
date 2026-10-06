@@ -6,8 +6,8 @@ import { QuickRoleSwitcher } from './QuickRoleLogin';
 type NavItem = [label: string, href: string];
 type NavGroup = { label: string; items: NavItem[] };
 
-const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'certified_operator', 'international_operator', 'international_resolution_manager', 'international_repair_operator', 'uk_fulfilment_operator', 'super_admin'];
-const primaryRoleOrder: Role[] = ['super_admin', 'international_operator', 'international_resolution_manager', 'international_repair_operator', 'uk_fulfilment_operator', 'certified_operator', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
+const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'certified_operator', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier', 'uk_fulfilment_operator', 'super_admin'];
+const primaryRoleOrder: Role[] = ['super_admin', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier', 'uk_fulfilment_operator', 'certified_operator', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
 const roleDisplayName: Record<Role, string> = {
   super_admin: '管理员',
   warehouse_manager: '仓库',
@@ -18,7 +18,9 @@ const roleDisplayName: Record<Role, string> = {
   international_operator: '国际业务',
   uk_fulfilment_operator: '英国履约',
   international_resolution_manager: '国际售后决策',
-  international_repair_operator: '国际维修执行'
+  international_repair_operator: '国际维修执行',
+  post_repair_inspector:'维修后复检',
+  post_repair_certifier:'维修后再认证审核'
 };
 
 const employeeNumberByEmail: Readonly<Record<string, string>> = {
@@ -138,7 +140,7 @@ export function hasCertifiedAccess(user: SessionUser): boolean {
 }
 
 export function hasInternationalAccess(user: SessionUser): boolean {
-  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage', 'international-after-sales:decide', 'international-repair:execute']);
+  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage', 'international-after-sales:decide', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide']);
 }
 
 export function hasUkFulfilmentAccess(user: SessionUser): boolean {

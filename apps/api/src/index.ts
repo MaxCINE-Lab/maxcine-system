@@ -19,6 +19,8 @@ import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, recei
 import { completeReturnInspection, inspectionCompleteSchema, inspectionStartSchema, returnInspectionDetail, returnInspectionEvidenceContent, startReturnInspection, uploadReturnInspectionEvidence } from './rmaInspection';
 import { decideRmaResolution, rmaResolutionDetail, resolutionDecisionSchema } from './rmaResolution';
 import { completeRepair, repairCompleteSchema, repairDetail, repairStartSchema, startRepair } from './rmaRepair';
+import { legacyCertifiedGrade } from './certifiedInspectionPrimitives';
+import { completePostRepair,decideRecertification,postRepairCompleteSchema,postRepairDetail,postRepairDraftSchema,postRepairEvidenceContent,postRepairStartSchema,recertificationDecisionSchema,savePostRepair,startPostRepair,uploadPostRepairEvidence } from './postRepairRecertification';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -148,10 +150,9 @@ function assertCertifiedFinalQcPermission(user: SessionUser): void {
   if (!can(user, 'data:read:all') && !can(user, 'certified:final-qc')) throw forbidden('当前账户没有 Certified 最终审核权限');
 }
 
-function legacyCertifiedGrade(grade: 'A+' | 'A' | 'B+' | 'B' | 'Parts / Repair'): 'A' | 'B' | 'D' {
-  if (grade === 'A+' || grade === 'A') return 'A';
-  if (grade === 'B+' || grade === 'B') return 'B';
-  return 'D';
+async function originalCertifiedTask(db:D1Database,taskId:string){
+  const task=await one<{purpose:string}>(db,'SELECT process_code AS purpose FROM asset_inspection_tasks WHERE id=?',taskId);
+  if(task?.purpose==='POST_REPAIR_RECERTIFICATION')throw forbidden('维修后复检必须使用专用 RMA 复检与显式再认证决定，不能通过原 Certified 路径操作。');
 }
 
 function assertInventoryLedgerRead(user: SessionUser): void {
@@ -4733,7 +4734,7 @@ app.get('/certified/tasks', requireAuth, async (c) => {
     assets.version_snapshot AS productVersion, assignee.name AS assignedToName
     FROM asset_inspection_tasks JOIN assets ON assets.id = asset_inspection_tasks.asset_id
     LEFT JOIN users assignee ON assignee.id = asset_inspection_tasks.assigned_to
-    WHERE ${canSeeAll ? '1 = 1' : 'asset_inspection_tasks.assigned_to = ?'}
+    WHERE asset_inspection_tasks.process_code<>'POST_REPAIR_RECERTIFICATION' AND ${canSeeAll ? '1 = 1' : 'asset_inspection_tasks.assigned_to = ?'}
     ORDER BY asset_inspection_tasks.updated_at DESC`, ...(canSeeAll ? [] : [user.id]));
   return c.json({ tasks: rows });
 });
@@ -4741,6 +4742,7 @@ app.get('/certified/tasks', requireAuth, async (c) => {
 app.get('/certified/tasks/:id', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:read');
+  await originalCertifiedTask(c.env.DB,c.req.param('id'));
   const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string } & Record<string, unknown>>(c.env.DB, `SELECT
     asset_inspection_tasks.id, asset_inspection_tasks.asset_id AS assetId,
     asset_inspection_tasks.assigned_to AS assignedTo, assignee.name AS assignedToName,
@@ -4779,6 +4781,7 @@ app.post('/certified/tasks', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
   const input = await parseBody(c.req.raw, z.object({ assetId: z.string().uuid(), assignedTo: z.string().uuid().optional(), processCode: z.string().min(1).max(80).optional() }));
+  if(input.processCode==='POST_REPAIR_RECERTIFICATION')throw forbidden('维修后复检必须从已完成 REPAIR 的 RMA 开始。');
   await requireAssetAccess(c.env.DB, user, input.assetId);
   const taskId = id();
   await c.env.DB.batch([
@@ -4795,6 +4798,7 @@ app.post('/certified/tasks', requireAuth, async (c) => {
 app.post('/certified/tasks/:id/start', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
+  await originalCertifiedTask(c.env.DB,c.req.param('id'));
   const task = await one<{ id: string; assetId: string; assignedTo: string | null; status: string; startedAt: string | null }>(c.env.DB,
     'SELECT id, asset_id AS assetId, assigned_to AS assignedTo, status, started_at AS startedAt FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
   if (!task) throw notFound('未找到检测任务');
@@ -4817,6 +4821,7 @@ app.post('/certified/tasks/:id/start', requireAuth, async (c) => {
 app.post('/certified/tasks/:id/evidence', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:read');
+  await originalCertifiedTask(c.env.DB,c.req.param('id'));
   const task = await one<{ id: string; assignedTo: string | null }>(c.env.DB, 'SELECT id, assigned_to AS assignedTo FROM asset_inspection_tasks WHERE id = ?', c.req.param('id'));
   if (!task) throw notFound('未找到检测任务');
   requireInspectionAssignment(user, task.assignedTo);
@@ -4859,6 +4864,8 @@ app.get('/certified/evidence/:id/content', requireAuth, async (c) => {
     JOIN asset_inspection_tasks ON asset_inspection_tasks.id = asset_inspection_evidence.inspection_task_id
     WHERE asset_inspection_evidence.id = ?`, c.req.param('id'));
   if (!evidence?.objectKey) throw notFound('未找到可查看的检测证据');
+  const purpose=await one<{taskId:string}>(c.env.DB,'SELECT inspection_task_id AS taskId FROM asset_inspection_evidence WHERE id=?',c.req.param('id'));
+  if(purpose)await originalCertifiedTask(c.env.DB,purpose.taskId);
   requireInspectionAssignment(user, evidence.assignedTo);
   if (!c.env.ASSETS) throw notFound('文件存储尚未启用');
   const object = await c.env.ASSETS.get(evidence.objectKey);
@@ -4875,6 +4882,7 @@ app.get('/certified/evidence/:id/content', requireAuth, async (c) => {
 app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'certified:manage');
+  await originalCertifiedTask(c.env.DB,c.req.param('id'));
   const input = await parseBody(c.req.raw, z.object({
     result: z.enum(['PASS', 'FAIL', 'ADVISORY', 'N/A']),
     grade: z.enum(['A+', 'A', 'B+', 'B', 'Parts / Repair']),
@@ -4902,6 +4910,7 @@ app.post('/certified/tasks/:id/complete', requireAuth, async (c) => {
 app.post('/certified/tasks/:id/final-qc', requireAuth, async (c) => {
   const user = c.get('user');
   assertCertifiedFinalQcPermission(user);
+  await originalCertifiedTask(c.env.DB,c.req.param('id'));
   const input = await parseBody(c.req.raw, z.object({ action: z.literal('approve'), notes: z.string().trim().max(2000).default('') }));
   const task = await one<{ id: string; assetId: string; status: string; result: 'PASS' | 'FAIL' | 'ADVISORY' | 'N/A' | null; grade: 'A+' | 'A' | 'B+' | 'B' | 'Parts / Repair' | null; finalQc: number | null }>(c.env.DB,
     `SELECT id, asset_id AS assetId, status, result, COALESCE(grade_display, grade) AS grade, final_qc AS finalQc FROM asset_inspection_tasks WHERE id = ?`, c.req.param('id'));
@@ -4940,7 +4949,7 @@ app.get('/international/warehouses/assets', requireAuth, async (c) => {
     COALESCE(asset_certifications.grade_display, asset_certifications.grade) AS grade,
     asset_certifications.certification_status AS certificationStatus
     FROM asset_locations JOIN assets ON assets.id = asset_locations.asset_id JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
-    LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id AND asset_certifications.certification_status = 'certified'
+    LEFT JOIN current_asset_certifications AS asset_certifications ON asset_certifications.asset_id = assets.id AND asset_certifications.certification_status = 'certified'
     WHERE assets.inventory_status <> 'QUARANTINED' AND asset_locations.custody = 'WAREHOUSE' AND asset_locations.status = 'on_hand' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
   return c.json({ assets: rows });
 });
@@ -5268,7 +5277,7 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
   const activatedAt = new Date().toISOString();
   const endAt = certifiedWarrantyEnd(deliveredAt);
   const decision = await one<{ eligibility: WarrantyEligibility }>(c.env.DB, `SELECT ${certifiedEligibilitySql} AS eligibility
-    FROM assets asset LEFT JOIN asset_certifications cert ON cert.asset_id = asset.id WHERE asset.id = ?`, deliveredAt, allocation.assetId);
+    FROM assets asset LEFT JOIN current_asset_certifications cert ON cert.asset_id = asset.id WHERE asset.id = ?`, deliveredAt, allocation.assetId);
   if (!decision) throw conflict('未找到关联设备。');
   const warrantyMetadata = { policy_code: certifiedWarrantyPolicy.code, source_order_id: order.id, start_date: deliveredAt, end_date: endAt, market_region: 'UK', activation_source: 'sale_delivery' };
   const reference = await one<{ externalOrderId: string; channel: string }>(c.env.DB, `SELECT o.external_order_id AS externalOrderId, ch.code AS channel FROM orders o JOIN sales_channels ch ON ch.id = o.channel_id WHERE o.id = ?`, order.id);
@@ -5279,7 +5288,7 @@ app.post('/international/orders/:id/deliver', requireAuth, async (c) => {
       c.env.DB.prepare(`SELECT CASE WHEN EXISTS (SELECT 1 FROM orders o
         JOIN international_asset_allocations a ON a.order_id = o.id
         JOIN asset_locations l ON l.asset_id = a.asset_id
-        JOIN assets asset ON asset.id = a.asset_id LEFT JOIN asset_certifications cert ON cert.asset_id = asset.id
+        JOIN assets asset ON asset.id = a.asset_id LEFT JOIN current_asset_certifications cert ON cert.asset_id = asset.id
         WHERE o.id = ? AND o.status = ? AND o.fulfilment_warehouse_id = 'wh-uk' AND o.sales_account_id = ?
         AND o.certified_warranty_eligibility IS NULL
         AND a.allocation_id = ? AND a.status = 'fulfilled' AND l.custody = ? AND l.status = ?
@@ -5336,7 +5345,7 @@ app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) =
   await c.env.DB.batch([
     c.env.DB.prepare(`UPDATE assets SET warranty_start_at = ?, warranty_end_at = ?, warranty_override_status = NULL, warranty_override_reason = '', updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`)
       .bind(input.startDate, input.endDate, user.id, asset.id),
-    c.env.DB.prepare(`UPDATE asset_certifications SET warranty_reference = ? WHERE asset_id = ?`).bind(input.warrantyReference, asset.id),
+    c.env.DB.prepare(`UPDATE asset_certifications SET warranty_reference = ? WHERE id=(SELECT id FROM current_asset_certifications WHERE asset_id=?)`).bind(input.warrantyReference, asset.id),
     c.env.DB.prepare(`INSERT INTO asset_events (id, asset_id, event_type, occurred_at, title, description, operator_user_id, visibility, source) VALUES (?, ?, 'warranty_activated', CURRENT_TIMESTAMP, '国际保修已激活', ?, ?, 'admin_private', 'international-v1.2a')`)
       .bind(id(), asset.id, input.warrantyReference, user.id),
     dbAudit(c.env.DB, { actorId: user.id, action: 'international.warranty.activate', entityType: 'asset', entityId: asset.id, requestId: c.get('requestId'), after: input })
@@ -5356,6 +5365,25 @@ app.get('/international/rmas/:id/resolution', requireAuth, async (c) => {
 });
 app.get('/international/rmas/:id/repair', requireAuth, async (c) => {
   return c.json(await repairDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.get('/international/rmas/:id/post-repair-inspection',requireAuth,async(c)=>c.json(await postRepairDetail(c.env.DB,c.get('user'),c.req.param('id'))));
+app.post('/international/rmas/:id/post-repair-inspection/start',requireAuth,async(c)=>{
+  const input=postRepairStartSchema.parse(await parseBody(c.req.raw,postRepairStartSchema));
+  return c.json(await startPostRepair(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.patch('/international/rmas/:id/post-repair-inspection',requireAuth,async(c)=>{
+  const input=postRepairDraftSchema.parse(await parseBody(c.req.raw,postRepairDraftSchema));
+  return c.json(await savePostRepair(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.post('/international/rmas/:id/post-repair-inspection/complete',requireAuth,async(c)=>{
+  const input=postRepairCompleteSchema.parse(await parseBody(c.req.raw,postRepairCompleteSchema));
+  return c.json(await completePostRepair(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.post('/international/rmas/:id/post-repair-inspection/evidence',requireAuth,async(c)=>c.json(await uploadPostRepairEvidence(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id'),await c.req.raw.formData(),c.get('requestId')),201));
+app.get('/international/post-repair-evidence/:id/content',requireAuth,async(c)=>postRepairEvidenceContent(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id')));
+app.post('/international/rmas/:id/recertification-decision',requireAuth,async(c)=>{
+  const input=recertificationDecisionSchema.parse(await parseBody(c.req.raw,recertificationDecisionSchema));
+  return c.json(await decideRecertification(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
 });
 app.post('/international/rmas/:id/repair/start', requireAuth, async (c) => {
   await parseBody(c.req.raw,repairStartSchema);
@@ -5445,7 +5473,7 @@ app.get('/international/assets/:id', requireAuth, async (c) => {
     asset_locations.status AS locationStatus, asset_locations.custody, assets.inventory_status AS inventoryStatus,
     CASE WHEN assets.inventory_status='QUARANTINED' THEN 'QUARANTINED' ELSE assets.asset_status END AS assetStatus,
     (SELECT name FROM warehouse_locations WHERE id=asset_locations.location_id) AS locationName
-    FROM assets LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id
+    FROM assets LEFT JOIN current_asset_certifications AS asset_certifications ON asset_certifications.asset_id = assets.id
     LEFT JOIN asset_locations ON asset_locations.asset_id = assets.id LEFT JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
     WHERE assets.id = ?`, c.req.param('id'));
   if (!asset) throw notFound('未找到资产');

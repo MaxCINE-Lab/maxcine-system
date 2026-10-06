@@ -23,7 +23,7 @@ const inspectionSelect = `SELECT i.id,i.rma_id AS rmaId,i.asset_id AS assetId,i.
 
 async function scopedCase(db: D1Database,user: SessionUser,rmaId: string,completedReview=false): Promise<Case> {
   const inspecting=hasGlobalInternationalAccess(user) || can(user,'international-return:inspect');
-  const reviewing=completedReview && (user.roles.includes('super_admin') || can(user,'international-after-sales:decide') || can(user,'international-repair:execute'));
+  const reviewing=completedReview && (user.roles.includes('super_admin') || can(user,'international-after-sales:decide') || can(user,'international-repair:execute') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide'));
   if (!inspecting && !reviewing) throw forbidden('你没有 UK 退货检测或已完成报告审阅权限。');
   await requireRmaAccess(db,user,rmaId);
   const row = await one<Case & { market: string; warehouse: string }>(db,`SELECT c.id,c.asset_id AS assetId,c.order_id AS orderId,c.sales_account_id AS salesAccountId,c.service_stage AS stage,
@@ -147,6 +147,15 @@ export async function completeReturnInspection(db: D1Database,user: SessionUser,
   return returnInspectionDetail(db,user,rmaId);
 }
 
+export async function validatedInspectionPhoto(file:FormDataEntryValue|null){
+  if (!(file instanceof File) || !['image/jpeg','image/png','image/webp'].includes(file.type) || !file.size || file.size>25*1024*1024) throw badRequest('仅支持 25MB 以内的 JPG、PNG 或 WebP 照片。');
+  const bytes=await file.arrayBuffer();const head=new Uint8Array(bytes);
+  const valid=file.type==='image/jpeg'?head[0]===255&&head[1]===216&&head[2]===255:file.type==='image/png'
+    ?[137,80,78,71,13,10,26,10].every((byte,index)=>head[index]===byte)
+    :new TextDecoder().decode(head.slice(0,4))==='RIFF'&&new TextDecoder().decode(head.slice(8,12))==='WEBP';
+  if(!valid)throw badRequest('文件内容与照片类型不一致。');
+  return {file,bytes};
+}
 export async function uploadReturnInspectionEvidence(db: D1Database,bucket: R2Bucket | undefined,user: SessionUser,rmaId: string,form: FormData,requestId: string) {
   const row=await scopedCase(db,user,rmaId);
   const inspection=await one<Inspection>(db,inspectionSelect,rmaId);
@@ -154,13 +163,7 @@ export async function uploadReturnInspectionEvidence(db: D1Database,bucket: R2Bu
   assigned(user,inspection);
   if (!bucket) throw conflict('私有照片存储尚未配置。');
   const category=z.enum(evidenceCategories).parse(form.get('category'));
-  const file=form.get('file');
-  if (!(file instanceof File) || !['image/jpeg','image/png','image/webp'].includes(file.type) || !file.size || file.size>25*1024*1024) throw badRequest('仅支持 25MB 以内的 JPG、PNG 或 WebP 照片。');
-  const bytes=await file.arrayBuffer(); const head=new Uint8Array(bytes);
-  const valid=file.type==='image/jpeg' ? head[0]===255 && head[1]===216 && head[2]===255
-    : file.type==='image/png' ? [137,80,78,71,13,10,26,10].every((byte,index)=>head[index]===byte)
-    : new TextDecoder().decode(head.slice(0,4))==='RIFF' && new TextDecoder().decode(head.slice(8,12))==='WEBP';
-  if (!valid) throw badRequest('文件内容与照片类型不一致。');
+  const {file,bytes}=await validatedInspectionPhoto(form.get('file'));
   const evidenceId=id(); const key=`return-inspection/${inspection.id}/${evidenceId}`; const now=new Date().toISOString();
   await bucket.put(key,bytes,{httpMetadata:{contentType:file.type},customMetadata:{uploadedBy:user.id,originalFilename:file.name}});
   try {

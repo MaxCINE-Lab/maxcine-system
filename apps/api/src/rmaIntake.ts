@@ -33,10 +33,11 @@ export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string
   const { warrantySnapshotJson, ...result } = row;
   return { ...result, warrantySnapshot: warrantySnapshotJson ? JSON.parse(String(warrantySnapshotJson)) : null,
     canInspectReturn: result.returnWarehouseId === 'wh-uk' && ['RECEIVED','INSPECTION_IN_PROGRESS','INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED'].includes(String(result.businessStatus))
-      && (hasGlobalInternationalAccess(user) || can(user,'international-return:inspect') || ((can(user,'international-after-sales:decide') || can(user,'international-repair:execute')) && ['INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED'].includes(String(result.businessStatus)))),
+      && (hasGlobalInternationalAccess(user) || can(user,'international-return:inspect') || ((can(user,'international-after-sales:decide') || can(user,'international-repair:execute') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')) && ['INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED'].includes(String(result.businessStatus)))),
     canRecordReturnShipment: result.businessStatus === 'RETURN_AUTHORIZED' && (hasGlobalInternationalAccess(user) || can(user, 'international-after-sales:manage')),
     canReceiveReturn: result.businessStatus === 'RETURN_IN_TRANSIT' && result.returnWarehouseId === 'wh-uk'
-      && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')) };
+      && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')),
+    canViewPostRepair: result.businessStatus==='REPAIR_COMPLETED' && (user.roles.includes('super_admin') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')) };
 }
 
 export async function rmaList(db: D1Database, user: SessionUser) {

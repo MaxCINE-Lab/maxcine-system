@@ -130,8 +130,9 @@ test('Non-Certified delivery persists clear ineligibility without later changing
 });
 
 test('invalid/revoked/suspended/Parts certification and manual warranty restrictions do not break ordinary delivery', async () => {
-  for (const mutation of ["UPDATE asset_certifications SET certification_status = 'revoked'", "UPDATE asset_certifications SET certification_status = 'suspended'", "UPDATE asset_certifications SET final_qc = 0", "UPDATE asset_certifications SET grade = 'D'", "UPDATE asset_certifications SET inspection_result = 'FAIL'", "UPDATE asset_certifications SET certification_date = '2999-01-01'", "UPDATE assets SET warranty_override_status = 'denied'"]) {
-    const f = await fixture(); f.certify(); await f.ship(); f.sqlite.exec(mutation);
+  // Invalid issuance facts are fixture inputs, not edits to immutable history.
+  for (const facts of [{status:'revoked'},{status:'suspended'},{finalQc:0},{grade:'D'},{result:'FAIL'},{date:'2999-01-01'},{denied:true}]) {
+    const f = await fixture(); f.certify(facts); await f.ship(); if(facts.denied)f.sqlite.exec("UPDATE assets SET warranty_override_status = 'denied'");
     const response = await f.deliver(); assert.equal(response.status, 200); const result = await response.json();
     assert.equal(result.status, 'delivered'); assert.equal(result.certifiedWarranty.status, 'not_activated'); assert.ok(result.certifiedWarranty.reason);
     assert.equal(f.sqlite.prepare('SELECT certified_warranty_policy_code AS policy FROM assets').get().policy, null);
@@ -262,10 +263,17 @@ test('Public status/dates ignore corrupted cache and follow canonical boundaries
 });
 
 test('Public query does not falsely advertise revoked/suspended/invalid Certification', async () => {
-  for (const mutation of ["UPDATE asset_certifications SET certification_status = 'revoked'", "UPDATE asset_certifications SET certification_status = 'suspended'", "UPDATE asset_certifications SET final_qc = 0", "UPDATE asset_certifications SET grade = 'D'", "UPDATE asset_certifications SET inspection_result = 'FAIL'"]) {
-    const f = await fixture(); f.certify(); await f.ship(); await f.deliver(); f.sqlite.exec(mutation);
+  for (const facts of [{status:'revoked'},{status:'suspended'},{finalQc:0},{grade:'D'},{result:'FAIL'}]) {
+    const f = await fixture(); f.certify(facts); await f.ship(); await f.deliver();
     const response = await publicQuery(f); assert.equal(response.status, 404); assert.doesNotMatch(await response.text(), /MaxCINE Certified|SECRET/);
     f.sqlite.close();
+  }
+  // Current status can still be revoked/suspended without rewriting issuance
+  // facts. Existing public projection must cease advertising Certification.
+  for(const status of ['revoked','suspended']){
+    const f=await fixture();f.certify();await f.ship();await f.deliver();assert.equal((await publicQuery(f)).status,200);
+    f.sqlite.prepare('UPDATE asset_certifications SET certification_status=?').run(status);
+    assert.equal((await publicQuery(f)).status,404);f.sqlite.close();
   }
 });
 

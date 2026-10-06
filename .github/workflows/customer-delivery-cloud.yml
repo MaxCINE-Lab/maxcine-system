@@ -37,6 +37,7 @@ jobs:
           npx eslint apps/api/src/rmaInspection.ts apps/web/src/ReturnInspection.tsx tests/phase1_2b_return_inspection.test.mjs scripts/verify-return-inspection-staging.mjs --max-warnings=0
           npx eslint apps/api/src/rmaResolution.ts apps/web/src/RmaResolution.tsx tests/phase1_2b_rma_resolution.test.mjs scripts/verify-rma-resolution-staging.mjs --max-warnings=0
           npx eslint apps/api/src/rmaRepair.ts apps/web/src/RmaRepair.tsx tests/phase1_2b_rma_repair.test.mjs scripts/verify-rma-repair-staging.mjs --max-warnings=0
+          npx eslint apps/api/src/certifiedInspectionPrimitives.ts apps/api/src/postRepairRecertification.ts apps/web/src/PostRepairRecertification.tsx tests/helpers/postRepairFixture.mjs tests/phase1_2b_post_repair.test.mjs scripts/verify-post-repair-staging.mjs --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
@@ -50,6 +51,7 @@ jobs:
           npm run test:phase1-2b-return-inspection
           npm run test:phase1-2b-rma-resolution
           npm run test:phase1-2b-rma-repair
+          npm run test:phase1-2b-post-repair
       - name: Security suite
         run: npm test
       - name: Web and API build
@@ -64,9 +66,17 @@ jobs:
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           EMAIL_PROVIDER: mock
         run: npm run test:e2e
-      - name: Staging RMA Repair Execution browser acceptance
+      - name: Staging Post-Repair Re-Certification browser acceptance
         if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
-        run: node scripts/verify-rma-repair-staging.mjs
+        run: node scripts/verify-post-repair-staging.mjs
+      - name: Save Post-Repair Re-Certification evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: post-repair-staging-evidence
+          path: test-results/post-repair-staging/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Save RMA Repair evidence
         if: always()
         uses: actions/upload-artifact@v4

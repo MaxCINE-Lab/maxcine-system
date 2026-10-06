@@ -63,9 +63,11 @@ export async function deliveryFixture(options = {}) {
     assert.equal((await request('uk', '/international/orders/order-test/ship', { assetCode: 'MC-26-TEST-000099', carrier: 'Royal Mail', trackingNumber: 'RM-DELIVERY' })).status, 200);
   };
   const deliver = (user = 'uk') => request(user, '/international/orders/order-test/deliver', {});
-  const certify = () => sqlite.exec(`INSERT INTO asset_inspection_tasks (id, asset_id, assigned_to, status, result, grade, final_qc)
-    VALUES ('inspection-test', '43000000-0000-4000-8000-000000000099', 'cert', 'completed', 'PASS', 'A', 1);
-    INSERT INTO asset_certifications (id, asset_id, inspection_task_id, grade, inspection_result, final_qc, verification_code_hash)
-    VALUES ('certification-test', '43000000-0000-4000-8000-000000000099', 'inspection-test', 'A', 'PASS', 1, 'test-only');`);
+  const certify = ({grade='A',result='PASS',finalQc=1,status='certified',date='2026-01-01'}={}) => {
+    sqlite.exec(`INSERT INTO asset_inspection_tasks (id, asset_id, assigned_to, status, result, grade, final_qc)
+      VALUES ('inspection-test','43000000-0000-4000-8000-000000000099','cert','completed','PASS','A',1)`);
+    sqlite.prepare(`INSERT INTO asset_certifications(id,asset_id,inspection_task_id,grade,inspection_result,final_qc,verification_code_hash,certification_status,certification_date)
+      VALUES ('certification-test','43000000-0000-4000-8000-000000000099','inspection-test',?,?,?,?,?,?)`).run(grade,result,finalQc,'test-only',status,date);
+  };
   return { sqlite, db, request, ship, deliver, certify };
 }

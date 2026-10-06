@@ -21,4 +21,4 @@ export const ukOrderSelect = `SELECT o.id, o.order_no AS orderNo, o.external_ord
   JOIN international_asset_allocations allocation ON allocation.order_id = o.id
   JOIN assets asset ON asset.id = allocation.asset_id JOIN asset_locations location ON location.asset_id = asset.id
   LEFT JOIN warehouses warehouse ON warehouse.id = location.warehouse_id
-  LEFT JOIN asset_certifications cert ON cert.asset_id = asset.id AND cert.certification_status = 'certified'`;
+  LEFT JOIN current_asset_certifications cert ON cert.asset_id = asset.id AND cert.certification_status = 'certified'`;

@@ -10,7 +10,10 @@ const canonicalWhere = `a.certified_warranty_policy_code = '${certifiedWarrantyP
     WHERE o.id = a.warranty_source_order_id AND o.status = 'delivered' AND o.delivered_at = a.warranty_start_at
       AND al.asset_id = a.id AND al.status = 'fulfilled')`;
 const certificationWhere = `cert.certification_status = 'certified' AND cert.final_qc = 1 AND cert.grade <> 'D'
-  AND cert.inspection_result IN ('PASS','ADVISORY') AND julianday(cert.certification_date) <= julianday(a.warranty_start_at)`;
+  AND cert.inspection_result IN ('PASS','ADVISORY')
+  AND EXISTS (SELECT 1 FROM asset_certifications sale_cert WHERE sale_cert.asset_id=a.id
+    AND sale_cert.certification_status='certified' AND sale_cert.final_qc=1 AND sale_cert.grade<>'D'
+    AND sale_cert.inspection_result IN ('PASS','ADVISORY') AND julianday(sale_cert.certification_date)<=julianday(a.warranty_start_at))`;
 
 // Statements deliberately read canonical fields inside the caller's D1 batch,
 // after internal activation. Stable keys and conditional upserts make retries
@@ -83,7 +86,7 @@ export async function certifiedPublicWarrantyDto(db: D1Database, assetId: string
       a.product_name_snapshot AS productName, a.version_snapshot AS productVersion,
       a.warranty_start_at AS start, a.warranty_end_at AS end, a.warranty_override_status AS override,
       a.warranty_market_region AS market, cert.certification_status AS certificationStatus, cert.grade
-      FROM assets a JOIN asset_public_warranties p ON p.asset_id = a.id JOIN asset_certifications cert ON cert.asset_id = a.id
+      FROM assets a JOIN asset_public_warranties p ON p.asset_id = a.id JOIN current_asset_certifications cert ON cert.asset_id = a.id
       WHERE a.id = ? AND ${canonicalWhere} AND ${certificationWhere}
         AND p.projection_policy_code = a.certified_warranty_policy_code AND p.projection_source_order_id = a.warranty_source_order_id
         AND p.is_public_query_enabled = 1`, assetId);
