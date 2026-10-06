@@ -25,6 +25,7 @@ for(const persona of ['UK_FULFILMENT','CN_SD_WAREHOUSE','CERTIFIED','INTERNATION
 const initial=await get(admin,`${base}/resolution`);
 const browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:1440,height:1150}});page.setDefaultTimeout(30000);page.setDefaultNavigationTimeout(45000);
 let browserDecided=false;let evidencePreview=false;let noDefaultDecision=false;let missingReasonBlocked=false;
+let quarantinePage;
 try{
   await page.goto(web,{waitUntil:'networkidle'});await page.getByRole('button',{name:/^管理员/}).click();await page.locator('.system-main').waitFor();await page.waitForLoadState('networkidle');
   await page.goto(`${web}/#/system/international/rmas/${rma.id}`);await page.getByRole('heading',{name:'Resolution Review',exact:true}).waitFor();
@@ -43,8 +44,12 @@ try{
   await page.getByRole('heading',{name:'Resolution Summary · 决策已确认',exact:true}).waitFor();assert.equal(await page.getByRole('button',{name:'Confirm Resolution',exact:true}).count(),0);
   await page.getByText(input.decisionReason,{exact:true}).waitFor();await page.screenshot({path:`${directory}/resolution-decided.png`,fullPage:true});
   await page.reload({waitUntil:'networkidle'});await page.getByRole('heading',{name:'Resolution Summary · 决策已确认',exact:true}).waitFor();await page.getByRole('heading',{name:'RESOLUTION_DECIDED',exact:true}).waitFor();
-  await page.goto(`${web}/#/system/uk-fulfilment/return-quarantine`);await page.getByRole('row').filter({hasText:assetCode}).getByText('QUARANTINED',{exact:true}).waitFor();await page.screenshot({path:`${directory}/quarantine-unchanged.png`,fullPage:true});
-}catch(error){await page.screenshot({path:`${directory}/failure.png`,fullPage:true});await writeFile(`${directory}/failure-page.txt`,`${page.url()}\n${await page.locator('body').innerText()}`);throw error;}finally{await browser.close();}
+  // UK workspace access is distinct from Admin decision authority. Use the
+  // warehouse persona for the physical inventory view; never relax its guard.
+  quarantinePage=await browser.newPage({viewport:{width:1440,height:1150}});quarantinePage.setDefaultTimeout(30000);
+  await quarantinePage.goto(web,{waitUntil:'networkidle'});await quarantinePage.getByRole('button',{name:/^英国履约/}).click();await quarantinePage.locator('.system-main').waitFor();await quarantinePage.waitForLoadState('networkidle');
+  await quarantinePage.goto(`${web}/#/system/uk-fulfilment/return-quarantine`);await quarantinePage.getByRole('row').filter({hasText:assetCode}).getByText('QUARANTINED',{exact:true}).waitFor();await quarantinePage.screenshot({path:`${directory}/quarantine-unchanged.png`,fullPage:true});
+}catch(error){const failedPage=quarantinePage??page;await failedPage.screenshot({path:`${directory}/failure.png`,fullPage:true});await writeFile(`${directory}/failure-page.txt`,`${failedPage.url()}\n${await failedPage.locator('body').innerText()}`);throw error;}finally{await browser.close();}
 const final=(await get(admin,`${base}/resolution`)).decision;assert.equal(final.resolutionType,'REPAIR');assert.equal(final.decisionReason,input.decisionReason);assert.equal(final.decisionNotes,input.decisionNotes);assert.equal(final.status,'RESOLUTION_DECIDED');assert.equal(final.executionStatus,'NOT_STARTED');assert.ok(final.decidedBy);assert.ok(final.decidedAt);
 for(let n=0;n<3;n++){assert.equal((await admin(`${base}/resolution`,input)).status,200);assert.deepEqual((await get(admin,`${base}/resolution`)).decision,final);}
 assert.equal((await admin(`${base}/resolution`,{...input,resolutionType:'REFUND'})).status,409);assert.equal((await admin(`${base}/resolution`,{...input,decisionReason:'Attempt to overwrite'})).status,409);
@@ -57,4 +62,4 @@ assert.equal(international.asset.custody,'WAREHOUSE');assert.equal(international
 for(const key of ['status','allocationStatus','deliveredAt','carrier','trackingNumber','shippedAt'])assert.equal(order[key],beforeOrder[key],key);
 assert.ok(!(await get(uk,'/international/warehouses/assets?warehouseId=wh-uk')).assets.some((a)=>a.assetId===assetId));assert.equal((await get(admin,base)).rma.businessStatus,'RESOLUTION_DECIDED');
 assert.equal(international.events.filter((e)=>e.eventType==='rma_resolution_decided').length,1);const audits=(await get(admin,'/admin/audit-logs')).logs;assert.equal(audits.filter((a)=>a.entityId===rma.id&&a.action==='international.rma.resolution_decided').length,1);
-const report={environment:'GitHub Actions / Staging only',rmaReference:reference,assetCode,decision:final,browserDecided,evidencePreview,noDefaultDecision,missingReasonBlocked,inspectionUnchanged:true,evidenceHashesUnchanged:true,quarantineUnchanged:true,originalOrderAllocationCertificationWarrantyUnchanged:true,idempotentRetries:3,conflictingDecision409:true,lifecycleCount:1,auditCount:1,scope403:scopedRequests.map((entry)=>entry.persona),executionStarted:false};await writeFile(`${directory}/report.json`,JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
+const report={environment:'GitHub Actions / Staging only',rmaReference:reference,assetCode,decision:final,browserDecided,browserDecisionPreviouslyPersisted:Boolean(initial.decision),browserReadOnlyReloadVerified:true,evidencePreview,noDefaultDecision,missingReasonBlocked,inspectionUnchanged:true,evidenceHashesUnchanged:true,quarantineUnchanged:true,originalOrderAllocationCertificationWarrantyUnchanged:true,idempotentRetries:3,conflictingDecision409:true,lifecycleCount:1,auditCount:1,scope403:scopedRequests.map((entry)=>entry.persona),executionStarted:false};await writeFile(`${directory}/report.json`,JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
