@@ -33,6 +33,7 @@ jobs:
           npm run typecheck
           npx eslint apps/api/src/index.ts apps/api/src/ukFulfilment.ts apps/api/src/certifiedWarranty.ts apps/api/src/publicWarrantyProjection.ts apps/web/src/UkOrders.tsx apps/web/src/InternationalPortal.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts packages/shared/src/gsx.ts scripts/verify-delivery-staging.mjs tests/phase1_2b_delivery.test.mjs apps/website/warranty-certified.js --max-warnings=0
           npx eslint apps/api/src/rmaIntake.ts apps/api/src/internationalAuthorization.ts apps/web/src/RmaIntake.tsx packages/shared/src/international.ts tests/helpers/deliveryFixture.mjs tests/phase1_2b_rma_intake.test.mjs scripts/verify-rma-staging.mjs --max-warnings=0
+          npx eslint apps/api/src/rmaLogistics.ts apps/web/src/ReturnReceiving.tsx tests/phase1_2b_return_logistics.test.mjs scripts/verify-return-logistics-staging.mjs --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
@@ -42,6 +43,7 @@ jobs:
           npm run test:phase1-2b-uk-ship
           npm run test:phase1-2b-delivery
           npm run test:phase1-2b-rma-intake
+          npm run test:phase1-2b-return-logistics
       - name: Security suite
         run: npm test
       - name: Web and API build
@@ -56,18 +58,23 @@ jobs:
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           EMAIL_PROVIDER: mock
         run: npm run test:e2e
-      - name: Staging browser, API, idempotency and scope acceptance
+      - name: Staging Return Shipment / UK Quarantine Receive browser acceptance
         if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
-        run: node scripts/verify-delivery-staging.mjs
-      - name: Staging RMA browser, immutable warranties, idempotency and scope acceptance
-        if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
-        run: node scripts/verify-rma-staging.mjs
+        run: node scripts/verify-return-logistics-staging.mjs
       - name: Save acceptance evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: customer-delivery-staging-evidence
           path: test-results/delivery-staging/
+          if-no-files-found: ignore
+          retention-days: 14
+      - name: Save Return Logistics evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: return-logistics-staging-evidence
+          path: test-results/return-logistics-staging/
           if-no-files-found: ignore
           retention-days: 14
       - name: Save RMA acceptance evidence

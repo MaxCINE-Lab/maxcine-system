@@ -6,12 +6,34 @@ import { Shell } from './OperationsPortal';
 type Warranty = { status: string; policyCode: string | null; start: string | null; end: string | null; sourceOrderId: string | null };
 type Rma = { id: string; rmaReference: string; assetCode: string; productName: string; orderReference: string; orderId: string;
   marketRegion: string; reason: string; reasonNote: string; businessStatus: string; returnWarehouse: string;
-  carrier: string; returnTracking: string; createdAt: string; warrantySnapshot: Warranty };
+  carrier: string; returnTracking: string; createdAt: string; warrantySnapshot: Warranty; shippedAt: string | null; receivedAt: string | null;
+  custody: string; inventoryStatus: string; locationCode: string | null; canRecordReturnShipment: boolean; canReceiveReturn: boolean };
 type Context = { assetId: string; assetCode: string; productName: string; orderId: string; orderReference: string; marketRegion: string;
   warehouses: { id: string; code: string; name: string }[]; reasons: string[]; activeRma: { id: string; rmaReference: string | null } | null; warranty: Warranty };
 const reasonNames: Record<string, string> = { DEFECTIVE: 'DEFECTIVE · 设备故障', DAMAGED: 'DAMAGED · 设备损坏', NOT_AS_DESCRIBED: 'NOT_AS_DESCRIBED · 与描述不符', BUYER_REMORSE: 'BUYER_REMORSE · 改变主意', WRONG_ITEM: 'WRONG_ITEM · 商品错误', OTHER: 'OTHER · 其他' };
 const errorText = (error: unknown) => error instanceof ApiClientError ? error.code === 'FORBIDDEN' ? '你没有操作该 RMA / 市场 / 退货仓库的权限。' : error.message : '操作未完成，请稍后重试。';
 const dateTime = (value: string) => value ? new Date(value.includes('T') ? value : `${value.replace(' ', 'T')}Z`).toLocaleString('zh-CN') : '—';
+
+function ReturnShipment({ rma, updated }: { rma: Rma; updated: (rma: Rma) => void }) {
+  const [carrier, setCarrier] = useState(rma.carrier);
+  const [tracking, setTracking] = useState(rma.returnTracking);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const submit = async () => {
+    if (!carrier.trim() || !tracking.trim() || saving) return;
+    setSaving(true); setError('');
+    try { updated((await api<{ rma: Rma }>(`/international/rmas/${rma.id}/return-shipment`, { method: 'POST', body: JSON.stringify({ carrier, returnTracking: tracking }) })).rma); }
+    catch (error) { setError(errorText(error)); }
+    finally { setSaving(false); }
+  };
+  return <form className="panel receive-confirmation" onSubmit={(event) => { event.preventDefault(); void submit(); }}><h2>Record Return Shipment</h2>
+    <p>仅在客户实际寄出后确认；填写 Tracking 并确认将记录寄回时间，设备进入 RETURN_TRANSIT。</p>
+    {error && <div className="notice notice--error" role="alert">{error}</div>}
+    <label>Return Carrier<input aria-label="Return Carrier" required maxLength={80} value={carrier} disabled={saving} onChange={(event) => setCarrier(event.target.value)} /></label>
+    <label>Return Tracking<input aria-label="Return Tracking" required maxLength={160} value={tracking} disabled={saving} onChange={(event) => setTracking(event.target.value)} /></label>
+    <button className="button" disabled={saving || !carrier.trim() || !tracking.trim()}>{saving ? '正在记录…' : '确认客户已寄回'}</button>
+  </form>;
+}
 
 export function RmaIntake({ user, route, logout }: { user: SessionUser; route: string; logout: () => void }) {
   const base = route.startsWith('/system/international') ? '/system/international/rmas' : '/system/uk-fulfilment/rmas';
@@ -64,16 +86,20 @@ export function RmaIntake({ user, route, logout }: { user: SessionUser; route: s
     } catch (reason) { setError(errorText(reason)); }
     finally { setSaving(false); }
   };
-  return <Shell user={user} route={route} title={orderId ? 'Open RMA' : detailId ? 'RMA 退货授权' : 'Open RMAs'} subtitle="仅记录退货授权；尚未发回或收货" logout={logout}>
+  return <Shell user={user} route={route} title={orderId ? 'Open RMA' : detailId ? 'RMA 退货授权与物流' : 'Open RMAs'} subtitle="退回设备隔离存放，不恢复可售" logout={logout}>
     {error && <div className="notice notice--error" role="alert">{error}</div>}
-    {loading ? <div role="status">正在加载 RMA…</div> : rma ? <section className="panel transfer-detail"><h2>退货已授权</h2><p>RMA 已建立，客户可以退回至指定仓库；设备仍由客户持有，尚未收货。</p><dl>
+    {loading ? <div role="status">正在加载 RMA…</div> : rma ? <><section className="panel transfer-detail"><h2>{rma.businessStatus === 'RETURN_AUTHORIZED' ? '退货已授权' : rma.businessStatus === 'RETURN_IN_TRANSIT' ? '客户退货已寄回' : rma.businessStatus === 'RECEIVED' ? 'UK 退货收货完成' : rma.businessStatus}</h2><p>{rma.businessStatus === 'RETURN_AUTHORIZED' ? '设备仍由客户持有，尚未寄回或收货。' : rma.receivedAt ? '设备已进入 UK Return Quarantine，不属于可售库存。' : '设备正在退回 UK，尚未收货。'}</p><dl>
       <dt>RMA Reference</dt><dd>{rma.rmaReference}</dd><dt>Status</dt><dd>{rma.businessStatus}</dd>
       <dt>Asset Code</dt><dd>{rma.assetCode}</dd><dt>Product</dt><dd>{rma.productName}</dd><dt>Order</dt><dd>{rma.orderReference}</dd>
       <dt>Market</dt><dd>{rma.marketRegion}</dd><dt>Reason</dt><dd>{reasonNames[rma.reason] || rma.reason}</dd>
       <dt>Note</dt><dd>{rma.reasonNote || '—'}</dd><dt>Return Warehouse</dt><dd>{rma.returnWarehouse}</dd>
       <dt>Carrier</dt><dd>{rma.carrier || '尚未填写'}</dd><dt>Return Tracking</dt><dd>{rma.returnTracking || '客户尚未寄出 / 未填写'}</dd>
       <dt>Created At</dt><dd>{dateTime(rma.createdAt)}</dd><dt>Warranty Snapshot</dt><dd>{rma.warrantySnapshot?.status || 'not_activated'}{rma.warrantySnapshot?.policyCode && ` · ${rma.warrantySnapshot.policyCode}`}</dd>
-    </dl><p>此退货授权不代表免费维修或任何 Resolution 决定，保修保持原样。</p><a className="button" href={`#${base}`}>返回 Open RMAs</a></section>
+      <dt>Shipped At</dt><dd>{dateTime(rma.shippedAt || '')}</dd><dt>Received At</dt><dd>{dateTime(rma.receivedAt || '')}</dd>
+      <dt>Custody</dt><dd>{rma.custody}</dd><dt>Inventory Status</dt><dd>{rma.inventoryStatus}</dd><dt>Location</dt><dd>{rma.locationCode || '—'}</dd>
+    </dl><p>此退货授权不代表免费维修或任何 Resolution 决定，保修保持原样。</p><a className="button" href={`#${base}`}>返回 Open RMAs</a>
+      {rma.canReceiveReturn && <a className="button" href={`#/system/uk-fulfilment/return-receiving/${rma.id}`}>UK Receive Return</a>}
+    </section>{rma.canRecordReturnShipment && <ReturnShipment key={rma.id} rma={rma} updated={setRma} />}</>
       : context ? context.activeRma ? <div className="notice notice--error">该设备已有活动 RMA / 售后工单，不能重复创建。{context.activeRma.rmaReference && <a href={`#${base}/${context.activeRma.id}`}>打开 {context.activeRma.rmaReference}</a>}</div>
         : <form className="panel receive-confirmation" onSubmit={(event) => { event.preventDefault(); void submit(); }}><h2>Open RMA</h2><dl><dt>Asset Code</dt><dd>{context.assetCode}</dd><dt>Order Reference</dt><dd>{context.orderReference}</dd><dt>Market</dt><dd>{context.marketRegion}</dd><dt>Warranty</dt><dd>{context.warranty.status} · {context.warranty.policyCode || '无 Certified 商业保修'}</dd></dl>
           <p>商业保修不生效也可以申请退货授权。本轮不会改变 Custody 或 Warranty。</p>

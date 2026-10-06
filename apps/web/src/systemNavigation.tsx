@@ -146,6 +146,7 @@ export function hasUkFulfilmentAccess(user: SessionUser): boolean {
 export function systemNavGroups(user: SessionUser): NavGroup[] {
   const groups: NavGroup[] = [];
   const canRmas = hasAnyPermission(user, ['international-after-sales:read', 'data:read:all']);
+  const canReturnReceive = hasAnyPermission(user, ['international-return:receive', 'data:read:all']);
   if (hasAdminAccess(user)) {
     groups.push({
       label: '管理后台',
@@ -193,7 +194,7 @@ export function systemNavGroups(user: SessionUser): NavGroup[] {
     groups.push({ label: '国际业务', items: [['国际工作台', '/system/international'], ['全球库存', '/system/international/inventory'], ['调拨', '/system/international/transfers'], ['渠道与 Listing', '/system/international/listings'], ...(canRmas ? [['Open RMAs', '/system/international/rmas'] as NavItem] : [])] });
   }
   if (hasUkFulfilmentAccess(user)) {
-    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['待收货', '/system/uk-fulfilment/receiving'], ['待发货订单', '/system/uk-fulfilment/orders'], ...(user.permissions.includes('international-order:deliver') ? [['待确认送达', '/system/uk-fulfilment/deliveries'] as NavItem] : []), ...(canRmas ? [['Open RMAs', '/system/uk-fulfilment/rmas'] as NavItem] : []), ['UK 库存', '/system/uk-fulfilment/inventory']] });
+    groups.push({ label: '英国履约', items: [['UK 工作台', '/system/uk-fulfilment'], ['待收货', '/system/uk-fulfilment/receiving'], ['待发货订单', '/system/uk-fulfilment/orders'], ...(user.permissions.includes('international-order:deliver') ? [['待确认送达', '/system/uk-fulfilment/deliveries'] as NavItem] : []), ...(canRmas ? [['Open RMAs', '/system/uk-fulfilment/rmas'] as NavItem] : []), ...(canReturnReceive ? [['Awaiting Return Receipt', '/system/uk-fulfilment/return-receiving'] as NavItem, ['UK Return Quarantine', '/system/uk-fulfilment/return-quarantine'] as NavItem] : []), ['UK 库存', '/system/uk-fulfilment/inventory']] });
   }
   return groups;
 }

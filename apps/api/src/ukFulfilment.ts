@@ -4,6 +4,7 @@ export const ukShipEligible = `o.fulfilment_warehouse_id = 'wh-uk'
   AND o.status IN ('approved','picking','packed') AND allocation.status = 'reserved'
   AND location.warehouse_id = 'wh-uk' AND location.custody = 'WAREHOUSE' AND location.status = 'on_hand'
   AND asset.asset_status <> 'in_service'
+  AND asset.inventory_status <> 'QUARANTINED'
   AND NOT EXISTS (SELECT 1 FROM asset_transfers t WHERE t.asset_id = asset.id AND t.status IN ('created','shipped'))
   AND NOT EXISTS (SELECT 1 FROM after_sales_cases r WHERE r.asset_id = asset.id AND r.status IN ('open','in_progress'))
   AND (SELECT COUNT(*) FROM international_asset_allocations x WHERE x.order_id = o.id AND x.status = 'reserved') = 1`;

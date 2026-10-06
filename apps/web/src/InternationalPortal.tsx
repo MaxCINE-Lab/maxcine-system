@@ -4,6 +4,7 @@ import { api, apiResourceUrl, ApiClientError, uploadFormData } from './api';
 import { Shell } from './OperationsPortal';
 import { UkOrders } from './UkOrders';
 import { RmaIntake } from './RmaIntake';
+import { ReturnReceiving } from './ReturnReceiving';
 
 type Props = { user: SessionUser; route: string; logout: () => void };
 type InspectionResult = 'PASS' | 'FAIL' | 'ADVISORY' | 'N/A';
@@ -391,6 +392,7 @@ function InternationalHome({ user, route, logout, title, subtitle, mode }: Props
 
 export function InternationalPortal({ user, route, logout, mode }: Props & { mode: 'certified' | 'international' | 'uk' | 'warehouse' }) {
   const path = route.split('?')[0];
+  if (path.startsWith('/system/uk-fulfilment/return-receiving') || path === '/system/uk-fulfilment/return-quarantine') return <ReturnReceiving user={user} route={route} logout={logout} />;
   if (path.startsWith('/system/uk-fulfilment/rmas') || path.startsWith('/system/international/rmas')) return <RmaIntake user={user} route={route} logout={logout} />;
   if (path.startsWith('/system/warehouse/transfers')) return <CnSdTransfers user={user} route={route} logout={logout} />;
   if (path.startsWith('/system/uk-fulfilment/receiving')) return <UkReceiving user={user} route={route} logout={logout} />;

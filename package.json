@@ -24,6 +24,7 @@
     "test:phase1-2b-uk-ship": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_uk_ship.test.mjs",
     "test:phase1-2b-delivery": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_delivery.test.mjs",
     "test:phase1-2b-rma-intake": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_rma_intake.test.mjs",
+    "test:phase1-2b-return-logistics": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_return_logistics.test.mjs",
     "test:scanner": "npm run build -w @maxcine/shared && node scripts/test-barcode-scanner.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api && npm run build -w @maxcine/website",

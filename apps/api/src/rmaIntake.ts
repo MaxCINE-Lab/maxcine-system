@@ -1,4 +1,4 @@
-import { AppError, badRequest, conflict, forbidden, hasGlobalInternationalAccess, workspaceScopeIds, type SessionUser } from '@maxcine/shared';
+import { AppError, badRequest, can, conflict, forbidden, hasGlobalInternationalAccess, workspaceScopeIds, type SessionUser } from '@maxcine/shared';
 import { z } from 'zod';
 import { all, id, one } from './db';
 import { hashIdentifier } from './auth';
@@ -17,19 +17,24 @@ type Input = z.infer<typeof rmaIntakeSchema>;
 const rmaSelect = `SELECT c.id, c.rma_reference AS rmaReference, c.asset_id AS assetId, a.asset_code AS assetCode,
   a.product_name_snapshot AS productName, c.order_id AS orderId, o.order_no AS orderReference,
   c.market_region AS marketRegion, c.return_reason AS reason, c.reason_note AS reasonNote,
-  c.status, CASE WHEN c.status IN ('open','in_progress') THEN 'RETURN_AUTHORIZED' ELSE UPPER(c.status) END AS businessStatus,
+  c.status, CASE WHEN c.status IN ('open','in_progress') THEN c.service_stage ELSE UPPER(c.status) END AS businessStatus,
   c.return_warehouse_id AS returnWarehouseId, w.code AS returnWarehouse, c.return_carrier AS carrier,
   c.return_tracking AS returnTracking, c.created_at AS createdAt, c.return_authorized_at AS authorizedAt,
-  c.rma_warranty_snapshot_json AS warrantySnapshotJson
+  c.rma_warranty_snapshot_json AS warrantySnapshotJson, c.return_shipped_at AS shippedAt, c.return_received_at AS receivedAt,
+  l.custody, l.status AS locationStatus, a.inventory_status AS inventoryStatus, area.code AS locationCode
   FROM after_sales_cases c JOIN assets a ON a.id = c.asset_id JOIN orders o ON o.id = c.order_id
-  JOIN warehouses w ON w.id = c.return_warehouse_id`;
+  JOIN warehouses w ON w.id = c.return_warehouse_id
+  LEFT JOIN asset_locations l ON l.asset_id = a.id LEFT JOIN warehouse_locations area ON area.id = l.location_id`;
 
-export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string) {
+export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string): Promise<Record<string, unknown>> {
   await requireRmaAccess(db, user, rmaId);
   const row = await one<Record<string, unknown>>(db, `${rmaSelect} WHERE c.id = ? AND c.return_authorized_at IS NOT NULL`, rmaId);
   if (!row) throw conflict('该工单不是国际退货授权 RMA。');
   const { warrantySnapshotJson, ...result } = row;
-  return { ...result, warrantySnapshot: warrantySnapshotJson ? JSON.parse(String(warrantySnapshotJson)) : null };
+  return { ...result, warrantySnapshot: warrantySnapshotJson ? JSON.parse(String(warrantySnapshotJson)) : null,
+    canRecordReturnShipment: result.businessStatus === 'RETURN_AUTHORIZED' && (hasGlobalInternationalAccess(user) || can(user, 'international-after-sales:manage')),
+    canReceiveReturn: result.businessStatus === 'RETURN_IN_TRANSIT' && result.returnWarehouseId === 'wh-uk'
+      && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')) };
 }
 
 export async function rmaList(db: D1Database, user: SessionUser) {

@@ -15,6 +15,7 @@ import { ukOrderSelect, ukShipEligible } from './ukFulfilment';
 import { certifiedEligibilitySql, certifiedWarrantyEnd, certifiedWarrantyPolicy, internalCertifiedWarranty, type WarrantyEligibility } from './certifiedWarranty';
 import { certifiedPublicWarrantyDto, publicWarrantyProjectionState, publicWarrantyProjectionStatements, syncPublicWarrantyProjection } from './publicWarrantyProjection';
 import { openRma, rmaDetail, rmaIntakeContext, rmaIntakeSchema, rmaList } from './rmaIntake';
+import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, receiveReturn, requireNonQuarantined, returnReceiveSchema, returnShipmentSchema } from './rmaLogistics';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -4937,7 +4938,7 @@ app.get('/international/warehouses/assets', requireAuth, async (c) => {
     asset_certifications.certification_status AS certificationStatus
     FROM asset_locations JOIN assets ON assets.id = asset_locations.asset_id JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
     LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id AND asset_certifications.certification_status = 'certified'
-    WHERE asset_locations.custody = 'WAREHOUSE' AND asset_locations.status = 'on_hand' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
+    WHERE assets.inventory_status <> 'QUARANTINED' AND asset_locations.custody = 'WAREHOUSE' AND asset_locations.status = 'on_hand' AND ${requestedWarehouseId ? 'warehouses.id = ?' : (can(user, 'data:read:all') ? '1 = 1' : `warehouses.id IN (${placeholders(permittedWarehouseIds)})`)} ORDER BY assets.updated_at DESC`, ...(requestedWarehouseId ? [requestedWarehouseId] : []), ...(!requestedWarehouseId && !can(user, 'data:read:all') ? permittedWarehouseIds : []));
   return c.json({ assets: rows });
 });
 
@@ -5042,6 +5043,7 @@ app.post('/marketplace/listings', requireAuth, async (c) => {
   const account = await one<{ channelId: string }>(c.env.DB, 'SELECT channel_id AS channelId FROM sales_accounts WHERE id = ? AND is_active = 1', input.salesAccountId);
   if (!account || account.channelId !== input.channelId) throw badRequest('销售账号与渠道不匹配或不可用');
   const listingId = id();
+  await requireNonQuarantined(c.env.DB, input.assetId);
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO marketplace_listings (id, asset_id, channel_id, sales_account_id, external_listing_id, title, price_minor, currency, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`)
       .bind(listingId, input.assetId, input.channelId, input.salesAccountId, input.externalListingId, input.title, input.priceMinor, input.currency?.toUpperCase() ?? 'GBP', user.id),
@@ -5060,6 +5062,7 @@ app.post('/marketplace/listings/:id/:action', requireAuth, async (c) => {
     'SELECT id, asset_id AS assetId, sales_account_id AS salesAccountId, status FROM marketplace_listings WHERE id = ?', c.req.param('id'));
   if (!listing) throw notFound('未找到 Listing');
   requireSalesAccountScope(user, listing.salesAccountId);
+  if (action === 'activate') await requireNonQuarantined(c.env.DB, listing.assetId);
   if (action === 'activate' && !['draft', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能激活');
   if (action === 'cancel' && !['draft', 'active', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能取消');
   const nextStatus = action === 'activate' ? 'active' : 'cancelled';
@@ -5132,6 +5135,7 @@ app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
   const order = await requireOrderAccess(c.env.DB, user, c.req.param('id'));
   if (['shipped', 'delivered', 'cancelled'].includes(order.status)) throw conflict('订单当前状态不能绑定 Asset');
   await requireAssetAccess(c.env.DB, user, input.assetId);
+  await requireNonQuarantined(c.env.DB, input.assetId);
   const location = await one<{ warehouseId: string; status: string; custody: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId, status, custody FROM asset_locations WHERE asset_id = ?', input.assetId);
   if (!location || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE' || location.warehouseId !== order.fulfilmentWarehouseId) throw conflict('资产不可用、已被锁定或不在订单履约仓');
   const blocked = await one(c.env.DB, `SELECT id FROM asset_transfers WHERE asset_id = ? AND status IN ('created','shipped')
@@ -5337,6 +5341,24 @@ app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) =
   return c.json({ assetId: asset.id, status: 'active', startDate: input.startDate, endDate: input.endDate });
 });
 
+app.get('/international/rmas/awaiting-return-receipt', requireAuth, async (c) => {
+  return c.json({ rmas: await awaitingReturnReceipt(c.env.DB, c.get('user')) });
+});
+
+app.get('/international/warehouses/return-quarantine', requireAuth, async (c) => {
+  return c.json({ assets: await quarantineInventory(c.env.DB, c.get('user')) });
+});
+
+app.post('/international/rmas/:id/return-shipment', requireAuth, async (c) => {
+  const input = await parseBody(c.req.raw, returnShipmentSchema);
+  return c.json({ rma: await recordReturnShipment(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')) });
+});
+
+app.post('/international/rmas/:id/receive-return', requireAuth, async (c) => {
+  const input = await parseBody(c.req.raw, returnReceiveSchema);
+  return c.json({ rma: await receiveReturn(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')) });
+});
+
 app.get('/international/rmas/intake-context', requireAuth, async (c) => {
   const user = c.get('user');
   assertInternationalPermission(user, 'international-after-sales:manage');
@@ -5381,7 +5403,9 @@ app.get('/international/assets/:id', requireAuth, async (c) => {
   const asset = await one(c.env.DB, `SELECT assets.id, assets.asset_code AS assetCode, assets.current_sn AS currentSn, assets.product_name_snapshot AS productName,
     COALESCE(asset_certifications.grade_display, asset_certifications.grade) AS grade, asset_certifications.certification_status AS certificationStatus,
     CASE WHEN asset_locations.custody = 'WAREHOUSE' THEN warehouses.code ELSE NULL END AS warehouseCode,
-    asset_locations.status AS locationStatus, asset_locations.custody
+    asset_locations.status AS locationStatus, asset_locations.custody, assets.inventory_status AS inventoryStatus,
+    CASE WHEN assets.inventory_status='QUARANTINED' THEN 'QUARANTINED' ELSE assets.asset_status END AS assetStatus,
+    (SELECT name FROM warehouse_locations WHERE id=asset_locations.location_id) AS locationName
     FROM assets LEFT JOIN asset_certifications ON asset_certifications.asset_id = assets.id
     LEFT JOIN asset_locations ON asset_locations.asset_id = assets.id LEFT JOIN warehouses ON warehouses.id = asset_locations.warehouse_id
     WHERE assets.id = ?`, c.req.param('id'));
