@@ -167,6 +167,11 @@ export async function uploadReturnInspectionEvidence(db: D1Database,bucket: R2Bu
       db.prepare(`INSERT INTO audit_logs (id,actor_id,action,entity_type,entity_id,request_id,after_json) VALUES (?,?,'international.rma.inspection_evidence','rma_return_inspection',?,?,?)`)
         .bind(id(),user.id,inspection.id,requestId,JSON.stringify({rma_id:rmaId,evidence_id:evidenceId,category,content_type:file.type}))]);
   } catch(error) {
+    // A response can be lost after D1 commits. Never delete an object already
+    // referenced by a report; if D1 is unavailable, retain the private object
+    // rather than risk destroying committed evidence.
+    const linked=await one<{id:string}>(db,'SELECT id FROM rma_return_inspection_evidence WHERE id=?',evidenceId).catch(()=>{throw error;});
+    if (linked) return returnInspectionDetail(db,user,rmaId);
     // The object is not exposed until its DB link commits. Failed links are
     // cleaned; a cleanup outage leaves only an inaccessible orphan, not a report.
     await bucket.delete(key).catch(()=>undefined);

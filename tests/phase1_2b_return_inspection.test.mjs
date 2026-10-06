@@ -97,6 +97,12 @@ test('lifecycle/audit failures roll back both start and completion atomically',a
   }
 });
 
+test('lost D1 response after evidence commit preserves the private object and its durable link',async()=>{
+  const f=await fixture();await f.start();const original=f.db.batch.bind(f.db);
+  f.db.batch=async(statements)=>{await original(statements);throw new Error('response lost after commit');};
+  assert.equal((await f.upload()).status,201);const r=await report(f);assert.equal(r.evidence.length,1);assert.equal(f.objects.size,1);assert.equal((await f.request('uk',r.evidence[0].contentUrl)).status,200);
+});
+
 test('atomic guards recheck custody/quarantine/RMA/sale/warehouse and preserve original state on stale requests',async()=>{
   for(const completing of [false,true])for(const mutation of ["UPDATE asset_locations SET custody='CUSTOMER'","UPDATE assets SET inventory_status='NORMAL'","UPDATE after_sales_cases SET status='closed'","UPDATE international_asset_allocations SET status='released'","UPDATE warehouses SET status='inactive' WHERE id='wh-uk'"]){
     const f=await fixture();if(completing){await f.start();await f.upload();}const original=f.db.batch.bind(f.db);f.db.batch=async(statements)=>{f.sqlite.exec(mutation);return original(statements);};
