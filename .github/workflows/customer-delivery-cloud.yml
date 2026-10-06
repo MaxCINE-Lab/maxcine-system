@@ -36,6 +36,7 @@ jobs:
           npx eslint apps/api/src/rmaLogistics.ts apps/web/src/ReturnReceiving.tsx tests/phase1_2b_return_logistics.test.mjs scripts/verify-return-logistics-staging.mjs --max-warnings=0
           npx eslint apps/api/src/rmaInspection.ts apps/web/src/ReturnInspection.tsx tests/phase1_2b_return_inspection.test.mjs scripts/verify-return-inspection-staging.mjs --max-warnings=0
           npx eslint apps/api/src/rmaResolution.ts apps/web/src/RmaResolution.tsx tests/phase1_2b_rma_resolution.test.mjs scripts/verify-rma-resolution-staging.mjs --max-warnings=0
+          npx eslint apps/api/src/rmaRepair.ts apps/web/src/RmaRepair.tsx tests/phase1_2b_rma_repair.test.mjs scripts/verify-rma-repair-staging.mjs --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
@@ -48,6 +49,7 @@ jobs:
           npm run test:phase1-2b-return-logistics
           npm run test:phase1-2b-return-inspection
           npm run test:phase1-2b-rma-resolution
+          npm run test:phase1-2b-rma-repair
       - name: Security suite
         run: npm test
       - name: Web and API build
@@ -62,9 +64,17 @@ jobs:
           E2E_PASSWORD: ${{ secrets.E2E_PASSWORD }}
           EMAIL_PROVIDER: mock
         run: npm run test:e2e
-      - name: Staging RMA Resolution Decision browser acceptance
+      - name: Staging RMA Repair Execution browser acceptance
         if: github.event_name == 'workflow_dispatch' && inputs.staging_acceptance
-        run: node scripts/verify-rma-resolution-staging.mjs
+        run: node scripts/verify-rma-repair-staging.mjs
+      - name: Save RMA Repair evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rma-repair-staging-evidence
+          path: test-results/rma-repair-staging/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Save RMA Resolution evidence
         if: always()
         uses: actions/upload-artifact@v4

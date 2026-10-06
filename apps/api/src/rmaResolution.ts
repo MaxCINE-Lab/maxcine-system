@@ -10,10 +10,11 @@ export const resolutionDecisionSchema = z.object({
 }).strict();
 type Input=z.infer<typeof resolutionDecisionSchema>;
 type ResolutionCase = { id:string;rmaReference:string;assetId:string;orderId:string;salesAccountId:string|null;market:string;warehouse:string;stage:string;status:string;
-  resolutionType:string|null;decisionReason:string|null;decisionNotes:string;decidedBy:string|null;decidedByName:string|null;decidedAt:string|null;inspectionId:string|null };
+  resolutionType:string|null;decisionReason:string|null;decisionNotes:string;decidedBy:string|null;decidedByName:string|null;decidedAt:string|null;inspectionId:string|null;executionStatus:string };
 const selectCase=`SELECT c.id,c.rma_reference AS rmaReference,c.asset_id AS assetId,c.order_id AS orderId,c.sales_account_id AS salesAccountId,c.market_region AS market,c.return_warehouse_id AS warehouse,
   c.service_stage AS stage,c.status,c.cross_border_resolution AS resolutionType,c.resolution_decision_reason AS decisionReason,c.resolution_decision_notes AS decisionNotes,
-  c.resolution_decided_by AS decidedBy,u.name AS decidedByName,c.resolution_decided_at AS decidedAt,c.resolution_inspection_id AS inspectionId
+  c.resolution_decided_by AS decidedBy,u.name AS decidedByName,c.resolution_decided_at AS decidedAt,c.resolution_inspection_id AS inspectionId,
+  COALESCE((SELECT status FROM rma_repair_executions e WHERE e.rma_id=c.id),'NOT_STARTED') AS executionStatus
   FROM after_sales_cases c LEFT JOIN users u ON u.id=c.resolution_decided_by WHERE c.id=? AND c.return_authorized_at IS NOT NULL`;
 export function canDecideRmaResolution(user:SessionUser) {
   // Decision authority is independent of inspection, warehouse and global-read
@@ -53,7 +54,7 @@ const eligibilitySql=`SELECT i.id FROM after_sales_cases c JOIN rma_return_inspe
 function params(row:ResolutionCase,inspectionId:string){return [row.id,row.assetId,row.orderId,row.salesAccountId,inspectionId];}
 function decisionDto(row:ResolutionCase) {
   return row.decidedAt ? {rmaId:row.id,assetId:row.assetId,inspectionId:row.inspectionId,resolutionType:row.resolutionType,decisionReason:row.decisionReason,decisionNotes:row.decisionNotes,
-    decidedBy:row.decidedBy,decidedByName:row.decidedByName,decidedAt:row.decidedAt,status:'RESOLUTION_DECIDED',executionStatus:'NOT_STARTED'} : null;
+    decidedBy:row.decidedBy,decidedByName:row.decidedByName,decidedAt:row.decidedAt,status:'RESOLUTION_DECIDED',executionStatus:row.executionStatus} : null;
 }
 export async function rmaResolutionDetail(db:D1Database,user:SessionUser,rmaId:string) {
   const row=await scopedCase(db,user,rmaId,false);

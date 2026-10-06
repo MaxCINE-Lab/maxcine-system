@@ -23,7 +23,7 @@ const inspectionSelect = `SELECT i.id,i.rma_id AS rmaId,i.asset_id AS assetId,i.
 
 async function scopedCase(db: D1Database,user: SessionUser,rmaId: string,completedReview=false): Promise<Case> {
   const inspecting=hasGlobalInternationalAccess(user) || can(user,'international-return:inspect');
-  const reviewing=completedReview && (user.roles.includes('super_admin') || can(user,'international-after-sales:decide'));
+  const reviewing=completedReview && (user.roles.includes('super_admin') || can(user,'international-after-sales:decide') || can(user,'international-repair:execute'));
   if (!inspecting && !reviewing) throw forbidden('你没有 UK 退货检测或已完成报告审阅权限。');
   await requireRmaAccess(db,user,rmaId);
   const row = await one<Case & { market: string; warehouse: string }>(db,`SELECT c.id,c.asset_id AS assetId,c.order_id AS orderId,c.sales_account_id AS salesAccountId,c.service_stage AS stage,
@@ -32,7 +32,7 @@ async function scopedCase(db: D1Database,user: SessionUser,rmaId: string,complet
   if (!row) throw notFound('未找到国际 RMA。');
   await requireOrderAccess(db,user,row.orderId);
   if (row.market!=='UK' || row.warehouse!=='wh-uk') throw forbidden('仅允许 Scope 内的 UK 退货仓检测。');
-  if (!inspecting && !await one(db,"SELECT id FROM rma_return_inspections WHERE rma_id=? AND status='INSPECTION_COMPLETED'",rmaId)) throw forbidden('决策权限仅允许审阅正式完成的检测报告。');
+  if (!inspecting && !await one(db,"SELECT id FROM rma_return_inspections WHERE rma_id=? AND status='INSPECTION_COMPLETED'",rmaId)) throw forbidden('决策 / 维修权限仅允许审阅正式完成的检测报告。');
   return row;
 }
 function match(row: Case,code: string) {

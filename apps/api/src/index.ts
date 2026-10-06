@@ -18,6 +18,7 @@ import { openRma, rmaDetail, rmaIntakeContext, rmaIntakeSchema, rmaList } from '
 import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, receiveReturn, requireNonQuarantined, returnReceiveSchema, returnShipmentSchema } from './rmaLogistics';
 import { completeReturnInspection, inspectionCompleteSchema, inspectionStartSchema, returnInspectionDetail, returnInspectionEvidenceContent, startReturnInspection, uploadReturnInspectionEvidence } from './rmaInspection';
 import { decideRmaResolution, rmaResolutionDetail, resolutionDecisionSchema } from './rmaResolution';
+import { completeRepair, repairCompleteSchema, repairDetail, repairStartSchema, startRepair } from './rmaRepair';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -5352,6 +5353,17 @@ app.get('/international/rmas/:id/inspection', requireAuth, async (c) => {
 });
 app.get('/international/rmas/:id/resolution', requireAuth, async (c) => {
   return c.json(await rmaResolutionDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.get('/international/rmas/:id/repair', requireAuth, async (c) => {
+  return c.json(await repairDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.post('/international/rmas/:id/repair/start', requireAuth, async (c) => {
+  await parseBody(c.req.raw,repairStartSchema);
+  return c.json(await startRepair(c.env.DB,c.get('user'),c.req.param('id'),c.get('requestId')));
+});
+app.post('/international/rmas/:id/repair/complete', requireAuth, async (c) => {
+  const input=repairCompleteSchema.parse(await parseBody(c.req.raw,repairCompleteSchema));
+  return c.json(await completeRepair(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
 });
 app.post('/international/rmas/:id/resolution', requireAuth, async (c) => {
   const input=resolutionDecisionSchema.parse(await parseBody(c.req.raw,resolutionDecisionSchema));
