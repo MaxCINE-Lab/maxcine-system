@@ -11,7 +11,7 @@ export const PERMISSIONS = [
   'customer-risk:read', 'customer-risk:create', 'customer-risk:update-own', 'customer-risk:manage'
   , 'workspace:read', 'certified:read', 'certified:manage', 'certified:final-qc', 'warehouse:international-read', 'transfer:manage',
   'marketplace:read', 'marketplace:manage', 'international-order:read', 'international-order:manage', 'international-order:deliver',
-  'international-after-sales:read', 'international-after-sales:manage', 'international-return:receive'
+  'international-after-sales:read', 'international-after-sales:manage', 'international-return:receive', 'international-return:inspect'
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

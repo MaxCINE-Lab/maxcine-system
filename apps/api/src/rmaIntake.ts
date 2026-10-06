@@ -32,6 +32,8 @@ export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string
   if (!row) throw conflict('该工单不是国际退货授权 RMA。');
   const { warrantySnapshotJson, ...result } = row;
   return { ...result, warrantySnapshot: warrantySnapshotJson ? JSON.parse(String(warrantySnapshotJson)) : null,
+    canInspectReturn: result.returnWarehouseId === 'wh-uk' && ['RECEIVED','INSPECTION_IN_PROGRESS','INSPECTION_COMPLETED'].includes(String(result.businessStatus))
+      && (hasGlobalInternationalAccess(user) || can(user,'international-return:inspect')),
     canRecordReturnShipment: result.businessStatus === 'RETURN_AUTHORIZED' && (hasGlobalInternationalAccess(user) || can(user, 'international-after-sales:manage')),
     canReceiveReturn: result.businessStatus === 'RETURN_IN_TRANSIT' && result.returnWarehouseId === 'wh-uk'
       && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')) };

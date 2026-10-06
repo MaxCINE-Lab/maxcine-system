@@ -16,6 +16,7 @@ import { certifiedEligibilitySql, certifiedWarrantyEnd, certifiedWarrantyPolicy,
 import { certifiedPublicWarrantyDto, publicWarrantyProjectionState, publicWarrantyProjectionStatements, syncPublicWarrantyProjection } from './publicWarrantyProjection';
 import { openRma, rmaDetail, rmaIntakeContext, rmaIntakeSchema, rmaList } from './rmaIntake';
 import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, receiveReturn, requireNonQuarantined, returnReceiveSchema, returnShipmentSchema } from './rmaLogistics';
+import { completeReturnInspection, inspectionCompleteSchema, inspectionStartSchema, returnInspectionDetail, returnInspectionEvidenceContent, startReturnInspection, uploadReturnInspectionEvidence } from './rmaInspection';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -5343,6 +5344,24 @@ app.post('/international/assets/:id/warranty-activate', requireAuth, async (c) =
 
 app.get('/international/rmas/awaiting-return-receipt', requireAuth, async (c) => {
   return c.json({ rmas: await awaitingReturnReceipt(c.env.DB, c.get('user')) });
+});
+
+app.get('/international/rmas/:id/inspection', requireAuth, async (c) => {
+  return c.json(await returnInspectionDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.post('/international/rmas/:id/inspection/start', requireAuth, async (c) => {
+  const input=await parseBody(c.req.raw,inspectionStartSchema);
+  return c.json(await startReturnInspection(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.post('/international/rmas/:id/inspection/complete', requireAuth, async (c) => {
+  const input=inspectionCompleteSchema.parse(await parseBody(c.req.raw,inspectionCompleteSchema));
+  return c.json(await completeReturnInspection(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.post('/international/rmas/:id/inspection/evidence', requireAuth, async (c) => {
+  return c.json(await uploadReturnInspectionEvidence(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id'),await c.req.raw.formData(),c.get('requestId')),201);
+});
+app.get('/international/return-inspection-evidence/:id/content', requireAuth, async (c) => {
+  return returnInspectionEvidenceContent(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id'));
 });
 
 app.get('/international/warehouses/return-quarantine', requireAuth, async (c) => {

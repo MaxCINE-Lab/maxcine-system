@@ -4,8 +4,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { URL } from 'node:url';
 import app from '../../apps/api/src/index.ts';
 import { createSessionToken } from '../../apps/api/src/auth.ts';
+const { FormData } = globalThis;
 
-export async function deliveryFixture() {
+export async function deliveryFixture(options = {}) {
   const sqlite = new DatabaseSync(':memory:');
   const root = new URL('../../apps/api/migrations/', import.meta.url);
   for (const name of readdirSync(root).filter((name) => /^\d{4}.*\.sql$/.test(name)).sort()) sqlite.exec(readFileSync(new URL(name, root), 'utf8'));
@@ -55,8 +56,8 @@ export async function deliveryFixture() {
       catch (error) { sqlite.exec('ROLLBACK'); throw error; }
     }
   };
-  const env = { DB: db, SESSION_SECRET: 'test-only-session-secret', APP_ORIGIN: 'https://test.example', APP_ENV: 'staging' };
-  const request = (user, path, body, method = body ? 'POST' : 'GET') => app.request(`https://test.example${path}`, { method, headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, 'Content-Type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) }, env);
+  const env = { DB: db, ASSETS: options.assets, SESSION_SECRET: 'test-only-session-secret', APP_ORIGIN: 'https://test.example', APP_ENV: 'staging' };
+  const request = (user, path, body, method = body ? 'POST' : 'GET') => app.request(`https://test.example${path}`, { method, headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) }, ...(body ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}) }, env);
   const ship = async () => {
     assert.equal((await request('uk', '/international/orders/order-test/bind-asset', { assetId: '43000000-0000-4000-8000-000000000099' })).status, 200);
     assert.equal((await request('uk', '/international/orders/order-test/ship', { assetCode: 'MC-26-TEST-000099', carrier: 'Royal Mail', trackingNumber: 'RM-DELIVERY' })).status, 200);

@@ -2,12 +2,13 @@ import { useEffect, useMemo, useState } from 'react';
 import type { SessionUser } from '@maxcine/shared';
 import { api, ApiClientError } from './api';
 import { Shell } from './OperationsPortal';
+import { ReturnInspection } from './ReturnInspection';
 
 type Warranty = { status: string; policyCode: string | null; start: string | null; end: string | null; sourceOrderId: string | null };
 type Rma = { id: string; rmaReference: string; assetCode: string; productName: string; orderReference: string; orderId: string;
   marketRegion: string; reason: string; reasonNote: string; businessStatus: string; returnWarehouse: string;
   carrier: string; returnTracking: string; createdAt: string; warrantySnapshot: Warranty; shippedAt: string | null; receivedAt: string | null;
-  custody: string; inventoryStatus: string; locationCode: string | null; canRecordReturnShipment: boolean; canReceiveReturn: boolean };
+  custody: string; inventoryStatus: string; locationCode: string | null; canRecordReturnShipment: boolean; canReceiveReturn: boolean; canInspectReturn: boolean };
 type Context = { assetId: string; assetCode: string; productName: string; orderId: string; orderReference: string; marketRegion: string;
   warehouses: { id: string; code: string; name: string }[]; reasons: string[]; activeRma: { id: string; rmaReference: string | null } | null; warranty: Warranty };
 const reasonNames: Record<string, string> = { DEFECTIVE: 'DEFECTIVE · 设备故障', DAMAGED: 'DAMAGED · 设备损坏', NOT_AS_DESCRIBED: 'NOT_AS_DESCRIBED · 与描述不符', BUYER_REMORSE: 'BUYER_REMORSE · 改变主意', WRONG_ITEM: 'WRONG_ITEM · 商品错误', OTHER: 'OTHER · 其他' };
@@ -99,7 +100,8 @@ export function RmaIntake({ user, route, logout }: { user: SessionUser; route: s
       <dt>Custody</dt><dd>{rma.custody}</dd><dt>Inventory Status</dt><dd>{rma.inventoryStatus}</dd><dt>Location</dt><dd>{rma.locationCode || '—'}</dd>
     </dl><p>此退货授权不代表免费维修或任何 Resolution 决定，保修保持原样。</p><a className="button" href={`#${base}`}>返回 Open RMAs</a>
       {rma.canReceiveReturn && <a className="button" href={`#/system/uk-fulfilment/return-receiving/${rma.id}`}>UK Receive Return</a>}
-    </section>{rma.canRecordReturnShipment && <ReturnShipment key={rma.id} rma={rma} updated={setRma} />}</>
+    </section>{rma.canRecordReturnShipment && <ReturnShipment key={rma.id} rma={rma} updated={setRma} />}
+      {rma.canInspectReturn && <ReturnInspection key={rma.id} rmaId={rma.id} assetCode={rma.assetCode} updated={()=>{void api<{rma:Rma}>(`/international/rmas/${rma.id}`).then((result)=>setRma(result.rma)).catch((error)=>setError(errorText(error)));}} />}</>
       : context ? context.activeRma ? <div className="notice notice--error">该设备已有活动 RMA / 售后工单，不能重复创建。{context.activeRma.rmaReference && <a href={`#${base}/${context.activeRma.id}`}>打开 {context.activeRma.rmaReference}</a>}</div>
         : <form className="panel receive-confirmation" onSubmit={(event) => { event.preventDefault(); void submit(); }}><h2>Open RMA</h2><dl><dt>Asset Code</dt><dd>{context.assetCode}</dd><dt>Order Reference</dt><dd>{context.orderReference}</dd><dt>Market</dt><dd>{context.marketRegion}</dd><dt>Warranty</dt><dd>{context.warranty.status} · {context.warranty.policyCode || '无 Certified 商业保修'}</dd></dl>
           <p>商业保修不生效也可以申请退货授权。本轮不会改变 Custody 或 Warranty。</p>
