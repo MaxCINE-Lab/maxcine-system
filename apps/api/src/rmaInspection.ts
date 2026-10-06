@@ -21,8 +21,10 @@ const inspectionSelect = `SELECT i.id,i.rma_id AS rmaId,i.asset_id AS assetId,i.
   i.checklist_json AS checklistJson,i.findings_json AS findingsJson,i.evidence_snapshot_json AS evidenceSnapshotJson,i.started_at AS startedAt,i.completed_at AS completedAt,i.submission_fingerprint AS submissionFingerprint
   FROM rma_return_inspections i JOIN users u ON u.id=i.inspector_id WHERE i.rma_id=?`;
 
-async function scopedCase(db: D1Database,user: SessionUser,rmaId: string): Promise<Case> {
-  if (!hasGlobalInternationalAccess(user) && !can(user,'international-return:inspect')) throw forbidden('你没有 UK 退货检测权限。');
+async function scopedCase(db: D1Database,user: SessionUser,rmaId: string,completedReview=false): Promise<Case> {
+  const inspecting=hasGlobalInternationalAccess(user) || can(user,'international-return:inspect');
+  const reviewing=completedReview && (user.roles.includes('super_admin') || can(user,'international-after-sales:decide'));
+  if (!inspecting && !reviewing) throw forbidden('你没有 UK 退货检测或已完成报告审阅权限。');
   await requireRmaAccess(db,user,rmaId);
   const row = await one<Case & { market: string; warehouse: string }>(db,`SELECT c.id,c.asset_id AS assetId,c.order_id AS orderId,c.sales_account_id AS salesAccountId,c.service_stage AS stage,
     c.market_region AS market,c.return_warehouse_id AS warehouse,a.asset_code AS assetCode,COALESCE(NULLIF(a.current_sn,''),a.original_sn,'') AS expectedSn
@@ -30,6 +32,7 @@ async function scopedCase(db: D1Database,user: SessionUser,rmaId: string): Promi
   if (!row) throw notFound('未找到国际 RMA。');
   await requireOrderAccess(db,user,row.orderId);
   if (row.market!=='UK' || row.warehouse!=='wh-uk') throw forbidden('仅允许 Scope 内的 UK 退货仓检测。');
+  if (!inspecting && !await one(db,"SELECT id FROM rma_return_inspections WHERE rma_id=? AND status='INSPECTION_COMPLETED'",rmaId)) throw forbidden('决策权限仅允许审阅正式完成的检测报告。');
   return row;
 }
 function match(row: Case,code: string) {
@@ -68,7 +71,7 @@ function records(db: D1Database,user: SessionUser,row: Case,inspectionId: string
 function retryable(error: unknown) { return error instanceof Error && /malformed JSON|Inspection .*changed|UNIQUE constraint failed/i.test(error.message); }
 
 export async function returnInspectionDetail(db: D1Database,user: SessionUser,rmaId: string) {
-  const row=await scopedCase(db,user,rmaId);
+  const row=await scopedCase(db,user,rmaId,true);
   const inspection=await one<Inspection>(db,inspectionSelect,rmaId);
   if (!inspection) return { inspection:null,canStart:row.stage==='RECEIVED',items:inspectionItems };
   const evidence=await all<Evidence>(db,`SELECT e.id,e.category,e.filename,e.content_type AS contentType,e.file_size AS fileSize,e.created_at AS createdAt,e.created_by AS createdBy,u.name AS createdByName
@@ -185,7 +188,7 @@ export async function returnInspectionEvidenceContent(db: D1Database,bucket: R2B
   const row=await one<{rmaId:string;objectKey:string;contentType:string}>(db,`SELECT i.rma_id AS rmaId,e.object_key AS objectKey,e.content_type AS contentType FROM rma_return_inspection_evidence e
     JOIN rma_return_inspections i ON i.id=e.inspection_id WHERE e.id=?`,evidenceId);
   if (!row) throw notFound('照片不存在。');
-  await scopedCase(db,user,row.rmaId);
+  await scopedCase(db,user,row.rmaId,true);
   const object=await bucket?.get(row.objectKey);
   if (!object) throw notFound('照片内容暂不可用。');
   return new Response(object.body,{headers:{'Content-Type':row.contentType,'Cache-Control':'private, no-store','X-Content-Type-Options':'nosniff','Content-Security-Policy':"default-src 'none'; sandbox"}});

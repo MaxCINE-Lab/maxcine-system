@@ -12,7 +12,7 @@ type Result = { inspection:Inspection|null;canStart:boolean };
 const errorText = (error:unknown) => error instanceof ApiClientError ? error.message : '检测操作未完成，请稍后重试。';
 const time = (value:string|null) => value ? new Date(value).toLocaleString('zh-CN') : '—';
 
-export function ReturnInspection({ rmaId,assetCode,updated }: { rmaId:string;assetCode:string;updated:()=>void }) {
+export function ReturnInspection({ rmaId,assetCode,updated,reviewOnly=false }: { rmaId:string;assetCode:string;updated:()=>void;reviewOnly?:boolean }) {
   const [data,setData]=useState<Result|null>(null);
   const [loading,setLoading]=useState(true);
   const [busy,setBusy]=useState(false);
@@ -32,7 +32,7 @@ export function ReturnInspection({ rmaId,assetCode,updated }: { rmaId:string;ass
   },[rmaId]);
   const inspection=data?.inspection;
   const matched=input.trim().toUpperCase()===assetCode.toUpperCase();
-  const readonly=inspection?.status==='INSPECTION_COMPLETED';
+  const readonly=reviewOnly || inspection?.status==='INSPECTION_COMPLETED';
   const hasOverall=inspection?.evidence.some((e)=>e.category==='OVERALL_CONDITION');
   const valid=matched && checklist.every((c)=>c.result && (c.result!=='NOT_TESTED' || c.notes.trim())) && snVerification
     && findings.issueReproduced && findings.conditionAssessment && findings.inspectorNotes.trim() && hasOverall;
@@ -52,7 +52,7 @@ export function ReturnInspection({ rmaId,assetCode,updated }: { rmaId:string;ass
     catch(error){setError(errorText(error));}finally{setBusy(false);}
   };
   const change=(index:number,key:'result'|'notes',value:string)=>setChecklist((current)=>current.map((c,i)=>i===index?{...c,[key]:value}:c));
-  return <section className="panel transfer-detail"><h2>{readonly?'Return Inspection · 检测已完成':'RMA Return Inspection'}</h2>
+  return <section className="panel transfer-detail"><h2>{reviewOnly?'Resolution Review':readonly?'Return Inspection · 检测已完成':'RMA Return Inspection'}</h2>
     <p>独立退货检测，不覆盖 Certified QC。检测事实不代表责任归属；完成后仍留在 UK Return Quarantine，等待处理决策。</p>
     {error && <div className="notice notice--error" role="alert">{error}</div>}
     {loading ? <div role="status">正在加载检测记录…</div> : !data ? <div className="empty-state">无法加载检测记录，请刷新页面。</div> : <>

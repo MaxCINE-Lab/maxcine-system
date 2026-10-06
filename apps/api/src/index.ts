@@ -17,6 +17,7 @@ import { certifiedPublicWarrantyDto, publicWarrantyProjectionState, publicWarran
 import { openRma, rmaDetail, rmaIntakeContext, rmaIntakeSchema, rmaList } from './rmaIntake';
 import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, receiveReturn, requireNonQuarantined, returnReceiveSchema, returnShipmentSchema } from './rmaLogistics';
 import { completeReturnInspection, inspectionCompleteSchema, inspectionStartSchema, returnInspectionDetail, returnInspectionEvidenceContent, startReturnInspection, uploadReturnInspectionEvidence } from './rmaInspection';
+import { decideRmaResolution, rmaResolutionDetail, resolutionDecisionSchema } from './rmaResolution';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -5348,6 +5349,13 @@ app.get('/international/rmas/awaiting-return-receipt', requireAuth, async (c) =>
 
 app.get('/international/rmas/:id/inspection', requireAuth, async (c) => {
   return c.json(await returnInspectionDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.get('/international/rmas/:id/resolution', requireAuth, async (c) => {
+  return c.json(await rmaResolutionDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.post('/international/rmas/:id/resolution', requireAuth, async (c) => {
+  const input=resolutionDecisionSchema.parse(await parseBody(c.req.raw,resolutionDecisionSchema));
+  return c.json(await decideRmaResolution(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
 });
 app.post('/international/rmas/:id/inspection/start', requireAuth, async (c) => {
   const input=await parseBody(c.req.raw,inspectionStartSchema);
