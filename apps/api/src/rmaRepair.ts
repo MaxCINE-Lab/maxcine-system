@@ -36,24 +36,26 @@ async function execution(db:D1Database,rmaId:string){
     e.post_repair_check AS postRepairCheck,e.submission_fingerprint AS fingerprint,e.created_at AS createdAt,e.updated_at AS updatedAt
     FROM rma_repair_executions e JOIN users u ON u.id=e.technician_id LEFT JOIN users completer ON completer.id=e.completed_by WHERE e.rma_id=?`,rmaId);
 }
+// Keep conjunction groups shallow: D1's expression-depth limit is lower than
+// native SQLite's, especially when this predicate is wrapped in a batch guard.
 const eligibility=`SELECT c.id FROM after_sales_cases c JOIN rma_return_inspections i ON i.id=c.resolution_inspection_id
   JOIN assets a ON a.id=c.asset_id JOIN asset_locations l ON l.asset_id=a.id JOIN warehouse_locations area ON area.id=l.location_id
   JOIN warehouses w ON w.id=l.warehouse_id JOIN orders o ON o.id=c.order_id
-  WHERE c.id=? AND c.asset_id=? AND c.order_id=? AND c.sales_account_id=? AND c.resolution_decided_at=? AND c.resolution_inspection_id=?
-  AND c.status='in_progress' AND c.cross_border_resolution='REPAIR' AND c.resolution_decided_by IS NOT NULL AND length(trim(c.resolution_decision_reason))>0
-  AND c.return_received_at IS NOT NULL AND c.return_shipped_at IS NOT NULL AND c.market_region='UK' AND c.return_warehouse_id='wh-uk'
-  AND i.rma_id=c.id AND i.asset_id=c.asset_id AND i.order_id=c.order_id AND i.status='INSPECTION_COMPLETED'
-  AND i.completed_at IS NOT NULL AND i.submission_fingerprint IS NOT NULL AND json_array_length(i.checklist_json)=8 AND json_array_length(i.evidence_snapshot_json)>0
-  AND json_extract(i.findings_json,'$.issueReproduced') IN ('YES','NO','INCONCLUSIVE')
+  WHERE (c.id=? AND c.asset_id=? AND c.order_id=? AND c.sales_account_id=? AND c.resolution_decided_at=? AND c.resolution_inspection_id=?)
+  AND (c.status='in_progress' AND c.cross_border_resolution='REPAIR' AND c.resolution_decided_by IS NOT NULL AND length(trim(c.resolution_decision_reason))>0)
+  AND (c.return_received_at IS NOT NULL AND c.return_shipped_at IS NOT NULL AND c.market_region='UK' AND c.return_warehouse_id='wh-uk')
+  AND (i.rma_id=c.id AND i.asset_id=c.asset_id AND i.order_id=c.order_id AND i.status='INSPECTION_COMPLETED')
+  AND (i.completed_at IS NOT NULL AND i.submission_fingerprint IS NOT NULL AND json_array_length(i.checklist_json)=8 AND json_array_length(i.evidence_snapshot_json)>0)
+  AND (json_extract(i.findings_json,'$.issueReproduced') IN ('YES','NO','INCONCLUSIVE')
   AND json_extract(i.findings_json,'$.conditionAssessment') IN ('GOOD','COSMETIC_DAMAGE','FUNCTIONAL_DEFECT','PHYSICAL_DAMAGE','INCOMPLETE','OTHER')
-  AND length(trim(json_extract(i.findings_json,'$.inspectorNotes')))>0
+  AND length(trim(json_extract(i.findings_json,'$.inspectorNotes')))>0)
   AND NOT EXISTS (SELECT 1 FROM json_each(i.evidence_snapshot_json) snapshot WHERE NOT EXISTS
     (SELECT 1 FROM rma_return_inspection_evidence e WHERE e.id=snapshot.value AND e.inspection_id=i.id))
   AND EXISTS (SELECT 1 FROM asset_events e WHERE e.related_service_case_id=c.id AND e.event_type='rma_resolution_decided' AND e.source='international-rma-resolution')
   AND EXISTS (SELECT 1 FROM asset_events e WHERE e.related_service_case_id=c.id AND e.event_type='return_inspection_completed' AND e.source='international-return-inspection')
-  AND a.inventory_status='QUARANTINED' AND l.custody='WAREHOUSE' AND l.status='returned' AND l.warehouse_id='wh-uk'
-  AND area.warehouse_id='wh-uk' AND area.code='RETURN-QUARANTINE' AND w.status='active' AND w.market_region='UK'
-  AND o.status='delivered' AND o.sales_account_id=c.sales_account_id AND o.fulfilment_warehouse_id='wh-uk'
+  AND (a.inventory_status='QUARANTINED' AND l.custody='WAREHOUSE' AND l.status='returned' AND l.warehouse_id='wh-uk')
+  AND (area.warehouse_id='wh-uk' AND area.code='RETURN-QUARANTINE' AND w.status='active' AND w.market_region='UK')
+  AND (o.status='delivered' AND o.sales_account_id=c.sales_account_id AND o.fulfilment_warehouse_id='wh-uk')
   AND (SELECT COUNT(*) FROM international_asset_allocations al WHERE al.order_id=o.id AND al.asset_id=a.id AND al.status='fulfilled')=1
   AND NOT EXISTS (SELECT 1 FROM international_asset_allocations al WHERE al.asset_id=a.id AND al.status='reserved')
   AND NOT EXISTS (SELECT 1 FROM asset_transfers t WHERE t.asset_id=a.id AND t.status IN ('created','shipped'))`;
