@@ -39,13 +39,15 @@ BEGIN SELECT RAISE(ABORT,'Invalid replacement asset'); END;
 -- selection trigger above has just proven it was on_hand in the committed
 -- warehouse). If the row is not reserved afterwards, the whole statement
 -- aborts, so a commitment can never exist without its reservation.
+-- The body holds no conditional expression and no comments: the D1 remote
+-- statement splitter would otherwise close the trigger early.
 CREATE TRIGGER trg_rma_replace_reserve AFTER UPDATE OF replacement_asset_id ON rma_replace_executions
 WHEN OLD.replacement_asset_id IS NULL AND NEW.replacement_asset_id IS NOT NULL
 BEGIN
  UPDATE asset_locations SET status='reserved',updated_at=NEW.replacement_selected_at,updated_by=NEW.replacement_selected_by
   WHERE asset_id=NEW.replacement_asset_id AND status='on_hand' AND custody='WAREHOUSE' AND warehouse_id=NEW.replacement_warehouse_id;
- SELECT CASE WHEN NOT EXISTS(SELECT 1 FROM asset_locations WHERE asset_id=NEW.replacement_asset_id AND status='reserved'
-   AND custody='WAREHOUSE' AND warehouse_id=NEW.replacement_warehouse_id) THEN RAISE(ABORT,'Replacement reservation failed') END;
+ SELECT RAISE(ABORT,'Replacement reservation failed') WHERE NOT EXISTS(SELECT 1 FROM asset_locations WHERE asset_id=NEW.replacement_asset_id
+   AND status='reserved' AND custody='WAREHOUSE' AND warehouse_id=NEW.replacement_warehouse_id);
 END;
 
 -- The reverse direction: while committed, the location row can be neither
@@ -119,7 +121,7 @@ WHEN NEW.status='REPLACEMENT_COMPLETED' AND (
  OR EXISTS(SELECT 1 FROM rma_customer_return_releases owned WHERE owned.asset_id=NEW.replacement_asset_id OR owned.rma_id=NEW.rma_id))
 BEGIN SELECT RAISE(ABORT,'Invalid replacement completion'); END;
 
--- 5. Consumers. A committed unit cannot receive a new active after-sales case
+-- 5. Consumers. A committed unit cannot receive a new active after-sales record
 -- (insert or reopen / re-point), an order reservation or fulfilment, a
 -- non-terminal listing state, an active or received transfer, or a change to
 -- its identity, product compatibility or inventory status. Terminal listing
