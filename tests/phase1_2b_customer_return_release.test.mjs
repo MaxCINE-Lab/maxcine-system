@@ -110,7 +110,7 @@ test('dedicated customer-return manager reaches the International UI; API scope 
 
 test('personas without the release permission gain no additional International UI access',async()=>{
  const f=await approved();
- const legacy=['marketplace:manage','transfer:manage','international-after-sales:decide','international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide'];
+ const legacy=['marketplace:manage','transfer:manage','international-after-sales:decide','international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide','international-rma-replace:execute'];
  const roles=f.sqlite.prepare('SELECT id,code FROM roles').all();assert.ok(roles.length>=5);
  for(const role of roles){
   const permissions=f.sqlite.prepare('SELECT permission_code AS code FROM role_permissions WHERE role_id=?').all(role.id).map(r=>r.code);if(permissions.includes('international-customer-return:release'))continue;
