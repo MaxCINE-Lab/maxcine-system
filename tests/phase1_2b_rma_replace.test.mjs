@@ -141,7 +141,8 @@ test('replacement becoming ineligible after selection blocks completion without 
   for (const [label, mutate] of [
     ['revoked', (f) => f.sqlite.prepare("UPDATE asset_certifications SET certification_status='revoked' WHERE asset_id=?").run(f.replacement.assetId)],
     ['suspended', (f) => f.sqlite.prepare("UPDATE asset_certifications SET certification_status='suspended' WHERE asset_id=?").run(f.replacement.assetId)],
-    ['in service', (f) => f.sqlite.prepare("UPDATE assets SET asset_status='in_service' WHERE id=?").run(f.replacement.assetId)]]) {
+    // 0046 freezes asset_status of a committed unit; bypass that guard to prove completion still revalidates it.
+    ['in service', (f) => { f.sqlite.exec('DROP TRIGGER trg_replace_commit_asset_status'); f.sqlite.prepare("UPDATE assets SET asset_status='in_service' WHERE id=?").run(f.replacement.assetId); }]]) {
     const f = await replaceFixture(); await ready(f); addUnit(f, { n: 61 }); mutate(f);
     const d = await f.data(); assert.equal(d.canComplete, false, label); assert.ok(d.replacementAsset.blockers.length, label);
     await status(await f.complete(), 409, label); assert.equal(executionRow(f).status, 'REPLACEMENT_IN_PROGRESS'); assert.equal(executionRow(f).replacement_asset_id, f.replacement.assetId, `${label}: never substituted`);

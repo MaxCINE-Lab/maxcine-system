@@ -39,7 +39,7 @@ jobs:
           npx eslint apps/api/src/rmaRepair.ts apps/web/src/RmaRepair.tsx tests/phase1_2b_rma_repair.test.mjs scripts/verify-rma-repair-staging.mjs --max-warnings=0
           npx eslint apps/api/src/certifiedInspectionPrimitives.ts apps/api/src/postRepairRecertification.ts apps/web/src/PostRepairRecertification.tsx tests/helpers/postRepairFixture.mjs tests/phase1_2b_post_repair.test.mjs scripts/verify-post-repair-staging.mjs --max-warnings=0
           npx eslint apps/api/src/rmaCustomerReturnRelease.ts apps/api/src/rmaIntake.ts apps/web/src/CustomerReturnRelease.tsx apps/web/src/RmaIntake.tsx apps/web/src/systemNavigation.tsx packages/shared/src/types.ts tests/phase1_2b_customer_return_release.test.mjs --max-warnings=0
-          npx eslint apps/api/src/rmaReplace.ts apps/web/src/RmaReplacement.tsx tests/helpers/replaceFixture.mjs tests/phase1_2b_rma_replace.test.mjs tests/phase1_2b_rma_replace_hardening.test.mjs scripts/verify-rma-replace-staging.mjs --max-warnings=0
+          npx eslint apps/api/src/rmaReplace.ts apps/web/src/RmaReplacement.tsx tests/helpers/replaceFixture.mjs tests/phase1_2b_rma_replace.test.mjs tests/phase1_2b_rma_replace_hardening.test.mjs tests/phase1_2b_rma_replace_final_guards.test.mjs scripts/verify-rma-replace-staging.mjs --max-warnings=0
       - name: Core and operations regression suites
         run: |
           npm run test:phase1-2a
