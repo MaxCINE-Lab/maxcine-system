@@ -32,13 +32,14 @@ export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string
   if (!row) throw conflict('该工单不是国际退货授权 RMA。');
   const { warrantySnapshotJson, ...result } = row;
   return { ...result, warrantySnapshot: warrantySnapshotJson ? JSON.parse(String(warrantySnapshotJson)) : null,
-    canInspectReturn: result.returnWarehouseId === 'wh-uk' && ['RECEIVED','INSPECTION_IN_PROGRESS','INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED'].includes(String(result.businessStatus))
-      && (hasGlobalInternationalAccess(user) || can(user,'international-return:inspect') || ((can(user,'international-after-sales:decide') || can(user,'international-repair:execute') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')) && ['INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED'].includes(String(result.businessStatus)))),
+    canInspectReturn: result.returnWarehouseId === 'wh-uk' && ['RECEIVED','INSPECTION_IN_PROGRESS','INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED','REPLACEMENT_IN_PROGRESS','REPLACEMENT_COMPLETED'].includes(String(result.businessStatus))
+      && (hasGlobalInternationalAccess(user) || can(user,'international-return:inspect') || ((can(user,'international-after-sales:decide') || can(user,'international-repair:execute') || can(user,'international-rma-replace:execute') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')) && ['INSPECTION_COMPLETED','RESOLUTION_DECIDED','REPAIR_IN_PROGRESS','REPAIR_COMPLETED','REPLACEMENT_IN_PROGRESS','REPLACEMENT_COMPLETED'].includes(String(result.businessStatus)))),
     canRecordReturnShipment: result.businessStatus === 'RETURN_AUTHORIZED' && (hasGlobalInternationalAccess(user) || can(user, 'international-after-sales:manage')),
     canReceiveReturn: result.businessStatus === 'RETURN_IN_TRANSIT' && result.returnWarehouseId === 'wh-uk'
       && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')),
     canViewPostRepair: result.businessStatus==='REPAIR_COMPLETED' && (user.roles.includes('super_admin') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')),
-    canViewCustomerReturnRelease: result.businessStatus==='REPAIR_COMPLETED' && (hasGlobalInternationalAccess(user) || can(user,'international-after-sales:read') || can(user,'international-customer-return:release')) };
+    canViewCustomerReturnRelease: result.businessStatus==='REPAIR_COMPLETED' && (hasGlobalInternationalAccess(user) || can(user,'international-after-sales:read') || can(user,'international-customer-return:release')),
+    canViewReplacement: ['RESOLUTION_DECIDED','REPLACEMENT_IN_PROGRESS','REPLACEMENT_COMPLETED'].includes(String(result.businessStatus)) && (hasGlobalInternationalAccess(user) || can(user,'international-after-sales:read') || can(user,'international-rma-replace:execute')) };
 }
 
 export async function rmaList(db: D1Database, user: SessionUser) {

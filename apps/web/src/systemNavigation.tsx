@@ -6,8 +6,8 @@ import { QuickRoleSwitcher } from './QuickRoleLogin';
 type NavItem = [label: string, href: string];
 type NavGroup = { label: string; items: NavItem[] };
 
-const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'certified_operator', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager', 'uk_fulfilment_operator', 'super_admin'];
-const primaryRoleOrder: Role[] = ['super_admin', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager', 'uk_fulfilment_operator', 'certified_operator', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
+const roleDisplayOrder: Role[] = ['warehouse_manager', 'dealer', 'authorized_service_center', 'certified_operator', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager','international_replacement_operator', 'uk_fulfilment_operator', 'super_admin'];
+const primaryRoleOrder: Role[] = ['super_admin', 'international_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager','international_replacement_operator', 'uk_fulfilment_operator', 'certified_operator', 'warehouse_manager', 'authorized_service_center', 'dealer', 'online_product_consultant'];
 const roleDisplayName: Record<Role, string> = {
   super_admin: '管理员',
   warehouse_manager: '仓库',
@@ -21,7 +21,8 @@ const roleDisplayName: Record<Role, string> = {
   international_repair_operator: '国际维修执行',
   post_repair_inspector:'维修后复检',
   post_repair_certifier:'维修后再认证审核',
-  international_customer_return_manager:'原客户返还授权'
+  international_customer_return_manager:'原客户返还授权',
+  international_replacement_operator:'国际更换执行'
 };
 
 const employeeNumberByEmail: Readonly<Record<string, string>> = {
@@ -141,7 +142,7 @@ export function hasCertifiedAccess(user: SessionUser): boolean {
 }
 
 export function hasInternationalAccess(user: SessionUser): boolean {
-  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage', 'international-after-sales:decide', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide']);
+  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage', 'international-after-sales:decide', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide','international-rma-replace:execute']);
 }
 
 export function hasUkFulfilmentAccess(user: SessionUser): boolean {

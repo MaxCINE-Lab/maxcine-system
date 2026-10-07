@@ -1,4 +1,4 @@
-export const ROLES = ['super_admin', 'warehouse_manager', 'dealer', 'authorized_service_center', 'online_product_consultant', 'certified_operator', 'international_operator', 'uk_fulfilment_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager'] as const;
+export const ROLES = ['super_admin', 'warehouse_manager', 'dealer', 'authorized_service_center', 'online_product_consultant', 'certified_operator', 'international_operator', 'uk_fulfilment_operator', 'international_resolution_manager', 'international_repair_operator','post_repair_inspector','post_repair_certifier','international_customer_return_manager','international_replacement_operator'] as const;
 export type Role = (typeof ROLES)[number];
 
 export const PERMISSIONS = [
@@ -11,7 +11,7 @@ export const PERMISSIONS = [
   'customer-risk:read', 'customer-risk:create', 'customer-risk:update-own', 'customer-risk:manage'
   , 'workspace:read', 'certified:read', 'certified:manage', 'certified:final-qc', 'warehouse:international-read', 'transfer:manage',
   'marketplace:read', 'marketplace:manage', 'international-order:read', 'international-order:manage', 'international-order:deliver',
-  'international-after-sales:read', 'international-after-sales:manage', 'international-after-sales:decide', 'international-return:receive', 'international-return:inspect', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide','international-customer-return:release'
+  'international-after-sales:read', 'international-after-sales:manage', 'international-after-sales:decide', 'international-return:receive', 'international-return:inspect', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide','international-customer-return:release','international-rma-replace:execute'
 ] as const;
 export type Permission = (typeof PERMISSIONS)[number];
 

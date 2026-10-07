@@ -19,6 +19,7 @@ import { awaitingReturnReceipt, quarantineInventory, recordReturnShipment, recei
 import { completeReturnInspection, inspectionCompleteSchema, inspectionStartSchema, returnInspectionDetail, returnInspectionEvidenceContent, startReturnInspection, uploadReturnInspectionEvidence } from './rmaInspection';
 import { decideRmaResolution, rmaResolutionDetail, resolutionDecisionSchema } from './rmaResolution';
 import { completeRepair, repairCompleteSchema, repairDetail, repairStartSchema, startRepair } from './rmaRepair';
+import { completeReplacement, replaceCompleteSchema, replacementDetail, replaceSelectSchema, replaceStartSchema, requireNotReplacementCommitted, selectReplacement, startReplacement } from './rmaReplace';
 import { legacyCertifiedGrade } from './certifiedInspectionPrimitives';
 import { completePostRepair,decideRecertification,postRepairCompleteSchema,postRepairDetail,postRepairDraftSchema,postRepairEvidenceContent,postRepairStartSchema,recertificationDecisionSchema,savePostRepair,startPostRepair,uploadPostRepairEvidence } from './postRepairRecertification';
 import { createCustomerReturnRelease,customerReturnReleaseDetail,customerReturnReleaseSchema } from './rmaCustomerReturnRelease';
@@ -4994,6 +4995,7 @@ app.post('/international/transfers', requireAuth, async (c) => {
   if (!location || location.warehouseId !== input.fromWarehouseId || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE') throw conflict('资产当前不在指定调出仓或不可调拨');
   const reservation = await one(c.env.DB, `SELECT allocation_id FROM international_asset_allocations WHERE asset_id = ? AND status = 'reserved'`, input.assetId);
   if (reservation) throw conflict('该设备已被客户订单预留，不能调拨。');
+  await requireNotReplacementCommitted(c.env.DB, input.assetId);
   const transferId = id();
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO asset_transfers (id, asset_id, from_warehouse_id, to_warehouse_id, created_by) VALUES (?, ?, ?, ?, ?)`)
@@ -5057,6 +5059,7 @@ app.post('/marketplace/listings', requireAuth, async (c) => {
   if (!account || account.channelId !== input.channelId) throw badRequest('销售账号与渠道不匹配或不可用');
   const listingId = id();
   await requireNonQuarantined(c.env.DB, input.assetId);
+  await requireNotReplacementCommitted(c.env.DB, input.assetId);
   await c.env.DB.batch([
     c.env.DB.prepare(`INSERT INTO marketplace_listings (id, asset_id, channel_id, sales_account_id, external_listing_id, title, price_minor, currency, status, created_by) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?)`)
       .bind(listingId, input.assetId, input.channelId, input.salesAccountId, input.externalListingId, input.title, input.priceMinor, input.currency?.toUpperCase() ?? 'GBP', user.id),
@@ -5075,7 +5078,7 @@ app.post('/marketplace/listings/:id/:action', requireAuth, async (c) => {
     'SELECT id, asset_id AS assetId, sales_account_id AS salesAccountId, status FROM marketplace_listings WHERE id = ?', c.req.param('id'));
   if (!listing) throw notFound('未找到 Listing');
   requireSalesAccountScope(user, listing.salesAccountId);
-  if (action === 'activate') await requireNonQuarantined(c.env.DB, listing.assetId);
+  if (action === 'activate') { await requireNonQuarantined(c.env.DB, listing.assetId); await requireNotReplacementCommitted(c.env.DB, listing.assetId); }
   if (action === 'activate' && !['draft', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能激活');
   if (action === 'cancel' && !['draft', 'active', 'paused'].includes(listing.status)) throw conflict('该 Listing 当前状态不能取消');
   const nextStatus = action === 'activate' ? 'active' : 'cancelled';
@@ -5149,6 +5152,7 @@ app.post('/international/orders/:id/bind-asset', requireAuth, async (c) => {
   if (['shipped', 'delivered', 'cancelled'].includes(order.status)) throw conflict('订单当前状态不能绑定 Asset');
   await requireAssetAccess(c.env.DB, user, input.assetId);
   await requireNonQuarantined(c.env.DB, input.assetId);
+  await requireNotReplacementCommitted(c.env.DB, input.assetId);
   const location = await one<{ warehouseId: string; status: string; custody: string }>(c.env.DB, 'SELECT warehouse_id AS warehouseId, status, custody FROM asset_locations WHERE asset_id = ?', input.assetId);
   if (!location || location.status !== 'on_hand' || location.custody !== 'WAREHOUSE' || location.warehouseId !== order.fulfilmentWarehouseId) throw conflict('资产不可用、已被锁定或不在订单履约仓');
   const blocked = await one(c.env.DB, `SELECT id FROM asset_transfers WHERE asset_id = ? AND status IN ('created','shipped')
@@ -5363,6 +5367,19 @@ app.get('/international/rmas/:id/inspection', requireAuth, async (c) => {
 });
 app.get('/international/rmas/:id/resolution', requireAuth, async (c) => {
   return c.json(await rmaResolutionDetail(c.env.DB,c.get('user'),c.req.param('id')));
+});
+app.get('/international/rmas/:id/replacement-execution', requireAuth, async (c) => c.json(await replacementDetail(c.env.DB, c.get('user'), c.req.param('id'))));
+app.post('/international/rmas/:id/replacement-execution/start', requireAuth, async (c) => {
+  await parseBody(c.req.raw, replaceStartSchema);
+  return c.json(await startReplacement(c.env.DB, c.get('user'), c.req.param('id'), c.get('requestId')));
+});
+app.post('/international/rmas/:id/replacement-execution/replacement-asset', requireAuth, async (c) => {
+  const input = await parseBody(c.req.raw, replaceSelectSchema);
+  return c.json(await selectReplacement(c.env.DB, c.get('user'), c.req.param('id'), input, c.get('requestId')));
+});
+app.post('/international/rmas/:id/replacement-execution/complete', requireAuth, async (c) => {
+  const input = await parseBody(c.req.raw, replaceCompleteSchema);
+  return c.json(await completeReplacement(c.env.DB, c.get('user'), c.req.param('id'), input, c.get('requestId')));
 });
 app.get('/international/rmas/:id/repair', requireAuth, async (c) => {
   return c.json(await repairDetail(c.env.DB,c.get('user'),c.req.param('id')));

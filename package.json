@@ -30,6 +30,7 @@
     "test:phase1-2b-rma-repair": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_rma_repair.test.mjs",
     "test:phase1-2b-post-repair": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_post_repair.test.mjs",
     "test:phase1-2b-customer-return-release": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_customer_return_release.test.mjs",
+    "test:phase1-2b-rma-replace": "npm run build -w @maxcine/shared && node --import tsx --test tests/phase1_2b_rma_replace.test.mjs",
     "test:scanner": "npm run build -w @maxcine/shared && node scripts/test-barcode-scanner.mjs",
     "test:e2e": "node scripts/e2e.mjs",
     "build": "npm run build -w @maxcine/shared && npm run build -w @maxcine/web && npm run build -w @maxcine/api && npm run build -w @maxcine/website",
