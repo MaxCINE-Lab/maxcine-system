@@ -5,10 +5,13 @@ import { chromium } from '@playwright/test';
 // Fixed Staging only. Synthetic Staging replacement execution acceptance data.
 // No physical customer replacement represented; no shipment is created.
 // Seed first: scripts/fixtures/b5f1-replace-staging-fixture.sql. Never touches MC-RMA-26-000001.
+// Pair 2 (B5F1-000003/000004) carries a canonical product_id as required by 0045.
+// Pair 1 (B5F1-000001/000002) is completed history and is only read here.
 const api = 'https://maxcine-api-staging.maxcine-lab.workers.dev', web = 'https://maxcine-web-staging.pages.dev';
-const orderId = '42000000-0000-4000-8000-0000000b5f01';
-const originalAsset = { id: '43000000-0000-4000-8000-0000000b5f01', code: 'MC-26-B5F1-000001', sn: 'STG-B5F1-ORIGINAL-000001' };
-const replacementAsset = { id: '43000000-0000-4000-8000-0000000b5f02', code: 'MC-26-B5F1-000002' };
+const orderId = '42000000-0000-4000-8000-0000000b5f02';
+const originalAsset = { id: '43000000-0000-4000-8000-0000000b5f03', code: 'MC-26-B5F1-000003', sn: 'STG-B5F1-ORIGINAL-000003' };
+const replacementAsset = { id: '43000000-0000-4000-8000-0000000b5f04', code: 'MC-26-B5F1-000004' };
+const firstPair = { original: 'MC-26-B5F1-000001', replacement: 'MC-26-B5F1-000002' };
 const repairCase = 'MC-RMA-26-000001';
 const synthetic = 'Synthetic Staging replacement execution acceptance data. No physical customer replacement represented.';
 const directory = 'test-results/rma-replace-staging'; await mkdir(directory, { recursive: true });
@@ -72,7 +75,7 @@ try {
   await page.goto(`${web}/#/system/international/rmas/${rma.id}`); const panel = page.getByTestId('rma-replacement'); await panel.waitFor();
   if ((await get(admin, replace)).executionStatus === 'NOT_STARTED') { await panel.getByRole('button', { name: 'Start Replacement Execution', exact: true }).click(); await panel.getByLabel('Replacement Asset Code', { exact: true }).waitFor(); browserStarted = true; }
   if (!(await get(admin, replace)).execution.replacementAssetCode) {
-    for (const wrong of [originalAsset.code, 'MC-26-P12A-000012']) {
+    for (const wrong of [originalAsset.code, 'MC-26-P12A-000012', firstPair.replacement]) {
       await panel.getByLabel('Replacement Asset Code', { exact: true }).fill(wrong); await panel.getByRole('button', { name: 'Commit Replacement Asset', exact: true }).click();
       await panel.getByRole('alert').waitFor(); assert.equal((await get(admin, replace)).execution.replacementAssetCode, null);
     }
@@ -116,6 +119,10 @@ assert.equal(repairAfter.businessStatus, repairBefore.businessStatus, 'REPAIR ac
 const events = ['replacement_execution_started', 'replacement_asset_committed', 'replacement_execution_completed'];
 const counts = Object.fromEntries(events.map((e) => [e, [originalNow.events.filter((x) => x.eventType === e).length, replacementNow.events.filter((x) => x.eventType === e).length]]));
 assert.deepEqual(counts, { replacement_execution_started: [1, 0], replacement_asset_committed: [1, 1], replacement_execution_completed: [1, 1] });
-const report = { environment: 'Staging only', synthetic, rma: rma.rmaReference, originalAsset: originalAsset.code, replacementAsset: replacementAsset.code, browserStarted, wrongAssetRejected, browserCommitted, browserCompleted,
+// The first, already completed execution still reads unchanged after 0045.
+const firstRma = (await get(admin, '/international/rmas')).rmas.find((r) => r.assetCode === firstPair.original);
+const first = firstRma ? await get(admin, `/international/rmas/${firstRma.id}/replacement-execution`) : null;
+if (first) { assert.equal(first.executionStatus, 'REPLACEMENT_COMPLETED'); assert.equal(first.replacementAsset.assetCode, firstPair.replacement); assert.equal(first.replacementAsset.locationStatus, 'reserved'); }
+const report = { environment: 'Staging only', firstPair: first ? { rma: firstRma.rmaReference, status: first.executionStatus, replacement: first.replacementAsset.assetCode } : null, synthetic, rma: rma.rmaReference, originalAsset: originalAsset.code, replacementAsset: replacementAsset.code, browserStarted, wrongAssetRejected, browserCommitted, browserCompleted,
   denied, execution: final.execution, original: originalNow.asset, replacement: replacementNow.asset, lifecycleCounts: counts, orderUnchanged: true, warrantyUnchanged: true, shipmentCreated: false, repairCaseUntouched: repairAfter.businessStatus };
 await writeFile(`${directory}/report.json`, JSON.stringify(report, null, 2)); console.log(JSON.stringify(report, null, 2));

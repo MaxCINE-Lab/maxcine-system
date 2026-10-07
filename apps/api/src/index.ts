@@ -2725,6 +2725,7 @@ app.post('/after-sales', requireAuth, async (c) => {
   const asset = await one<{ id: string; dealerId: string | null; storeId: string | null; productId: string | null; currentSn: string | null; latestOrderId: string | null }>(c.env.DB,
     `SELECT id, dealer_id AS dealerId, store_id AS storeId, product_id AS productId, current_sn AS currentSn, latest_order_id AS latestOrderId FROM assets WHERE id = ? AND ${scope.sql}`, input.assetId, ...scope.params);
   if (!asset) throw forbidden('你无权基于该 SN 创建售后工单');
+  await requireNotReplacementCommitted(c.env.DB, asset.id);
   const storeId = input.storeId ?? asset.storeId;
   let dealerId = input.dealerId ?? asset.dealerId;
   if (storeId) {
@@ -4099,6 +4100,8 @@ app.patch('/admin/assets/:id', requireAuth, async (c) => {
     values.push(next);
   }
   if (!sets.length && !input.noteContent) return c.json({ id: assetId, changedFields: [] });
+  // Identity / SN / product compatibility of a committed replacement unit is frozen.
+  if (['currentSn', 'originalSn', 'productId', 'productName', 'version'].some((key) => changes[key])) await requireNotReplacementCommitted(c.env.DB, assetId);
   const statements: D1PreparedStatement[] = [];
   if (sets.length) statements.push(c.env.DB.prepare(`UPDATE assets SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...values, user.id, assetId));
   if (changes.currentSn) {
@@ -4130,6 +4133,7 @@ app.post('/assets/:id/after-sales', requireAuth, async (c) => {
   const scope = assetScope(user);
   const asset = await one<{ id: string; productId: string | null; currentSn: string | null }>(c.env.DB, `SELECT id, product_id AS productId, current_sn AS currentSn FROM assets WHERE id = ? AND ${scope.sql}`, c.req.param('id'), ...scope.params);
   if (!asset) throw forbidden('你无权为该资产创建售后工单');
+  await requireNotReplacementCommitted(c.env.DB, asset.id);
   assertStoreAccess(user, input.storeId);
   const store = await one<{ dealerId: string }>(c.env.DB, `SELECT dealer_id AS dealerId FROM stores WHERE id = ? AND status = 'active'`, input.storeId);
   if (!store) throw badRequest('所选店铺不可用');

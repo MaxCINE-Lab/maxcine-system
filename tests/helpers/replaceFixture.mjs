@@ -3,14 +3,14 @@ import { Buffer, File } from 'node:buffer';
 import { deliveryFixture } from './deliveryFixture.mjs';
 const { FormData } = globalThis;
 
-export const product = { name: 'Synthetic Replace Fixture Drone', version: 'Standard Kit' };
+export const product = { id: 'product-replace-fixture', name: 'Synthetic Replace Fixture Drone', version: 'Standard Kit' };
 export const original = { assetId: '43000000-0000-4000-8000-000000000099', assetCode: 'MC-26-TEST-000099', orderId: 'order-test', sn: 'STG-REPLACE-ORIGINAL-099' };
 const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a5XcAAAAASUVORK5CYII=', 'base64');
 const returnItems = ['IDENTITY', 'EXTERIOR', 'DISPLAY', 'LENS_CAMERA', 'POWER', 'FUNCTIONAL', 'ACCESSORIES', 'RETURN_REASON'];
 
 // Synthetic unit in a warehouse. Certification facts are fixture inputs, not edits to issued history.
 export function addUnit(f, { n, code = `MC-26-REPL-${String(n).padStart(6, '0')}`, warehouse = 'wh-uk', status = 'on_hand', custody = 'WAREHOUSE',
-  inventory = 'NORMAL', productId = null, name = product.name, version = product.version, cert = 'certified', finalQc = 1, grade = 'A', result = 'PASS' } = {}) {
+  inventory = 'NORMAL', productId = product.id, name = product.name, version = product.version, cert = 'certified', finalQc = 1, grade = 'A', result = 'PASS' } = {}) {
   const assetId = `45000000-0000-4000-8000-${String(n).padStart(12, '0')}`;
   f.sqlite.prepare(`INSERT INTO assets(id,asset_code,asset_status,product_id,product_name_snapshot,version_snapshot,inventory_status,original_sn,current_sn) VALUES(?,?,'active',?,?,?,?,?,?)`)
     .run(assetId, code, productId, name, version, inventory, `SN-${code}`, `SN-${code}`);
@@ -43,12 +43,14 @@ export async function openRma(f, unit, resolution = 'REPLACE') {
   return { rma, base: `${base}/replacement-execution` };
 }
 
-export async function replaceFixture({ resolution = 'REPLACE' } = {}) {
+export async function replaceFixture({ resolution = 'REPLACE', prepare } = {}) {
   const objects = new Map();
   const assets = { async put(key, value) { objects.set(key, value); }, async get(key) { return objects.has(key) ? { body: objects.get(key) } : null; }, async delete(key) { objects.delete(key); } };
   const f = await deliveryFixture({ assets });
-  f.sqlite.prepare('UPDATE assets SET original_sn=?,current_sn=?,product_name_snapshot=?,version_snapshot=? WHERE id=?').run(original.sn, original.sn, product.name, product.version, original.assetId);
-  f.certify();
+  // Canonical product record: compatibility requires a non-null, equal product_id.
+  f.sqlite.prepare('INSERT INTO products(id,sku,name,unit_price_cents) VALUES(?,?,?,1)').run(product.id, 'SKU-REPLACE-FIXTURE', product.name);
+  f.sqlite.prepare('UPDATE assets SET original_sn=?,current_sn=?,product_id=?,product_name_snapshot=?,version_snapshot=? WHERE id=?').run(original.sn, original.sn, product.id, product.name, product.version, original.assetId);
+  f.certify(); prepare?.(f);
   const { rma, base } = await openRma(f, original, resolution);
   const replacement = addUnit(f, { n: 1 });
   const grant = (user, role = 'role-international-replacement-operator') => f.sqlite.prepare('INSERT OR IGNORE INTO user_roles(user_id,role_id) VALUES(?,?)').run(user, role);

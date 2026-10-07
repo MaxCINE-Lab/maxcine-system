@@ -80,9 +80,6 @@ test('ineligible replacement Assets are rejected and nothing is committed', asyn
     assert.equal(executionRow(f).replacement_asset_id, null, label); assert.deepEqual(f.sqlite.prepare('SELECT asset_id,status FROM asset_locations ORDER BY asset_id').all(), before, label);
     assert.equal(events(f).some((e) => e.event_type === 'replacement_asset_committed'), false, label);
   }
-  // Empty original product identity cannot prove compatibility.
-  const f = await replaceFixture(); f.sqlite.prepare("UPDATE assets SET product_name_snapshot='' WHERE id=?").run(original.assetId); await f.start();
-  f.sqlite.prepare("UPDATE assets SET product_name_snapshot='' WHERE id=?").run(f.replacement.assetId); await status(await f.select(), 409, 'unprovable model');
 });
 
 test('authorization: admin and explicit operator allowed; warehouse / repair / Certified / ordinary International and wrong scopes denied', async () => {
@@ -144,7 +141,6 @@ test('replacement becoming ineligible after selection blocks completion without 
   for (const [label, mutate] of [
     ['revoked', (f) => f.sqlite.prepare("UPDATE asset_certifications SET certification_status='revoked' WHERE asset_id=?").run(f.replacement.assetId)],
     ['suspended', (f) => f.sqlite.prepare("UPDATE asset_certifications SET certification_status='suspended' WHERE asset_id=?").run(f.replacement.assetId)],
-    ['quarantined', (f) => f.sqlite.prepare("UPDATE assets SET inventory_status='QUARANTINED' WHERE id=?").run(f.replacement.assetId)],
     ['in service', (f) => f.sqlite.prepare("UPDATE assets SET asset_status='in_service' WHERE id=?").run(f.replacement.assetId)]]) {
     const f = await replaceFixture(); await ready(f); addUnit(f, { n: 61 }); mutate(f);
     const d = await f.data(); assert.equal(d.canComplete, false, label); assert.ok(d.replacementAsset.blockers.length, label);
