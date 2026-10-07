@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { hashIdentifier } from './auth';
 import { id,one } from './db';
 import { requireAssetAccess,requireOrderAccess,requireRmaAccess } from './internationalAuthorization';
+import { operationalState } from './rmaOperationalState';
 
 export const customerReturnReleaseSchema=z.object({reason:z.string().trim().min(1).max(1000)}).strict();
 type Input=z.infer<typeof customerReturnReleaseSchema>;
@@ -83,12 +84,23 @@ function blocking(row:Context,eligible:boolean){
   return 'RMA、订单、Allocation、Transfer 或正式 Lifecycle 状态不满足返还授权条件。';
 }
 
+// A release is a historical fact. Whether it still holds is recomputed from the
+// current canonical chain on every read; a later Shipment must still re-validate.
+function releaseValidity(row:Context,record:Release|null,eligible:boolean){
+  if(!record)return {releaseCurrentlyValid:null,releaseBlockingReason:null};
+  if(record.certificationId!==row.certificationId)return {releaseCurrentlyValid:false,releaseBlockingReason:'当前最新 Certification 已不是该返还授权引用的版本。'};
+  if(!eligible)return {releaseCurrentlyValid:false,releaseBlockingReason:blocking(row,false)};
+  return {releaseCurrentlyValid:true,releaseBlockingReason:null};
+}
+
 export async function customerReturnReleaseDetail(db:D1Database,user:SessionUser,rmaId:string){
   const row=await scoped(db,user,rmaId,false),existing=await release(db,rmaId),eligible=Boolean(await one(db,eligibility,rmaId));
-  return {state:existing?'CUSTOMER_RETURN_RELEASED':'NOT_RELEASED',release:publicRelease(existing),canRelease:!existing&&eligible&&canReleaseCustomerReturn(user),eligible,
+  const state=await operationalState(db,rmaId);
+  return {state:existing?'CUSTOMER_RETURN_RELEASED':'NOT_RELEASED',release:publicRelease(existing),...releaseValidity(row,existing,eligible),
+    canRelease:!existing&&eligible&&canReleaseCustomerReturn(user),eligible,
     blockingReason:existing?null:blocking(row,eligible),assetCode:row.assetCode,orderReference:row.orderReference,resolution:row.resolution,
     repairStatus:row.repairStatus,reinspectionStatus:row.inspectionStatus,certification:row.certificationId?{id:row.certificationId,version:row.certificationVersion,status:row.certificationStatus}:null,
-    inventory:{warehouse:row.warehouseCode,custody:row.custody,inventoryStatus:row.inventoryStatus,locationStatus:row.locationStatus,locationCode:row.locationCode,sellable:false},rmaOpen:['open','in_progress'].includes(row.status)};
+    inventory:{warehouse:row.warehouseCode,custody:row.custody,inventoryStatus:row.inventoryStatus,locationStatus:row.locationStatus,locationCode:row.locationCode,sellable:state?.sellable??false},rmaOpen:['open','in_progress'].includes(row.status)};
 }
 
 export async function createCustomerReturnRelease(db:D1Database,user:SessionUser,rmaId:string,input:Input,requestId:string){

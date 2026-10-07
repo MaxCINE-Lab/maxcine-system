@@ -69,3 +69,66 @@ test('guarded batch rolls back release, lifecycle, and audit together',async()=>
  const f=await approved();f.sqlite.exec("CREATE TRIGGER fail_customer_return_audit BEFORE INSERT ON audit_logs WHEN NEW.action='international.rma.customer_return_release' BEGIN SELECT RAISE(ABORT,'synthetic audit failure'); END;");
  const response=await release(f);assert.equal(response.status,500);assert.equal(count(f,'rma_customer_return_releases'),0);assert.equal(count(f,'asset_events',"event_type='customer_return_released'"),0);assert.equal(count(f,'audit_logs',"action='international.rma.customer_return_release'"),0);
 });
+
+const { hasInternationalAccess } = await import('../apps/web/src/internationalAccess.ts');
+const { releaseNotice, staleReleaseText, submitWithReadBack } = await import('../apps/web/src/customerReturnReleaseView.ts');
+const detail=async(f,user='admin')=>{const response=await f.request(user,endpoint(f));assert.equal(response.status,200);return response.json();};
+
+test('revoked or suspended current Certification keeps the release history but marks it not currently valid',async()=>{
+ for(const status of ['revoked','suspended']){
+  const f=await approved();assert.equal((await release(f)).status,200);const recorded=f.sqlite.prepare('SELECT * FROM rma_customer_return_releases').get();
+  f.sqlite.prepare("UPDATE asset_certifications SET certification_status=? WHERE id=(SELECT id FROM current_asset_certifications WHERE asset_id=?)").run(status,assetId);
+  const body=await detail(f);assert.equal(body.state,'CUSTOMER_RETURN_RELEASED',status);assert.equal(body.release.id,recorded.id);assert.equal(body.releaseCurrentlyValid,false,status);
+  assert.match(body.releaseBlockingReason,/Certification/,status);assert.deepEqual(f.sqlite.prepare('SELECT * FROM rma_customer_return_releases').get(),recorded,'history unchanged');
+  const notice=releaseNotice(body);assert.equal(notice.tone,'error');assert.equal(notice.text,staleReleaseText);assert.notEqual(notice.tone,'success');
+ }
+});
+
+test('a release stays currently valid only while the canonical chain still holds',async()=>{
+ const f=await approved();assert.equal((await release(f)).status,200);let body=await detail(f);
+ assert.equal(body.releaseCurrentlyValid,true);assert.equal(body.releaseBlockingReason,null);assert.equal(releaseNotice(body).tone,'success');
+ f.sqlite.prepare("UPDATE asset_locations SET custody='SERVICE_CENTER' WHERE asset_id=?").run(assetId);body=await detail(f);
+ assert.equal(body.releaseCurrentlyValid,false);assert.match(body.releaseBlockingReason,/Quarantine/);
+ const fresh=await approved();assert.equal((await detail(fresh)).releaseCurrentlyValid,null,'no release recorded yet');
+});
+
+test('inventory sellable is read from canonical state, not hard-coded',async()=>{
+ const f=await approved();assert.equal((await release(f)).status,200);assert.equal((await detail(f)).inventory.sellable,false);
+ // Read-model probe only: bypass guard triggers in this isolated DB to prove the value follows stored facts.
+ for(const {name} of f.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('asset_locations','after_sales_cases')").all())f.sqlite.exec(`DROP TRIGGER ${name}`);
+ f.sqlite.prepare("UPDATE assets SET inventory_status='NORMAL',asset_status='active' WHERE id=?").run(assetId);f.sqlite.prepare("UPDATE asset_locations SET status='on_hand' WHERE asset_id=?").run(assetId);
+ f.sqlite.prepare("UPDATE after_sales_cases SET status='closed' WHERE id=?").run(f.rma.id);
+ const body=await detail(f);assert.equal(body.inventory.sellable,true);assert.equal(body.releaseCurrentlyValid,false);
+});
+
+test('dedicated customer-return manager reaches the International UI; API scope still applies',async()=>{
+ const f=await approved();const permissions=role=>f.sqlite.prepare('SELECT permission_code AS code FROM role_permissions WHERE role_id=(SELECT id FROM roles WHERE code=?)').all(role).map(r=>r.code);
+ assert.equal(hasInternationalAccess({roles:['international_customer_return_manager'],permissions:permissions('international_customer_return_manager')}),true);
+ grant(f,'uk');assert.equal((await f.request('uk',endpoint(f))).status,200);
+ for(const user of ['other','wrongWarehouse','wrongMarket']){grant(f,user);assert.equal((await f.request(user,endpoint(f))).status,403,user);assert.equal((await release(f,user)).status,403,user);}
+});
+
+test('personas without the release permission gain no additional International UI access',async()=>{
+ const f=await approved();
+ const legacy=['marketplace:manage','transfer:manage','international-after-sales:decide','international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide'];
+ const roles=f.sqlite.prepare('SELECT id,code FROM roles').all();assert.ok(roles.length>=5);
+ for(const role of roles){
+  const permissions=f.sqlite.prepare('SELECT permission_code AS code FROM role_permissions WHERE role_id=?').all(role.id).map(r=>r.code);if(permissions.includes('international-customer-return:release'))continue;
+  const user={roles:[role.code],permissions};
+  assert.equal(hasInternationalAccess(user),role.code==='international_operator'||legacy.some(p=>permissions.includes(p)),role.code);
+ }
+ for(const role of ['uk_fulfilment_operator','certified_operator','warehouse_manager'])assert.equal(hasInternationalAccess({roles:[role],permissions:['international-after-sales:read','workspace:read']}),false,role);
+});
+
+test('ambiguous POST failure reads back once and restores a committed release without re-posting',async()=>{
+ const f=await approved();const batch=f.db.batch.bind(f.db);let lost=true;
+ f.db.batch=async statements=>{const result=await batch(statements);if(lost){lost=false;throw new Error('lost customer return release response');}return result;};
+ let posts=0;const post=async()=>{posts++;const response=await release(f);if(!response.ok)throw new Error(`HTTP ${response.status}`);return response.json();};
+ const result=await submitWithReadBack(post,()=>detail(f),e=>String(e));
+ assert.equal(posts,1);assert.equal(result.error,'');assert.equal(result.data.state,'CUSTOMER_RETURN_RELEASED');assert.equal(result.data.releaseCurrentlyValid,true);
+ assert.equal(count(f,'rma_customer_return_releases'),1);assert.equal(count(f,'asset_events',"event_type='customer_return_released'"),1);
+ // A genuinely failed POST keeps the error and shows the unreleased server state.
+ const g=await approved();g.sqlite.exec("CREATE TRIGGER fail_release BEFORE INSERT ON audit_logs WHEN NEW.action='international.rma.customer_return_release' BEGIN SELECT RAISE(ABORT,'synthetic'); END;");
+ const failed=await submitWithReadBack(async()=>{const r=await release(g);if(!r.ok)throw new Error(`HTTP ${r.status}`);return r.json();},()=>detail(g),e=>String(e));
+ assert.match(failed.error,/HTTP 500/);assert.equal(failed.data.state,'NOT_RELEASED');assert.equal(count(g,'rma_customer_return_releases'),0);
+});
