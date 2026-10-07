@@ -21,6 +21,7 @@ import { decideRmaResolution, rmaResolutionDetail, resolutionDecisionSchema } fr
 import { completeRepair, repairCompleteSchema, repairDetail, repairStartSchema, startRepair } from './rmaRepair';
 import { legacyCertifiedGrade } from './certifiedInspectionPrimitives';
 import { completePostRepair,decideRecertification,postRepairCompleteSchema,postRepairDetail,postRepairDraftSchema,postRepairEvidenceContent,postRepairStartSchema,recertificationDecisionSchema,savePostRepair,startPostRepair,uploadPostRepairEvidence } from './postRepairRecertification';
+import { createCustomerReturnRelease,customerReturnReleaseDetail,customerReturnReleaseSchema } from './rmaCustomerReturnRelease';
 
 type App = { Bindings: Env; Variables: Variables };
 type OrderRow = { id: string; orderNo: string; dealerId: string; storeId: string; status: OrderStatus; totalCents: number; note: string; reviewNote: string; salePriceCents: number | null; shippingAddress: string; customerProfile: string; screenshotDataUrl: string; packageMaterials: string; fulfillmentCarrier: string; fulfillmentTrackingNumber: string; fulfillmentUpdatedAt: string | null; createdAt: string; updatedAt: string; submittedAt: string | null; reviewedAt: string | null };
@@ -5384,6 +5385,11 @@ app.get('/international/post-repair-evidence/:id/content',requireAuth,async(c)=>
 app.post('/international/rmas/:id/recertification-decision',requireAuth,async(c)=>{
   const input=recertificationDecisionSchema.parse(await parseBody(c.req.raw,recertificationDecisionSchema));
   return c.json(await decideRecertification(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
+});
+app.get('/international/rmas/:id/customer-return-release',requireAuth,async(c)=>c.json(await customerReturnReleaseDetail(c.env.DB,c.get('user'),c.req.param('id'))));
+app.post('/international/rmas/:id/customer-return-release',requireAuth,async(c)=>{
+  const input=customerReturnReleaseSchema.parse(await parseBody(c.req.raw,customerReturnReleaseSchema));
+  return c.json(await createCustomerReturnRelease(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
 });
 app.post('/international/rmas/:id/repair/start', requireAuth, async (c) => {
   await parseBody(c.req.raw,repairStartSchema);

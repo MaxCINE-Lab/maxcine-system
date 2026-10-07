@@ -37,7 +37,8 @@ export async function rmaDetail(db: D1Database, user: SessionUser, rmaId: string
     canRecordReturnShipment: result.businessStatus === 'RETURN_AUTHORIZED' && (hasGlobalInternationalAccess(user) || can(user, 'international-after-sales:manage')),
     canReceiveReturn: result.businessStatus === 'RETURN_IN_TRANSIT' && result.returnWarehouseId === 'wh-uk'
       && (hasGlobalInternationalAccess(user) || can(user, 'international-return:receive')),
-    canViewPostRepair: result.businessStatus==='REPAIR_COMPLETED' && (user.roles.includes('super_admin') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')) };
+    canViewPostRepair: result.businessStatus==='REPAIR_COMPLETED' && (user.roles.includes('super_admin') || can(user,'post-repair:read') || can(user,'post-repair:inspect') || can(user,'post-repair:decide')),
+    canViewCustomerReturnRelease: result.businessStatus==='REPAIR_COMPLETED' && (hasGlobalInternationalAccess(user) || can(user,'international-after-sales:read') || can(user,'international-customer-return:release')) };
 }
 
 export async function rmaList(db: D1Database, user: SessionUser) {
