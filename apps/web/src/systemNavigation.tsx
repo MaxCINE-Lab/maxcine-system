@@ -2,6 +2,7 @@
 import { useState, type ReactNode } from 'react';
 import type { Permission, Role, SessionUser } from '@maxcine/shared';
 import { QuickRoleSwitcher } from './QuickRoleLogin';
+import { hasInternationalAccess } from './internationalAccess';
 
 type NavItem = [label: string, href: string];
 type NavGroup = { label: string; items: NavItem[] };
@@ -140,9 +141,7 @@ export function hasCertifiedAccess(user: SessionUser): boolean {
   return hasAdminAccess(user) || user.roles.includes('certified_operator') || hasAnyPermission(user, ['certified:read', 'certified:manage', 'certified:final-qc']);
 }
 
-export function hasInternationalAccess(user: SessionUser): boolean {
-  return user.roles.includes('international_operator') || hasAnyPermission(user, ['marketplace:manage', 'transfer:manage', 'international-after-sales:decide', 'international-repair:execute','post-repair:read','post-repair:inspect','post-repair:decide']);
-}
+export { hasInternationalAccess };
 
 export function hasUkFulfilmentAccess(user: SessionUser): boolean {
   return user.roles.includes('uk_fulfilment_operator') || hasAnyPermission(user, ['warehouse:international-read', 'international-order:manage']);
