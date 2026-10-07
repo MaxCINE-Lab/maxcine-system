@@ -26,7 +26,9 @@ const admin = await login('ADMIN'), uk = await login('UK_FULFILMENT');
 const repairBefore = (await get(admin, '/international/rmas')).rmas.find((r) => r.rmaReference === repairCase);
 
 // Canonical sale chain for the synthetic original unit (resumable).
-let order = (await get(uk, `/international/orders/${orderId}`)).order;
+// An approved order has no detail view until an Asset is bound (409), which means "not yet bound".
+const unbound = (await uk(`/international/orders/${orderId}`)).status === 409;
+let order = unbound ? { status: 'approved' } : (await get(uk, `/international/orders/${orderId}`)).order;
 if (order.status === 'approved') { await expect(uk, `/international/orders/${orderId}/bind-asset`, { assetId: originalAsset.id }, 200);
   await expect(uk, `/international/orders/${orderId}/ship`, { assetCode: originalAsset.code, carrier: 'Synthetic Staging', trackingNumber: 'STG-B5F1-NOT-A-REAL-SHIPMENT' }, 200); }
 order = (await get(uk, `/international/orders/${orderId}`)).order;
