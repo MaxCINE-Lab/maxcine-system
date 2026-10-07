@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { readFileSync,readdirSync } from 'node:fs';
 import { URL } from 'node:url';
 import { assetId,assetCode,postRepairFixture } from './helpers/postRepairFixture.mjs';
+const {ReadableStream}=globalThis;
 const historyTables=['assets','asset_locations','orders','international_asset_allocations','marketplace_listings','asset_public_warranties','asset_public_warranty_entitlements','after_sales_cases','rma_return_inspections','rma_return_inspection_evidence','rma_repair_executions'];
 const history=f=>historyTables.map(t=>f.sqlite.prepare(`SELECT * FROM ${t}`).all());
 const oldTasks=f=>f.sqlite.prepare("SELECT * FROM asset_inspection_tasks WHERE process_code<>'POST_REPAIR_RECERTIFICATION'").all();
@@ -155,4 +156,41 @@ test('0042 preserves v1 IDs/values/events/foreign keys and does not enroll exist
  db.exec("PRAGMA foreign_keys=ON; INSERT INTO assets(id,asset_code) VALUES('history-asset','MC-HISTORY'); INSERT INTO asset_inspection_tasks(id,asset_id,status,result,grade,final_qc) VALUES('history-task','history-asset','completed','PASS','A',1); INSERT INTO asset_certifications(id,asset_id,inspection_task_id,grade,inspection_result,final_qc,verification_code_hash) VALUES('history-cert','history-asset','history-task','A','PASS',1,'old-hash'); INSERT INTO asset_events(id,asset_id,event_type,title) VALUES('history-event','history-asset','repair_completed','old-event');");
  const before=db.prepare('SELECT * FROM asset_certifications').get();db.exec(readFileSync(new URL('0042_post_repair_recertification.sql',root),'utf8'));const after=db.prepare('SELECT * FROM asset_certifications WHERE id=?').get('history-cert');for(const key of Object.keys(before))assert.equal(after[key],before[key]);assert.equal(after.version,1);assert.equal(db.prepare('SELECT title FROM asset_events WHERE id=?').get('history-event').title,'old-event');assert.deepEqual(db.prepare('PRAGMA foreign_key_check').all(),[]);
  assert.equal(db.prepare("SELECT COUNT(*) n FROM role_permissions p JOIN roles r ON r.id=p.role_id WHERE p.permission_code LIKE 'post-repair:%' AND r.code NOT IN('super_admin','post_repair_inspector','post_repair_certifier')").get().n,0);assert.equal(db.prepare("SELECT COUNT(*) n FROM user_roles WHERE role_id IN('role-post-repair-inspector','role-post-repair-certifier')").get().n,0);
+});
+test('operational state is read from canonical Asset / location / RMA facts, not constants',async()=>{
+ const f=await postRepairFixture();await f.inspected();await f.decide();const s=(await f.data()).operationalState;
+ assert.deepEqual({warehouse:s.warehouseCode,custody:s.custody,location:s.locationStatus,area:s.locationCode,inventory:s.inventoryStatus,sellable:s.sellable,pending:s.inventoryReleasePending,rma:s.rmaStatus,open:s.rmaOpen},
+  {warehouse:'UK',custody:'WAREHOUSE',location:'returned',area:'RETURN-QUARANTINE',inventory:'QUARANTINED',sellable:false,pending:true,rma:'in_progress',open:true});
+ // Read-model probe only: bypass guard triggers in this isolated DB to prove values follow stored facts.
+ for(const {name} of f.sqlite.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND tbl_name IN ('asset_locations','after_sales_cases')").all())f.sqlite.exec(`DROP TRIGGER ${name}`);
+ f.sqlite.exec("UPDATE assets SET inventory_status='NORMAL',asset_status='active';UPDATE asset_locations SET status='on_hand';UPDATE after_sales_cases SET status='closed'");
+ const changed=await f.data();assert.equal(changed.operationalState.inventoryStatus,'NORMAL');assert.equal(changed.inventoryReleasePending,false);assert.equal(changed.operationalState.rmaOpen,false);assert.equal(changed.operationalState.sellable,true);assert.equal(changed.sellable,true);
+ f.sqlite.exec("UPDATE after_sales_cases SET status='in_progress'");assert.equal((await f.data()).sellable,false,'an open RMA keeps the Asset non-sellable');
+});
+test('certification history has exactly one Current latest version; older versions are Superseded',async()=>{
+ const f=await postRepairFixture();const before=await f.data();assert.deepEqual(before.certificationHistory.map(c=>[c.version,c.isCurrent,c.standing]),[[1,true,'CURRENT']]);assert.equal(before.currentCertification.version,1);
+ await f.inspected();await f.decide();const after=await f.data();
+ assert.deepEqual(after.certificationHistory.map(c=>[c.version,c.status,c.isCurrent,c.standing]),[[1,'certified',false,'SUPERSEDED'],[2,'certified',true,'CURRENT']]);
+ assert.equal(after.certificationHistory.filter(c=>c.isCurrent).length,1);assert.equal(after.currentCertification.id,after.decision.certificationId);
+});
+test('revoked/suspended current version stays Current; v1 never becomes Current again',async()=>{
+ for(const status of ['revoked','suspended']){const f=await postRepairFixture();await f.inspected();await f.decide();const v1=f.sqlite.prepare('SELECT * FROM asset_certifications WHERE version=1').get();
+  f.sqlite.prepare('UPDATE asset_certifications SET certification_status=? WHERE version=2').run(status);const d=await f.data();
+  assert.deepEqual(d.certificationHistory.map(c=>[c.version,c.status,c.isCurrent]),[[1,'certified',false],[2,status,true]]);assert.equal(d.currentCertification.version,2);assert.equal(d.currentCertification.status,status);
+  assert.deepEqual(f.sqlite.prepare('SELECT * FROM asset_certifications WHERE version=1').get(),v1);}
+});
+test('evidence upload authorizes before reading the request body',async()=>{
+ const f=await postRepairFixture();await f.start();const objects=f.objects.size;
+ for(const user of ['uk','cn','cert','intl','other','wrongMarket','wrongWarehouse']){if(['other','wrongMarket','wrongWarehouse'].includes(user))f.grant(user);let read=false;
+  const body=new ReadableStream({pull(controller){read=true;controller.enqueue(new Uint8Array(1024));controller.close();}},{highWaterMark:0});
+  const response=await f.rawRequest(user,`${f.base}/post-repair-inspection/evidence`,{body,headers:{'Content-Type':'multipart/form-data; boundary=unread'}});
+  assert.equal(response.status,403,user);assert.equal(read,false,`${user} body must stay unread`);}
+ assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM asset_inspection_evidence').get().n,0);assert.equal(f.objects.size,objects);
+});
+test('non-multipart, malformed multipart and oversized declared uploads return controlled 400',async()=>{
+ const f=await postRepairFixture();await f.start();const path=`${f.base}/post-repair-inspection/evidence`;
+ for(const request of [{body:JSON.stringify({category:'OVERALL_CONDITION'}),headers:{'Content-Type':'application/json'}},{body:'plain',headers:{'Content-Type':'text/plain'}},{body:'',headers:{}},
+  {body:'not a multipart body',headers:{'Content-Type':'multipart/form-data; boundary=missing'}},{body:'x',headers:{'Content-Type':'multipart/form-data; boundary=x','Content-Length':String(30*1024*1024)}}]){
+  const response=await f.rawRequest('admin',path,request);assert.equal(response.status,400,JSON.stringify(request.headers));assert.equal((await response.json()).error.code,'VALIDATION_ERROR');}
+ assert.equal(f.sqlite.prepare('SELECT COUNT(*) n FROM asset_inspection_evidence').get().n,0);assert.equal((await f.upload()).status,201);
 });

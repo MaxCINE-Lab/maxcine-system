@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { URL } from 'node:url';
 import app from '../../apps/api/src/index.ts';
 import { createSessionToken } from '../../apps/api/src/auth.ts';
-const { FormData } = globalThis;
+const { FormData, ReadableStream } = globalThis;
 
 export async function deliveryFixture(options = {}) {
   const sqlite = new DatabaseSync(':memory:');
@@ -58,6 +58,8 @@ export async function deliveryFixture(options = {}) {
   };
   const env = { DB: db, ASSETS: options.assets, SESSION_SECRET: 'test-only-session-secret', APP_ORIGIN: 'https://test.example', APP_ENV: 'staging' };
   const request = (user, path, body, method = body ? 'POST' : 'GET') => app.request(`https://test.example${path}`, { method, headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) }, ...(body ? { body: body instanceof FormData ? body : JSON.stringify(body) } : {}) }, env);
+  // Unmodified body/headers, for malformed-request and unread-body checks.
+  const rawRequest = (user, path, { body, headers = {}, method = 'POST' } = {}) => app.request(`https://test.example${path}`, { method, headers: { Authorization: `Bearer ${tokens[user]}`, Origin: env.APP_ORIGIN, ...headers }, body, ...(body instanceof ReadableStream ? { duplex: 'half' } : {}) }, env);
   const ship = async () => {
     assert.equal((await request('uk', '/international/orders/order-test/bind-asset', { assetId: '43000000-0000-4000-8000-000000000099' })).status, 200);
     assert.equal((await request('uk', '/international/orders/order-test/ship', { assetCode: 'MC-26-TEST-000099', carrier: 'Royal Mail', trackingNumber: 'RM-DELIVERY' })).status, 200);
@@ -69,5 +71,5 @@ export async function deliveryFixture(options = {}) {
     sqlite.prepare(`INSERT INTO asset_certifications(id,asset_id,inspection_task_id,grade,inspection_result,final_qc,verification_code_hash,certification_status,certification_date)
       VALUES ('certification-test','43000000-0000-4000-8000-000000000099','inspection-test',?,?,?,?,?,?)`).run(grade,result,finalQc,'test-only',status,date);
   };
-  return { sqlite, db, request, ship, deliver, certify };
+  return { sqlite, db, request, rawRequest, ship, deliver, certify };
 }

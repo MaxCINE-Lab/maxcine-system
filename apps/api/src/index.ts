@@ -5379,7 +5379,7 @@ app.post('/international/rmas/:id/post-repair-inspection/complete',requireAuth,a
   const input=postRepairCompleteSchema.parse(await parseBody(c.req.raw,postRepairCompleteSchema));
   return c.json(await completePostRepair(c.env.DB,c.get('user'),c.req.param('id'),input,c.get('requestId')));
 });
-app.post('/international/rmas/:id/post-repair-inspection/evidence',requireAuth,async(c)=>c.json(await uploadPostRepairEvidence(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id'),await c.req.raw.formData(),c.get('requestId')),201));
+app.post('/international/rmas/:id/post-repair-inspection/evidence',requireAuth,async(c)=>c.json(await uploadPostRepairEvidence(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id'),c.req.raw,c.get('requestId')),201));
 app.get('/international/post-repair-evidence/:id/content',requireAuth,async(c)=>postRepairEvidenceContent(c.env.DB,c.env.ASSETS,c.get('user'),c.req.param('id')));
 app.post('/international/rmas/:id/recertification-decision',requireAuth,async(c)=>{
   const input=recertificationDecisionSchema.parse(await parseBody(c.req.raw,recertificationDecisionSchema));

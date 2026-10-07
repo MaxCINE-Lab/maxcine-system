@@ -81,23 +81,45 @@ function records(db:D1Database,user:SessionUser,row:Case,i:Inspection|{id:string
    db.prepare(`INSERT INTO audit_logs(id,actor_id,action,entity_type,entity_id,request_id,after_json) VALUES(?,?,?,'rma_post_repair_inspection',?,?,?)`)
     .bind(id(),user.id,`international.rma.${event}`,i.id,requestId,JSON.stringify(metadata))];
 }
+// Read-only projection of canonical Asset / location / RMA facts. Sellable reuses
+// the ordinary inventory predicate: not QUARANTINED, WAREHOUSE on_hand, not in
+// service, no open RMA and no active transfer.
+async function operationalState(db:D1Database,rmaId:string){
+  const s=await one<{inventoryStatus:string;custody:string|null;locationStatus:string|null;warehouseCode:string|null;warehouseMarket:string|null;locationCode:string|null;rmaStatus:string;rmaStage:string;sellable:number}>(db,
+   `SELECT a.inventory_status AS inventoryStatus,l.custody,l.status AS locationStatus,w.code AS warehouseCode,w.market_region AS warehouseMarket,area.code AS locationCode,
+    c.status AS rmaStatus,c.service_stage AS rmaStage,
+    CASE WHEN a.inventory_status<>'QUARANTINED' AND l.custody='WAREHOUSE' AND l.status='on_hand' AND a.asset_status<>'in_service'
+     AND NOT EXISTS(SELECT 1 FROM after_sales_cases r WHERE r.asset_id=a.id AND r.status IN ('open','in_progress'))
+     AND NOT EXISTS(SELECT 1 FROM asset_transfers t WHERE t.asset_id=a.id AND t.status IN ('created','shipped')) THEN 1 ELSE 0 END AS sellable
+    FROM after_sales_cases c JOIN assets a ON a.id=c.asset_id LEFT JOIN asset_locations l ON l.asset_id=a.id
+    LEFT JOIN warehouses w ON w.id=l.warehouse_id LEFT JOIN warehouse_locations area ON area.id=l.location_id WHERE c.id=?`,rmaId);
+  if(!s)return null;
+  return {...s,warehouseCode:s.custody==='WAREHOUSE'?s.warehouseCode:null,sellable:s.sellable===1,
+    inventoryReleasePending:s.inventoryStatus==='QUARANTINED',rmaOpen:['open','in_progress'].includes(s.rmaStatus)};
+}
 const retryable=(e:unknown)=>e instanceof Error&&/malformed JSON|Post-repair .*changed|UNIQUE constraint failed|Invalid post-repair|Invalid recertification|immutable/i.test(e.message);
 export async function postRepairDetail(db:D1Database,user:SessionUser,rmaId:string){
   const row=await scoped(db,user,rmaId,'read');const i=await report(db,rmaId),d=await decision(db,rmaId);
   const eligible=Boolean(await one(db,eligibility,...params(row)));
   const evidence=i?await all<{id:string;metadata:string;createdAt:string;createdByName:string}>(db,`SELECT e.id,e.metadata_json AS metadata,e.created_at AS createdAt,u.name AS createdByName
    FROM asset_inspection_evidence e JOIN users u ON u.id=e.created_by WHERE e.inspection_task_id=? ORDER BY e.created_at,e.id`,i.taskId):[];
-  const history=await all<{id:string;version:number;purpose:string;grade:string;status:string;issuedAt:string;taskId:string;postRepairInspectionId:string|null}>(db,`SELECT id,version,purpose,COALESCE(grade_display,grade) AS grade,
-   certification_status AS status,certification_date AS issuedAt,inspection_task_id AS taskId,post_repair_inspection_id AS postRepairInspectionId FROM asset_certifications WHERE asset_id=? ORDER BY version`,row.assetId);
+  // Current is the canonical latest version only; older rows keep their stored
+  // issuance status but are Superseded and never become current again.
+  const history=(await all<{id:string;version:number;purpose:string;grade:string;status:string;issuedAt:string;taskId:string;postRepairInspectionId:string|null;isCurrent:number}>(db,`SELECT c.id,c.version,c.purpose,COALESCE(c.grade_display,c.grade) AS grade,
+   c.certification_status AS status,c.certification_date AS issuedAt,c.inspection_task_id AS taskId,c.post_repair_inspection_id AS postRepairInspectionId,
+   CASE WHEN cur.id IS NULL THEN 0 ELSE 1 END AS isCurrent FROM asset_certifications c LEFT JOIN current_asset_certifications cur ON cur.id=c.id WHERE c.asset_id=? ORDER BY c.version`,row.assetId))
+   .map(c=>({...c,isCurrent:c.isCurrent===1,standing:c.isCurrent===1?'CURRENT':'SUPERSEDED'}));
+  const state=(await operationalState(db,rmaId))!;
   return {purpose:'POST_REPAIR_RECERTIFICATION',assetCode:row.assetCode,executionStatus:row.repairStatus||'NOT_STARTED',items:postRepairItems,
     canStart:!i&&eligible&&canInspect(user),canDecide:Boolean(i?.status==='COMPLETED'&&!d&&eligible&&canDecide(user)),certificationHistory:history,
+    currentCertification:history.find(c=>c.isCurrent)??null,operationalState:state,
     inspection:i?{id:i.id,rmaId:i.rmaId,assetId:i.assetId,repairExecutionId:i.repairId,taskId:i.taskId,status:i.status,inspectorId:i.inspectorId,inspectorName:i.inspectorName,
       startedAt:i.startedAt,completedAt:i.completedAt,assetCode:i.assetCode,expectedSn:i.expectedSn,observedSn:i.observedSn,snVerification:i.snVerification,grade:i.grade,
       checklist:JSON.parse(i.checklistJson),findings:JSON.parse(i.findingsJson),evidenceSnapshot:JSON.parse(i.evidenceJson),
       canEdit:i.status==='IN_PROGRESS'&&eligible&&canInspect(user)&&(admin(user)||i.inspectorId===user.id),
       evidence:evidence.map((e)=>{const m=JSON.parse(e.metadata);return {id:e.id,category:m.category,filename:m.originalFilename,contentType:m.contentType,fileSize:m.fileSize,createdAt:e.createdAt,createdByName:e.createdByName,contentUrl:`/international/post-repair-evidence/${e.id}/content`};})}:null,
     decision:d?{id:d.id,inspectionId:d.inspectionId,decision:d.decision,reason:d.reason,notes:d.notes,decidedBy:d.decidedBy,decidedByName:d.decidedByName,decidedAt:d.decidedAt,certificationId:d.certificationId}:null,
-    inventoryReleasePending:true,sellable:false,eligibilityReason:eligible?'复检与再认证均不解除 UK Quarantine。':'必须完成正式 REPAIR 且设备仍位于 UK Return Quarantine。'};
+    inventoryReleasePending:state.inventoryReleasePending,sellable:state.sellable,eligibilityReason:eligible?'复检与再认证均不解除 UK Quarantine。':'必须完成正式 REPAIR 且设备仍位于 UK Return Quarantine。'};
 }
 export async function startPostRepair(db:D1Database,user:SessionUser,rmaId:string,input:z.infer<typeof postRepairStartSchema>,requestId:string){
   const row=await scoped(db,user,rmaId,'inspect');match(row,input.assetCode);
@@ -180,9 +202,16 @@ export async function decideRecertification(db:D1Database,user:SessionUser,rmaId
   ]);}catch(e){if(retryable(e)){const current=await decision(db,rmaId);if(current){repeated(current);return postRepairDetail(db,user,rmaId);}throw conflict('复检、决定或隔离状态已变化，不能签发认证。');}throw e;}
   return postRepairDetail(db,user,rmaId);
 }
-export async function uploadPostRepairEvidence(db:D1Database,bucket:R2Bucket|undefined,user:SessionUser,rmaId:string,form:FormData,requestId:string){
+// The 25MB photo limit plus multipart framing; larger declared bodies are refused unread.
+const maxUploadBytes=25*1024*1024+64*1024;
+export async function uploadPostRepairEvidence(db:D1Database,bucket:R2Bucket|undefined,user:SessionUser,rmaId:string,request:Request,requestId:string){
+  // Authorize permission, Workspace, scope, report state and assignment before the body is read.
   const row=await scoped(db,user,rmaId,'inspect'),i=await report(db,rmaId);if(!i||i.status!=='IN_PROGRESS')throw conflict('仅进行中的复检可以上传照片。');assignment(user,i);
-  if(!bucket)throw conflict('私有照片存储尚未配置。');const category=z.enum(categories).parse(form.get('category')),{file,bytes}=await validatedInspectionPhoto(form.get('file'));
+  if(!bucket)throw conflict('私有照片存储尚未配置。');
+  if(!/^multipart\/form-data\s*;/i.test(request.headers.get('Content-Type')||''))throw badRequest('请使用 multipart/form-data 上传复检照片。');
+  const declared=Number(request.headers.get('Content-Length'));if(Number.isFinite(declared)&&declared>maxUploadBytes)throw badRequest('仅支持 25MB 以内的 JPG、PNG 或 WebP 照片。');
+  let form:FormData;try{form=await request.formData();}catch{throw badRequest('上传内容格式有误，请重新选择照片。');}
+  const category=z.enum(categories).parse(form.get('category')),{file,bytes}=await validatedInspectionPhoto(form.get('file'));
   const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',bytes))).map(b=>b.toString(16).padStart(2,'0')).join('');
   const key=`post-repair-inspection/${i.taskId}/${category}/${digest}`;
   if(await one(db,'SELECT id FROM asset_inspection_evidence WHERE inspection_task_id=? AND object_key=?',i.taskId,key))return postRepairDetail(db,user,rmaId);

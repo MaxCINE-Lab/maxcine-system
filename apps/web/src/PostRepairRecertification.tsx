@@ -8,10 +8,15 @@ type Findings={issueRemains:string;functionalCondition:string;inspectorNotes:str
 type Photo={id:string;category:string;filename:string;contentType:string;contentUrl:string;createdAt:string;createdByName:string};
 type Inspection={id:string;taskId:string;status:string;inspectorName:string;startedAt:string;completedAt:string|null;expectedSn:string;observedSn:string;snVerification:string;grade:string|null;checklist:Check[];findings:Partial<Findings>;canEdit:boolean;evidence:Photo[]};
 type Decision={decision:string;reason:string;notes:string;decidedByName:string;decidedAt:string;certificationId:string|null};
-type Result={executionStatus:string;inspection:Inspection|null;decision:Decision|null;canStart:boolean;canDecide:boolean;eligibilityReason:string;certificationHistory:{id:string;version:number;purpose:string;grade:string;status:string;issuedAt:string}[]};
+type Certification={id:string;version:number;purpose:string;grade:string;status:string;issuedAt:string;isCurrent:boolean;standing:'CURRENT'|'SUPERSEDED'};
+type OperationalState={warehouseCode:string|null;custody:string|null;locationStatus:string|null;locationCode:string|null;inventoryStatus:string;sellable:boolean;inventoryReleasePending:boolean;rmaStatus:string;rmaStage:string;rmaOpen:boolean};
+type Result={executionStatus:string;inspection:Inspection|null;decision:Decision|null;canStart:boolean;canDecide:boolean;eligibilityReason:string;certificationHistory:Certification[];currentCertification:Certification|null;operationalState:OperationalState};
 const blankChecks=()=>items.map(item=>({item,result:'NOT_TESTED',notes:''}));
 const time=(value:string|null)=>value?new Date(value.includes('T')?value:value.replace(' ','T')+'Z').toLocaleString('zh-CN'):'—';
 const message=(error:unknown)=>error instanceof ApiClientError?error.message:'操作未完成，请刷新后重试。';
+// Display only: Current is the latest version; a revoked/suspended Current never makes an older version current.
+const standing=(c:Certification)=>!c.isCurrent?'Superseded':c.status==='certified'?'Current':`Current / ${c.status.charAt(0).toUpperCase()}${c.status.slice(1)}`;
+const stateLine=(s:OperationalState)=>`${s.warehouseCode||'—'} / ${s.custody||'—'} / ${s.inventoryStatus} / ${s.sellable?'Sellable':'Not sellable'} / RMA ${s.rmaOpen?'open':s.rmaStatus}`;
 
 export function PostRepairRecertification({rmaId,assetCode}:{rmaId:string;assetCode:string}){
   const [data,setData]=useState<Result|null>(null),[loading,setLoading]=useState(true),[busy,setBusy]=useState(false),[error,setError]=useState(''),[success,setSuccess]=useState('');
@@ -39,9 +44,12 @@ export function PostRepairRecertification({rmaId,assetCode}:{rmaId:string;assetC
   const upload=async()=>{if(!photo||busy)return;setBusy(true);setError('');setProgress(0);const form=new FormData();form.set('category',category);form.set('file',photo);
     try{setData(await uploadFormData<Result>(`${base}/evidence`,form,setProgress));setPhoto(null);}catch(e){setError(message(e));}finally{setBusy(false);}};
   return <section className="panel transfer-detail" data-testid="post-repair"><h2>Post-Repair Reinspection / Re-Certification</h2>
-    <p>Repair Completed ≠ Certified。独立 POST_REPAIR_RECERTIFICATION 报告，不覆盖原 Certified / Return Inspection。即使批准再认证，设备仍为 UK / WAREHOUSE / QUARANTINED，不可售、不可 Listing / Allocation。</p>
+    <p>Repair Completed ≠ Certified。独立 POST_REPAIR_RECERTIFICATION 报告，不覆盖原 Certified / Return Inspection。批准再认证不会解除隔离、不会使设备可售，也不会关闭 RMA 或改变保修；以下状态均读取自当前 Asset / RMA 数据。</p>
     {error&&<div className="notice notice--error" role="alert">{error}</div>}{success&&<div className="notice notice--success" role="status">{success}</div>}
     {loading?<div role="status">正在加载维修后复检…</div>:!data?<div className="empty-state">无法加载复检，请刷新。</div>:<>
+      <dl data-testid="post-repair-operational-state"><dt>Asset Warehouse / Custody</dt><dd>{data.operationalState.warehouseCode||'—'} / {data.operationalState.custody||'—'}</dd><dt>Inventory Status</dt><dd>{data.operationalState.inventoryStatus}{data.operationalState.locationCode?` · ${data.operationalState.locationCode}`:''}</dd>
+        <dt>Sellable</dt><dd>{data.operationalState.sellable?'Sellable':'Not sellable'}</dd><dt>RMA</dt><dd>{data.operationalState.rmaOpen?'Open':'Closed'} · {data.operationalState.rmaStatus} / {data.operationalState.rmaStage}</dd>
+        <dt>Current Certification</dt><dd>{data.currentCertification?`v${data.currentCertification.version} · ${standing(data.currentCertification)}`:'None'}</dd></dl>
       <dl><dt>Repair Execution</dt><dd>{data.executionStatus}</dd><dt>Post-Repair Reinspection Status</dt><dd>{i?.status||'NOT_STARTED'}</dd>
         {i&&<><dt>Inspector</dt><dd>{i.inspectorName}</dd><dt>Started At</dt><dd>{time(i.startedAt)}</dd><dt>Completed At</dt><dd>{time(i.completedAt)}</dd><dt>Inspection Task / Assignment</dt><dd>{i.taskId}</dd></>}
       </dl>
@@ -76,9 +84,9 @@ export function PostRepairRecertification({rmaId,assetCode}:{rmaId:string;assetC
         <label>Decision Reason<textarea aria-label="Re-Certification Reason" required maxLength={1000} value={reason} disabled={busy} onChange={e=>setReason(e.target.value)}/></label>
         <label>Decision Notes<textarea aria-label="Re-Certification Notes" maxLength={4000} value={notes} disabled={busy} onChange={e=>setNotes(e.target.value)}/></label>
         <button className="button" disabled={busy||!decision||!reason.trim()} onClick={()=>void action('decision')}>Confirm Re-Certification Decision</button></div>:<p>等待有独立再认证决定权限的人员审核。</p>}
-        {data.decision&&<div className="notice notice--success" role="status">{data.decision.decision==='APPROVED'?'Certified again · Inventory release pending':'REJECTED · No new Certification issued'} · QUARANTINED · Not sellable。RMA 未关闭，保修不变。</div>}
+        {data.decision&&<div className="notice notice--success" role="status">{data.decision.decision==='APPROVED'?`Certified again${data.operationalState.inventoryReleasePending?' · Inventory release pending':''}`:'REJECTED · No new Certification issued'} · {stateLine(data.operationalState)}。再认证决定不改变保修。</div>}
       </>}
-      <h3>Append-only Certification History</h3><div className="table-wrap"><table><thead><tr><th>Version</th><th>Reference</th><th>Purpose</th><th>Grade / Status</th><th>Issued At</th></tr></thead><tbody>{data.certificationHistory.map(c=><tr key={c.id}><td>v{c.version}</td><td>{c.id}</td><td>{c.purpose}</td><td>{c.grade} / {c.status}</td><td>{time(c.issuedAt)}</td></tr>)}</tbody></table></div>
+      <h3>Append-only Certification History</h3><div className="table-wrap"><table><thead><tr><th>Version</th><th>Standing</th><th>Reference</th><th>Purpose</th><th>Grade / Recorded Status</th><th>Issued At</th></tr></thead><tbody>{data.certificationHistory.map(c=><tr key={c.id} data-current={c.isCurrent?'true':'false'}><td>v{c.version}</td><td><strong>{standing(c)}</strong></td><td>{c.id}</td><td>{c.purpose}</td><td>{c.grade} / {c.status}</td><td>{time(c.issuedAt)}</td></tr>)}</tbody></table></div>
     </>}
   </section>;
 }
