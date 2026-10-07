@@ -4100,8 +4100,8 @@ app.patch('/admin/assets/:id', requireAuth, async (c) => {
     values.push(next);
   }
   if (!sets.length && !input.noteContent) return c.json({ id: assetId, changedFields: [] });
-  // Identity / SN / product compatibility of a committed replacement unit is frozen.
-  if (['currentSn', 'originalSn', 'productId', 'productName', 'version'].some((key) => changes[key])) await requireNotReplacementCommitted(c.env.DB, assetId);
+  // Identity / SN / product compatibility / asset status of a committed replacement unit is frozen.
+  if (['currentSn', 'originalSn', 'productId', 'productName', 'version', 'assetStatus'].some((key) => changes[key])) await requireNotReplacementCommitted(c.env.DB, assetId);
   const statements: D1PreparedStatement[] = [];
   if (sets.length) statements.push(c.env.DB.prepare(`UPDATE assets SET ${sets.join(', ')}, updated_at = CURRENT_TIMESTAMP, updated_by = ? WHERE id = ?`).bind(...values, user.id, assetId));
   if (changes.currentSn) {
